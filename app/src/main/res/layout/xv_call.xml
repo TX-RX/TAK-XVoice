@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Full-screen call surface used as the setFullScreenIntent target for
+  CallStyleNotifier's incoming + active notifications. Two distinct UI
+  shapes selected by EXTRA_MODE:
+    - MODE_INCOMING: status + callsign + Answer + Decline
+    - MODE_ACTIVE: status + callsign + Mute + 3 audio-route toggles
+      (Earpiece / Speaker / BT) + Hang Up
+  XvCallActivity flips the right section visible and wires the buttons.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@color/xv_bg"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/xv_call_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:text="● Incoming"
+        android:textColor="@color/xv_warn"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.05"/>
+
+    <TextView
+        android:id="@+id/xv_call_callsign"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="36dp"
+        android:text="Unknown"
+        android:textColor="@color/xv_text"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:gravity="center"/>
+
+    <!-- ===== MODE_INCOMING section ===== -->
+    <LinearLayout
+        android:id="@+id/xv_call_incoming_section"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/xv_call_answer"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:layout_marginBottom="12dp"
+            android:text="Answer"
+            android:textColor="@color/xv_text"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+
+        <Button
+            android:id="@+id/xv_call_decline"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="Decline"
+            android:textColor="@color/xv_text"
+            android:textSize="16sp"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+    </LinearLayout>
+
+    <!-- ===== MODE_ACTIVE section ===== -->
+    <LinearLayout
+        android:id="@+id/xv_call_active_section"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <!-- Mute toggle. Text flips between "Mute" and "Unmute"
+             reflecting current mic state from CallAudioState. -->
+        <Button
+            android:id="@+id/xv_call_mute"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginBottom="16dp"
+            android:text="Mute"
+            android:textColor="@color/xv_text"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+
+        <!-- Audio route picker. Three equal-weight buttons; tapping one
+             requests Connection.setAudioRoute(). Current route is
+             highlighted (red bg) from CallAudioState updates. -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:text="Audio Output"
+            android:textColor="@color/xv_text_dim"
+            android:textSize="12sp"
+            android:letterSpacing="0.1"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="24dp">
+
+            <Button
+                android:id="@+id/xv_call_route_earpiece"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:text="Earpiece"
+                android:textColor="@color/xv_text"
+                android:textSize="13sp"
+                android:textAllCaps="false"
+                android:background="@drawable/xv_button_bg"/>
+
+            <Button
+                android:id="@+id/xv_call_route_speaker"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:text="Speaker"
+                android:textColor="@color/xv_text"
+                android:textSize="13sp"
+                android:textAllCaps="false"
+                android:background="@drawable/xv_button_bg"/>
+
+            <Button
+                android:id="@+id/xv_call_route_bt"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="BT"
+                android:textColor="@color/xv_text"
+                android:textSize="13sp"
+                android:textAllCaps="false"
+                android:background="@drawable/xv_button_bg"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/xv_call_hangup"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:text="Hang Up"
+            android:textColor="@color/xv_text"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg_transmitting"/>
+    </LinearLayout>
+</LinearLayout>

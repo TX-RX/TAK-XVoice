@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ATAK 5.x plugin entry-point declaration. This file is what ATAK
+  actually reads to instantiate the plugin via the IPlugin extension
+  path; the manifest activity-meta-data path is the Meshtastic-style
+  fallback. BOTH must be present for the loader to surface a Load
+  button — verified empirically against the bridge.
+
+  If this file changes, bump versionCode in app/build.gradle.kts.
+-->
+<plugin>
+    <extension
+        type="gov.tak.api.plugin.IPlugin"
+        impl="com.atakmap.android.xv.plugin.XvPlugin"
+        singleton="true"/>
+</plugin>

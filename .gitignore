@@ -1,0 +1,72 @@
+# ---------- Build outputs ----------
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+build/
+.gradle/
+.takdev/
+out/
+release/
+
+# ---------- Reverse-engineering workspace ----------
+# Decompiled Vx is for research only; never commit the third-party APK,
+# its decompiled source, or analysis notes derived from it. Whole
+# `research/` is opaque to git by default. To intentionally include
+# something from research/, use `git add -f <path>` after manual review.
+research/
+tools/
+
+# ---------- IDE ----------
+.idea/
+*.iml
+.vscode/
+*.iws
+*.ipr
+local.properties
+
+# ---------- Android ----------
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---------- Secrets / signing ----------
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+app/atak_keystore
+
+# ---------- ATAK SDK (vendored, do not commit) ----------
+app/libs/main.jar
+app/libs/*.jar
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+
+# ---------- Logs ----------
+*.log
+hs_err_pid*
+# Scratch dir for logcat dumps + ad-hoc diagnostics (created by
+# agent sessions to keep large/noisy artifacts out of the project
+# root). Never committed.
+.tmp/
+# Persisted diagnostic captures (logcat dumps, audio/dumpsys snapshots,
+# TPP return APKs, post-mortem analyses). Sometimes contains sensitive
+# device identifiers and credentials snapshotted from `dumpsys`, so
+# always excluded. Per-day subdirs (e.g. .logs/2026-05-18-pixel/).
+.logs/
+# Same rationale as .logs/ — ad-hoc field captures keyed by date that
+# routinely run hundreds of MB per session. Per-day subdirs (e.g.
+# diagnostics/2026-06-04-tpt-routing/). Never committed; the tpp
+# archive task also excludes them so they don't ship to the build
+# pipeline.
+diagnostics/
+
+# ---------- Kotlin compiler caches ----------
+.kotlin/
+
+# ---------- Local agent / tooling settings ----------
+.claude/

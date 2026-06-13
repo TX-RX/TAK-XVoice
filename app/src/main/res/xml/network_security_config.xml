@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Production network security policy for XV.
+
+    Default posture: cleartext blocked everywhere. Every off-device
+    transport in XV is TLS-only by construction:
+      - MumbleTransport / MumbleAuth.connectTls — TLS 1.2 with PKIX
+        validation against ATAK's enrollment-cert trust anchors plus
+        the system trust store (and hostname verification via
+        endpointIdentificationAlgorithm = "HTTPS").
+      - MulticastTransport — link-local UDP, AEAD-wrapped at the
+        application layer (ChaCha20-Poly1305 with channel keys
+        distributed RSA-OAEP-wrapped over Mumble TextMessage). The
+        network security config does not gate UDP, but disabling
+        cleartext HTTP here is defence in depth against any future
+        REST/HTTP path being added by accident.
+
+    Trust anchors:
+      - System CAs are trusted (Android default + carrier).
+      - User-installed CAs are also trusted, because a deployed XV
+        operator may have a corporate / TAK MITM CA installed and
+        we don't want to break that workflow. ATAK's own enrollment
+        CA is *not* trusted via this config — MumbleAuth pulls the
+        TAK CA blob straight out of AtakCertificateDatabase and
+        builds a PinnedAnchorTrustManager bypass; this file only
+        matters for any future plain-HTTPS dependency.
+
+    Localhost / 127.0.0.1 cleartext is permitted only in the debug
+    build via app/src/debug/res/xml/network_security_config.xml so a
+    developer can point at a local OpenTAKServer instance without
+    a real cert. Release builds reject all cleartext.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

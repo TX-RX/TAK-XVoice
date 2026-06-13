@@ -1,0 +1,89 @@
+XV — ATAK voice plugin
+Copyright 2026 XV contributors
+
+This product includes software developed by third parties, listed
+below. Each project's own license applies to the relevant components;
+the redistributable forms of those licenses are bundled into the
+release APK and can be obtained from the upstream sources.
+
+============================================================
+Bundled at build time (linked or embedded)
+============================================================
+
+Mumble protobuf schema (Mumble.proto)
+  Source:  https://github.com/mumble-voip/mumble (src/Mumble.proto)
+  License: BSD-3-Clause
+  Use:     The schema in app/src/main/proto/Mumble.proto is a reduced
+           subset of Mumble's wire-protocol definition, used to
+           generate the protobuf-javalite classes XV uses for client
+           ↔ Mumble server signaling. Only message definitions XV
+           actually references are kept; everything else trimmed.
+
+Concentus (pure-Java Opus codec)
+  Source:  https://github.com/lostromb/concentus
+  License: Apache License 2.0
+  Use:     Bundled into the APK via maven coordinate
+           `com.github.lostromb:concentus`. Provides Opus encode/decode
+           on the JVM without an NDK toolchain. Wrapped by
+           ConcentusOpusEncoder / ConcentusOpusDecoder.
+
+Protocol Buffers (protobuf-javalite)
+  Source:  https://github.com/protocolbuffers/protobuf
+  License: BSD-3-Clause
+  Use:     The lite-runtime is bundled into the APK to decode the
+           Mumble wire protocol generated from Mumble.proto.
+
+AndroidX libraries (core-ktx, appcompat)
+  Source:  https://developer.android.com/jetpack/androidx
+  License: Apache License 2.0
+  Use:     Standard Android compatibility shims; bundled into the APK.
+
+Kotlin standard library + kotlinx-coroutines
+  Source:  https://github.com/JetBrains/kotlin
+           https://github.com/Kotlin/kotlinx.coroutines
+  License: Apache License 2.0
+  Use:     Bundled into the APK.
+
+ATAK Civil Use (CIV) SDK
+  Source:  https://tak.gov (CIV download)
+  License: ATAK Civil Use Permit (NOT open source; redistribution
+           restricted). XV is a plugin loaded by ATAK at runtime; the
+           SDK is NOT bundled into XV's APK. It is referenced at
+           build time only.
+
+============================================================
+Reference projects (consulted, no code copied)
+============================================================
+
+The following projects were studied to understand the underlying
+protocols and behaviors XV implements. No source code from these
+projects has been copied or adapted into XV; XV's implementations
+were written independently. Specific design decisions informed by
+each reference are noted inline in the XV source.
+
+  - Mumla (https://gitlab.com/quite/mumla) — Mumble timing and
+    voice-packet conventions. Referenced for `frameSamples = 480`
+    (10ms @ 48kHz). License: GPL-3.0.
+
+  - Humla (https://github.com/quite/humla) — Mumble protocol
+    integration patterns, in particular the UDP_TUNNEL raw-payload
+    behavior. License: GPL-3.0. No code copied; only behavior referenced.
+
+  - jeffypooo/aina-android
+    (https://github.com/jeffypooo/aina-android) — AINA APTT V1 SPP
+    retry conventions. License: MIT. Referenced for the 3-attempt
+    connect-burst pattern.
+
+============================================================
+Vendor-supplied documentation
+============================================================
+
+  - AINA APTT Bluetooth communication protocol documentation v18
+    and UI spec v10 (https://ainaptt.com/developers/) — used to
+    implement V1 ASCII protocol parsing (AinaAsciiParser) and V2
+    BLE GATT button-mask decoding (ButtonMaskDecoder, AinaBleReader).
+    No vendor code; reverse-implemented from published spec.
+
+  - Mumble wire protocol specification
+    (https://www.mumble.info/documentation/development/protocol/)
+    — voice-packet framing, varint encoding (MumbleVoicePacket).

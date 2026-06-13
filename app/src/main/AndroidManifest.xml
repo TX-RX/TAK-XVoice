@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Audio + Bluetooth — wired up so Phase 1 (Mumble RX) and Phase 2
+         (PTT TX with proper SCO gating) can request what they need. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- LAN multicast voice (issue: Wi-Fi multicast drops by default
+         unless we hold a MulticastLock; see MulticastTransport). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <!-- Android 14+ (API 34) requires a foreground-service-type-specific
+         permission for each declared type. PHONE_CALL is needed for the
+         runtime promotion XvVoiceService.promoteToPhoneCallForeground()
+         performs when a private call goes active — without it, the
+         service can't add phoneCall to its declared types and Android
+         falls back to a non-call foreground state, which then BAL-
+         blocks the XvCallActivity launch from the background (verified
+         2026-05-11 Pixel: startForeground(0x94) threw "not a subset of
+         manifest 0x90", BAL_BLOCK on XvCallActivity, operator stuck
+         on the PTT screen with a live call running underneath). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Network reachability (read-only) so NetworkAvailabilityWatcher
+         can observe transitions between Wi-Fi, cellular, and offline.
+         CHANGE_NETWORK_STATE is intentionally NOT requested — XV does
+         not toggle network adapters; it only reacts to the platform's
+         current binding. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- Ask the user (via the standard system dialog) to exempt XV
+         from Doze / App Standby, so the foreground voice session
+         doesn't get its sockets killed mid-call when the screen is
+         off. Required permission to fire ACTION_REQUEST_IGNORE_-
+         BATTERY_OPTIMIZATIONS without it being treated as a hostile
+         intent. See security/BatteryOptimizationHelper.kt. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+
+    <!-- Proximity wake-lock so XvCallActivity can turn the screen off
+         when the operator holds the phone to their ear during a call
+         on the earpiece route. Without this permission,
+         PowerManager.newWakeLock throws SecurityException at runtime
+         (observed 2026-05-11 Pixel call-screen onCreate crash). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <!-- Self-managed VoIP: XV registers as a Telecom ConnectionService so
+         the system handles BT routing, audio focus arbitration with media
+         apps (Tidal/Spotify auto-pause), MODE_IN_COMMUNICATION, and
+         background-audio privileges. MANAGE_OWN_CALLS is the public
+         counterpart of BLUETOOTH_PRIVILEGED for VoIP apps — Telecom does
+         the privileged work on our behalf.
+         CALL_PHONE is required by TelecomManager.placeCall on Android
+         14+ even for self-managed accounts; runtime-prompt at first
+         use. -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <!-- READ_PHONE_NUMBERS was previously requested defensively; audit
+         2026-05-20 (M1) confirmed no code path reads phone-number
+         identifiers. Self-managed Telecom doesn't need it; removing
+         drops a Play-Store PII flag. -->
+
+
+    <!-- Phase E ring restoration: Notification.CallStyle.forIncomingCall
+         on a HIGH-importance channel does NOT self-trigger the
+         lock-screen / heads-up full-screen ring. It requires
+         setFullScreenIntent to be attached to the notification, and
+         that requires USE_FULL_SCREEN_INTENT. The earlier comment
+         claiming CallStyle alone suffices was incorrect — verified on
+         Pixel 8 + Surface Duo: notification posted, Wear OS companion
+         (Garmin Fenix) rendered the incoming call, but the phone
+         itself stayed silent and never showed any call UI. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:description="@string/app_desc"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="false">
+
+        <!-- ATAK plugin metadata. plugin-api MUST match the installed ATAK
+             baseline (e.g. 5.6.0.CIV) or the loader silently skips this
+             plugin. Driven from gradle so it's a one-line flip. -->
+        <meta-data
+            android:name="plugin-api"
+            android:value="${atakApiVersion}"/>
+        <!-- ATAK CIV's loader requires plugin-id to be present in the
+             packaged manifest before it'll surface a Load button. The
+             takdev gradle plugin tries to inject it but AGP 8.x downstream
+             tasks overwrite the result, so we declare it statically. -->
+        <meta-data
+            android:name="plugin-id"
+            android:value="XV"/>
+        <meta-data
+            android:name="app_desc"
+            android:value="@string/app_desc"/>
+
+        <!-- ATAK plugin discovery activity. Per the Meshtastic-style
+             pattern: ATAK queries by intent action, then reads the
+             MapComponent meta-data to find the entry class. No real
+             activity class is required (com.atakmap.app.component is a
+             well-known placeholder). The IPlugin extension path is NOT
+             used — verified loader path on Play Store ATAK 5.6.0.12. -->
+        <activity
+            android:name="com.atakmap.app.component"
+            android:exported="true"
+            tools:ignore="MissingClass">
+            <intent-filter android:label="@string/app_name">
+                <action android:name="com.atakmap.app.component"/>
+            </intent-filter>
+            <meta-data
+                android:name="com.atakmap.android.maps.MapComponent"
+                android:value="com.atakmap.android.xv.plugin.XvMapComponent"/>
+        </activity>
+
+        <!-- Hidden activity (no LAUNCHER intent) that fires the Android
+             runtime-permission dialogs in XV's own UID. Must be exported
+             — XvMapComponent runs in ATAK's process and starts this
+             across UIDs; without exported=true Android blocks the launch
+             with SecurityException. The activity itself only triggers
+             the standard OS permission dialog for permissions XV has
+             already declared, so the security exposure is minimal. -->
+        <activity
+            android:name=".plugin.PermissionRequestActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            tools:ignore="ExportedActivity"/>
+
+        <!-- Phase E full-screen-intent target. Notification.CallStyle's
+             incoming-ring requires a real activity in setFullScreenIntent
+             for the system to render the ring surface on phone (the
+             notification ALONE only reaches Wear OS companions). This
+             activity is the FSI target — it just provides Answer /
+             Decline / Hang Up affordances that broadcast the same
+             actions CallStyle's own buttons do.
+
+             showWhenLocked + turnScreenOn so the ring fires above the
+             lock screen and wakes the display. singleInstance so a
+             second REQUEST_CALL or postActive while we're already up
+             reuses the existing instance via onNewIntent instead of
+             stacking screens. Translucent.NoTitleBar theme keeps the
+             activity headless / chromeless. -->
+        <activity
+            android:name=".calling.XvCallActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+
+        <!-- Self-managed Telecom ConnectionService. The system binds to
+             this when we call TelecomManager.placeCall with our
+             PhoneAccountHandle. Runs in XV's APK process (no
+             android:process attribute = our APK's default UID), so the
+             voice subsystem gets its own data dir and lifecycle
+             independent of the ATAK plugin host. The
+             BIND_TELECOM_CONNECTION_SERVICE permission is enforced by
+             the system — only the Telecom framework can bind. -->
+        <service
+            android:name=".telecom.XvConnectionService"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService"/>
+            </intent-filter>
+        </service>
+
+        <!-- The voice subsystem (audio capture/playback/encode/decode,
+             SCO, AINA readers, PTT dispatch) runs here as a foreground
+             Service in our APK's process (separate UID from ATAK).
+             The microphone foreground type grants AudioRecord
+             permission to keep working when ATAK is backgrounded —
+             the entire reason this Service exists. The
+             connectedDevice type covers BLE GATT subscriptions to
+             the AINA so its button events keep firing in the
+             background. The plugin in ATAK's process talks to this
+             Service via the AIDL interface (com.atakmap.android.xv.
+             service.IXvVoice).
+
+             exported=true is required so the plugin (running in ATAK's
+             UID, not ours) can bind across UIDs. The service binder
+             only exposes XV's voice operations; no general-purpose
+             attack surface.
+
+             foregroundServiceType combines all the types this service
+             can legally claim:
+              - microphone: continuous AudioRecord for PTT + latched call
+                mic when ATAK is backgrounded.
+              - connectedDevice: BLE GATT subscriptions to AINA / Pryme
+                speakermics so their button events keep firing in
+                background.
+              - phoneCall: needed so XvVoiceService can promote to a
+                phoneCall fg state during a Telecom call, which grants
+                BAL_ALLOW for launching XvCallActivity from the
+                broadcast-receiver path that handles incoming-ring +
+                outgoing-active transitions. Without this entry, the
+                runtime promotion fails with "fgType X is not a subset
+                of manifest 0xY" and the activity launch is BAL_BLOCKed.
+             -->
+        <service
+            android:name=".service.XvVoiceService"
+            android:exported="true"
+            android:foregroundServiceType="microphone|connectedDevice|phoneCall">
+            <intent-filter>
+                <action android:name="com.atakmap.android.xv.service.IXvVoice"/>
+            </intent-filter>
+        </service>
+
+        <!-- adb-driven debug surface lives in app/src/debug/AndroidManifest.xml
+             so it's never declared in release builds. The dynamic
+             registerReceiver() in XvMapComponent is also gated on
+             BuildConfig.DEBUG, so any caller broadcasting these actions
+             against a release APK gets nothing. -->
+    </application>
+</manifest>

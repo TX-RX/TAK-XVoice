@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-only manifest overlay. AGP merges this on top of
+    app/src/main/AndroidManifest.xml for the debug build type only;
+    release APKs never see this file. Keeps the adb-driven debug
+    broadcast surface entirely out of shipped builds.
+-->
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- adb-driven debug surface; testing without going through the UI.
+             Sender authentication is "you have adb access to my phone";
+             not a production interface — release manifest excludes it
+             entirely, and the dynamic registerReceiver call in
+             XvMapComponent is wrapped in BuildConfig.DEBUG. -->
+        <receiver
+            android:name="com.atakmap.android.xv.debug.DebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.atakmap.android.xv.debug.START_MULTICAST"/>
+                <action android:name="com.atakmap.android.xv.debug.STOP_MULTICAST"/>
+                <action android:name="com.atakmap.android.xv.debug.AUDIO_STATE"/>
+                <action android:name="com.atakmap.android.xv.debug.AINA_CONNECT"/>
+                <action android:name="com.atakmap.android.xv.debug.AINA_DISCONNECT"/>
+                <action android:name="com.atakmap.android.xv.debug.AINA_LIST_BONDED"/>
+                <action android:name="com.atakmap.android.xv.debug.MUMBLE_CONNECT"/>
+                <action android:name="com.atakmap.android.xv.debug.MUMBLE_DISCONNECT"/>
+                <action android:name="com.atakmap.android.xv.debug.MUMBLE_LIST_TAK"/>
+                <action android:name="com.atakmap.android.xv.debug.MUMBLE_JOIN"/>
+                <action android:name="com.atakmap.android.xv.debug.SET_AUDIO_ROUTE"/>
+                <action android:name="com.atakmap.android.xv.debug.TX_START"/>
+                <action android:name="com.atakmap.android.xv.debug.TX_STOP"/>
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

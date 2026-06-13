@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-only overlay. AGP merges resources from src/debug/res over
+    src/main/res when assembling the debug variant, so this file
+    completely replaces the main config for debug APKs.
+
+    Differences from the main config:
+      - localhost / 127.0.0.1 / 10.0.2.2 (Android emulator host loopback)
+        are allowed to serve cleartext. Useful when bringing up a fresh
+        OpenTAKServer locally before TLS is wired up.
+      - All other domains keep the production posture: cleartext denied,
+        system + user CAs trusted.
+
+    Release APKs never see this file (debug source set is excluded from
+    the release variant by AGP convention).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- Android emulator's bridge to the host loopback. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

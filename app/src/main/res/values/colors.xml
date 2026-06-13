@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ATAK is dark by default; surfaces are nearly black with high-contrast
+         accents. Status colors borrowed from FlexRadio / SDR conventions:
+         green = nominal, amber = transitioning, red = error / no link. -->
+    <color name="xv_bg">#0E1216</color>
+    <color name="xv_surface">#1A2028</color>
+    <color name="xv_surface_alt">#252D38</color>
+    <color name="xv_text">#E8ECF1</color>
+    <color name="xv_text_dim">#9AA5B3</color>
+    <color name="xv_accent">#36C5FF</color>
+    <color name="xv_ok">#3DDC84</color>
+    <color name="xv_warn">#FFB300</color>
+    <color name="xv_err">#FF5252</color>
+    <color name="xv_ptt_idle">#36C5FF</color>
+    <color name="xv_ptt_active">#FF5252</color>
+</resources>

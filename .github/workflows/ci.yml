@@ -1,0 +1,92 @@
+# Continuous integration for XV.
+#
+# This workflow runs ktlint on every push and PR. It uses the standalone
+# ktlint CLI (not the Gradle wrapper) so it does NOT need the ATAK CIV
+# SDK on the classpath — ktlint just parses Kotlin source.
+#
+# Why no test job here:
+#   The Android Gradle build (./gradlew test / assembleCivDebug) needs
+#   app/libs/main.jar (the ATAK CIV SDK) on the compile classpath. The
+#   SDK isn't redistributable, and the tak.gov maven coordinates that
+#   the takdev plugin would fetch from in CI require USG-sponsored
+#   credentials. Without USG sponsorship, public CI can't compile the
+#   main source set, which means it can't run tests either.
+#
+#   The intended workflow:
+#     - This public CI job runs ktlint on every push/PR.
+#     - Contributors run `./gradlew test` locally before pushing.
+#     - If we add a self-hosted runner later (a contributor's dev box
+#       with the SDK jar in place), a follow-up `test:` job can run
+#       on `runs-on: self-hosted` against that environment.
+#
+# Release builds are produced through the TAK third-party-plugin (TPP)
+# signing pipeline, not CI — see CLAUDE.md "TPP submission" section.
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'release/**'
+  pull_request:
+    branches:
+      - main
+
+# Cancel superseded runs of the same branch/PR to save minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Ktlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Fetch standalone ktlint CLI
+        # 1.3.1 matches the version pinned in app/build.gradle.kts's
+        # ktlint block — keep them in sync so local + CI output is
+        # identical. Bump both together when upgrading.
+        run: |
+          set -e
+          mkdir -p .ci
+          KTLINT_VERSION=1.3.1
+          curl -fSL --retry 3 \
+            "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint" \
+            -o .ci/ktlint
+          chmod +x .ci/ktlint
+          .ci/ktlint --version
+
+      - name: Run ktlint
+        # Style is configured via .editorconfig (ktlint_code_style =
+        # android_studio) — ktlint 1.x removed CLI-level style flags
+        # in favor of editorconfig-driven configuration. Keep
+        # .editorconfig in lockstep with the Gradle ktlint block.
+        # --reporter=plain renders inline errors in the workflow log.
+        # --reporter=checkstyle,output=ktlint-report.xml feeds the
+        # uploaded report artifact below.
+        run: |
+          .ci/ktlint \
+            --reporter=plain \
+            --reporter=checkstyle,output=ktlint-report.xml \
+            'app/src/**/*.kt' \
+            '**/*.kts'
+
+      - name: Upload ktlint report on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ktlint-report
+          path: ktlint-report.xml
+          retention-days: 7

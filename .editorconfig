@@ -1,0 +1,34 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+
+[*.{kt,kts}]
+indent_size = 4
+# Ktlint 1.x code-style selector — was the --android CLI flag in 0.x.
+# Matches the `android.set(true)` configuration in the Gradle ktlint
+# block (app/build.gradle.kts). Keep them in sync so local and CI
+# style verdicts are identical.
+ktlint_code_style = android_studio
+max_line_length = 140
+
+# The org.jlleitschuh.gradle.ktlint plugin (used locally) disables the
+# following rules by default for the `android` style; the standalone
+# ktlint CLI (used by CI) enables them. Disable here so both sides
+# converge on the same verdict. Without these, CI fails for ~1500
+# trailing-comma / signature-formatting nits that the Gradle build
+# never surfaced.
+ktlint_standard_trailing-comma-on-call-site = disabled
+ktlint_standard_trailing-comma-on-declaration-site = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_class-signature = disabled
+
+[*.{xml,yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+indent_size = 2
+trim_trailing_whitespace = false

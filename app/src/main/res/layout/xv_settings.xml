@@ -1,0 +1,441 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/xv_bg">
+
+    <!-- Header: back + title -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:padding="12dp">
+
+        <Button
+            android:id="@+id/xv_settings_back"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="◀"
+            android:textColor="@color/xv_text"
+            android:textSize="14sp"
+            android:background="@android:color/transparent"
+            android:minWidth="40dp"/>
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Settings"
+            android:textColor="@color/xv_text"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:layout_marginStart="4dp"/>
+    </LinearLayout>
+
+    <!-- Tab strip: TX/RX | Channels | Preferences -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp">
+
+        <Button
+            android:id="@+id/xv_tab_txrx"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="TX/RX"
+            android:textColor="@color/xv_text"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+
+        <Button
+            android:id="@+id/xv_tab_calls"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:text="Server"
+            android:textColor="@color/xv_text"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+
+        <Button
+            android:id="@+id/xv_tab_prefs"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:text="Preferences"
+            android:textColor="@color/xv_text"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="12dp">
+
+            <!-- ============================================================ -->
+            <!-- Section 1: TX/RX  (latched mode + TX timeouts)              -->
+            <!-- ============================================================ -->
+            <LinearLayout
+                android:id="@+id/xv_section_txrx"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="visible">
+
+                <!-- Latched-mode toggle hidden from Settings UI per user
+                     direction (2026-05-10). Latched mode remains
+                     functional under the hood — direct calls default to
+                     latched, and the Switch ID is preserved (visibility
+                     gone) so wireTxRxSection's findViewById doesn't NPE.
+                     Re-expose by switching visibility back to "visible"
+                     when a non-call latched use case comes up. -->
+                <Switch
+                    android:id="@+id/xv_switch_latched"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Hot mic (PTT latency)"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="4dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Hot mic mode (instant PTT)"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_hot_mic"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Pre-warms the Bluetooth SCO link for the entire time you're in a channel so the first PTT after a long pause skips the 0.5-1.5s cold-start. Tradeoff: media apps (Spotify, podcasts) stay paused for the whole session, not just during PTT bursts."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="6dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="PTT timeout (seconds)"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:id="@+id/xv_label_ptt_timeout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="30 s"
+                    android:textColor="@color/xv_text"
+                    android:textSize="14sp"
+                    android:fontFamily="monospace"
+                    android:layout_marginTop="4dp"/>
+
+                <SeekBar
+                    android:id="@+id/xv_slider_ptt_timeout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:min="20"
+                    android:max="90"
+                    android:progress="30"
+                    android:layout_marginTop="4dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Auto-release a stuck PTT after this many seconds (20–90 s)."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- Latched timeout slider — hidden alongside the latched
+                     toggle (2026-05-10). The SeekBar id is preserved so
+                     XvDropDownReceiver.wireTxRxSection's findViewById
+                     keeps working; only visibility is gone. -->
+                <SeekBar
+                    android:id="@+id/xv_slider_latched_timeout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="600"
+                    android:progress="180"
+                    android:visibility="gone"/>
+
+                <TextView
+                    android:id="@+id/xv_label_latched_timeout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="180 s"
+                    android:visibility="gone"/>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"/>
+            </LinearLayout>
+
+            <!-- ============================================================ -->
+            <!-- Section 2: Server (TAK server + Mumble connect/disconnect).  -->
+            <!-- VS1/VS2 channel selection lives on the main view's PTT       -->
+            <!-- cards — operators pick channels there, not buried in         -->
+            <!-- settings. The legacy VS1/VS2 spinners were deleted per       -->
+            <!-- operator feedback that channel choice belongs front-of-     -->
+            <!-- screen, not behind a Settings tab.                           -->
+            <!-- ============================================================ -->
+            <LinearLayout
+                android:id="@+id/xv_section_calls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <!-- TAK server. Tappable: opens AlertDialog server picker
+                     (auto / per-host) so operators with >1 enrolled TAK
+                     server can pin which one XV uses for Mumble. Pick
+                     persists in SharedPreferences (PREF_TAK_SERVER_HOST)
+                     and is honored by connectMumbleWithDefaults on every
+                     plugin start. Click handler is bound in
+                     XvDropDownReceiver.wireSettings. -->
+                <!-- @noinspection KeyboardInaccessibleWidget -->
+                <!-- TextView is clickable at runtime; Studio lint nag
+                     about contentDescription is intentional — the label
+                     text already conveys the affordance. -->
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="TAK server"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"/>
+
+                <TextView
+                    android:id="@+id/xv_tak_server_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="4dp"
+                    android:text="—"
+                    android:textColor="@color/xv_text"
+                    android:fontFamily="monospace"
+                    android:textSize="13sp"/>
+
+                <!-- Mumble actions -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Mumble"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="4dp">
+
+                    <Button
+                        android:id="@+id/xv_btn_mumble_connect"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:text="Connect"
+                        android:textColor="@color/xv_text"
+                        android:background="@drawable/xv_button_bg"/>
+
+                    <Button
+                        android:id="@+id/xv_btn_mumble_disconnect"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="8dp"
+                        android:text="Disconnect"
+                        android:textColor="@color/xv_text"
+                        android:background="@drawable/xv_button_bg"/>
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"/>
+            </LinearLayout>
+
+            <!-- ============================================================ -->
+            <!-- Section 3: Preferences (TPT, audio output, AINA picker)     -->
+            <!-- ============================================================ -->
+            <LinearLayout
+                android:id="@+id/xv_section_prefs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <!-- Section header: PTT input -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="PTT INPUT"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.15"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Where the PTT button lives. Picked separately from audio so an AINA speakermic + car Bluetooth (or headphones) is one operator-tap apart."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="2dp"/>
+
+                <!-- AINA picker — moved up to be visually paired with the
+                     "PTT INPUT" header. Wiring is unchanged; this is the
+                     same xv_spinner_aina the AINA picker code targets. -->
+                <Spinner
+                    android:id="@+id/xv_spinner_aina"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <TextView
+                    android:id="@+id/xv_label_aina_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- Section header: Audio device -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="AUDIO DEVICE"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.15"
+                    android:layout_marginTop="24dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Where you hear (and speak) — speaker/mic pair. Auto follows the PTT input device when it has audio (e.g. AINA speakermic), otherwise falls back to the built-in route below. Pick a specific Bluetooth device to split: PTT from AINA, audio through car/headphones."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="2dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_bt_audio_override"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <!-- Built-in fallback route (only used when Auto + no
+                     Bluetooth audio device is present) -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Built-in fallback (no BT)"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="16dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_route"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Used when Audio Device above is Auto AND no Bluetooth or wired headset is connected. Choose phone speaker for hands-free, earpiece for hold-to-ear."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- TPT -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Talk permit tone"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_tpt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <Button
+                    android:id="@+id/xv_btn_test_tpt"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Test tone"
+                    android:textColor="@color/xv_text"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"/>
+            </LinearLayout>
+        </FrameLayout>
+    </ScrollView>
+</LinearLayout>

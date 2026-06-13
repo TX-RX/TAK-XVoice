@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PTT button background while TX is active. Uses the same theme colors
+  as xv_button_bg's pressed state (xv_ptt_active red) but applied as
+  the static background instead of the press-state, so the button
+  stays red across the entire transmit window. The stroke uses the
+  warning amber to make the active state pop visually against the
+  dark surface, distinguishing it from a simple press.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/xv_ptt_active"/>
+    <stroke android:width="2dp" android:color="@color/xv_warn"/>
+    <corners android:radius="8dp"/>
+</shape>
