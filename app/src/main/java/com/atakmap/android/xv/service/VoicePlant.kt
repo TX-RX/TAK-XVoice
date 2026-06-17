@@ -9,6 +9,8 @@ import com.atakmap.android.xv.aina.AinaBleReader
 import com.atakmap.android.xv.aina.AinaButton
 import com.atakmap.android.xv.aina.AinaSppReader
 import com.atakmap.android.xv.aina.PrymeBleReader
+import com.atakmap.android.xv.audio.AinaA2dpController
+import com.atakmap.android.xv.audio.AinaA2dpWiring
 import com.atakmap.android.xv.audio.AudioCapture
 import com.atakmap.android.xv.audio.AudioController
 import com.atakmap.android.xv.audio.AudioControllerImpl
@@ -108,6 +110,21 @@ class VoicePlant(
 
     private val audioController: AudioController = AudioControllerImpl(context)
     private val btPolicy: BtAudioPolicy = BtAudioPolicy(context).also { it.start() }
+
+    // A2DP forbid for AINA speakermics. Prevents phone media (Spotify,
+    // YouTube, system sounds) from routing through the AINA when a
+    // peer's voice isn't on the air. Without this, the AINA's A2DP
+    // sink stays advertised as a valid music sink to the OS and
+    // operators leak entertainment audio onto a tactical mic. See
+    // [AinaA2dpController] for the reflection-based forbid mechanism
+    // and [AinaA2dpWiring] for the connect-time invocation +
+    // Pixel-signature-permission fallback prompt.
+    private val ainaA2dpController: AinaA2dpController =
+        AinaA2dpController(context).also { it.start() }
+    private val ainaA2dpWiring: AinaA2dpWiring =
+        AinaA2dpWiring(context, ainaA2dpController).also { wiring ->
+            btPolicy.addConnectListener(wiring)
+        }
 
     // Router constructed BEFORE scoLink so scoLink's preferred-MAC
     // accessor can close over it. The lambda is read on each comm-
@@ -372,6 +389,16 @@ class VoicePlant(
     private val routeUiListener =
         object : AudioRouter.RouteListener {
             override fun onPreferredDeviceChanged(device: android.media.AudioDeviceInfo?) {
+                // Piggyback on the route-change fan-out to let the AINA
+                // A2DP wiring drop its diag notification once the AINA
+                // A2DP sink is no longer in the output device list
+                // (operator powered off the mic, or actioned the
+                // manual "disable Media audio" fix).
+                try {
+                    ainaA2dpWiring.reconcileNotification()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "ainaA2dpWiring.reconcileNotification threw", t)
+                }
                 val label = router.currentRouteLabel()
                 if (label == lastPublishedRouteLabel) return
                 lastPublishedRouteLabel = label
@@ -1167,6 +1194,23 @@ class VoicePlant(
         }
         try {
             scoLink.forceStop()
+        } catch (_: Throwable) {
+        }
+        try {
+            // De-register before tearing down btPolicy so we don't
+            // race with a final fan-out on shutdown.
+            btPolicy.removeConnectListener(ainaA2dpWiring)
+        } catch (_: Throwable) {
+        }
+        try {
+            ainaA2dpWiring.stop()
+        } catch (_: Throwable) {
+        }
+        try {
+            // Restores A2DP policy on every device we forbade during
+            // this lifetime. Leaving the AINA permanently forbidden
+            // after XV unloads would be a hostile side effect.
+            ainaA2dpController.stop()
         } catch (_: Throwable) {
         }
         try {
