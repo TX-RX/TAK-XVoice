@@ -13,6 +13,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 // What kind of Bluetooth audio path is currently available, if any. The
 // answer drives which AudioTrack profile (STREAM_MUSIC vs STREAM_VOICE_CALL)
@@ -49,6 +50,50 @@ class BtAudioPolicy(
     @Volatile
     private var headsetProxy: BluetoothHeadset? = null
 
+    /**
+     * Sibling-callback for "a BT device just became connected." Fired
+     * from BOTH the ACTION_ACL_CONNECTED broadcast AND from the
+     * HEADSET profile-proxy `onServiceConnected` (which retroactively
+     * surfaces devices that were already connected when XV started).
+     *
+     * Exists so secondary subsystems (AinaA2dpWiring, future A2DP
+     * forbid-on-connect handlers) can react to fresh BT attachments
+     * without double-registering the ACL_CONNECTED receiver. Each
+     * extra receiver costs a separate registration in our UID and
+     * fights the deduplication that lives here — much cleaner to fan
+     * out from this single point of truth.
+     */
+    interface ConnectListener {
+        fun onDeviceConnected(device: BluetoothDevice)
+    }
+
+    private val connectListeners = CopyOnWriteArrayList<ConnectListener>()
+
+    /** Register a sibling callback for BT device connect events. See
+     *  [ConnectListener] for the rationale. Safe to call from any
+     *  thread; listeners are notified on whichever thread the
+     *  underlying broadcast / profile-proxy callback fires on, which
+     *  is always main on AOSP. */
+    fun addConnectListener(listener: ConnectListener) {
+        connectListeners.addIfAbsent(listener)
+    }
+
+    /** Remove a previously-registered [ConnectListener]. No-op when
+     *  the listener was never added. */
+    fun removeConnectListener(listener: ConnectListener) {
+        connectListeners.remove(listener)
+    }
+
+    private fun fanOutConnect(device: BluetoothDevice) {
+        for (l in connectListeners) {
+            try {
+                l.onDeviceConnected(device)
+            } catch (t: Throwable) {
+                Log.w(TAG, "ConnectListener.onDeviceConnected threw", t)
+            }
+        }
+    }
+
     // MAC addresses of BT devices we have observed an ACL_DISCONNECTED for
     // since their last ACL_CONNECTED. The HEADSET profile proxy keeps a
     // device in `connectedDevices` for several seconds after the remote
@@ -82,6 +127,10 @@ class BtAudioPolicy(
                             invalidateClassifyCache()
                             Log.i(TAG, "ACL_CONNECTED $mac — re-trusting HFP cache")
                         }
+                        // Fan out to sibling listeners (AinaA2dpWiring)
+                        // so they can react to the fresh attach without
+                        // standing up a duplicate ACL_CONNECTED receiver.
+                        fanOutConnect(device)
                     }
                 }
             }
@@ -97,6 +146,19 @@ class BtAudioPolicy(
                     headsetProxy = proxy as BluetoothHeadset
                     invalidateClassifyCache()
                     Log.i(TAG, "HEADSET profile proxy connected")
+                    // Fan out the devices the proxy is already
+                    // reporting — these are connections that pre-dated
+                    // our profile-proxy binding (XV started after the
+                    // AINA was already attached), so no ACL_CONNECTED
+                    // broadcast will fire for them in our process.
+                    // Without this, the wiring misses the common case
+                    // where the operator pairs+powers the AINA before
+                    // launching ATAK.
+                    try {
+                        proxy.connectedDevices?.forEach { fanOutConnect(it) }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "fanning out HEADSET connectedDevices threw", t)
+                    }
                 }
             }
 
