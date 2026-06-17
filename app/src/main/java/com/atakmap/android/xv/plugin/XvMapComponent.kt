@@ -2690,8 +2690,24 @@ class XvMapComponent : AbstractMapComponent() {
             } else {
                 com.atakmap.android.xv.transport
                     .NetworkAvailabilityWatcher(ctxForWatcher) {
-                        (activeTransport as? com.atakmap.android.xv.transport.ReconnectingMumbleTransport)
-                            ?.notifyNetworkSwap()
+                        // Forward swap to whichever transport is currently
+                        // installed. Mumble path is the common case; the
+                        // multicast branch (currently dormant pending
+                        // Phase 8 service-side rewire) needs the same
+                        // nudge — without it, the UDP socket stays bound
+                        // to the now-down interface and silently delivers
+                        // nothing post-handoff (BUG FIX 2026-06-15).
+                        when (val t = activeTransport) {
+                            is com.atakmap.android.xv.transport.ReconnectingMumbleTransport ->
+                                t.notifyNetworkSwap()
+                            is com.atakmap.android.xv.transport.MulticastTransport ->
+                                t.notifyNetworkSwap()
+                            else -> {
+                                // No transport, or a transport that
+                                // doesn't care about handoffs — nothing
+                                // to do.
+                            }
+                        }
                     }.also { it.start() }
             }
     }

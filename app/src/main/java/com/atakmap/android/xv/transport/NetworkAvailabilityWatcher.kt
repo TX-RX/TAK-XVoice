@@ -43,6 +43,15 @@ class NetworkAvailabilityWatcher(
     private val debounceHandler = Handler(Looper.getMainLooper())
     private val debounceRunnable = Runnable { safeFire() }
 
+    // Pending "still offline" fire scheduled from onLost. If a
+    // replacement default network shows up via onAvailable within
+    // [LOST_FIRE_DELAY_MS], we cancel this and run the normal swap
+    // path instead. If no replacement arrives in that window we
+    // fire once so the wrapper can surface "reconnecting…" and
+    // tear down its dead inner immediately rather than waiting for
+    // SO_TIMEOUT.
+    private val lostFireRunnable = Runnable { safeFireIfStillOffline() }
+
     @Volatile
     private var currentNetwork: Network? = null
 
@@ -54,25 +63,35 @@ class NetworkAvailabilityWatcher(
             override fun onAvailable(network: Network) {
                 val previous = currentNetwork
                 currentNetwork = network
+                // A replacement network arrived — cancel any
+                // pending "still offline" fire from a prior onLost
+                // so the loss path and the swap path don't both
+                // deliver a notification for the same transition.
+                debounceHandler.removeCallbacks(lostFireRunnable)
                 if (previous == null) {
                     // Initial registration — note the current network
                     // but don't treat it as a swap.
                     Log.i(TAG, "initial default network = $network")
                 } else if (previous != network) {
-                    Log.i(TAG, "network swap: $previous → $network (debounced)")
+                    Log.i(TAG, "network swap: $previous -> $network (debounced)")
                     scheduleSwapFire()
                 }
             }
 
             override fun onLost(network: Network) {
                 if (currentNetwork == network) {
-                    Log.i(TAG, "network lost: $network — clearing current")
+                    Log.i(TAG, "network lost: $network — clearing current, scheduling still-offline fire")
                     currentNetwork = null
-                    // Don't fire on bare loss; if a replacement comes
-                    // up, the next onAvailable triggers the swap.
-                    // Firing on loss alone would force a doomed retry
-                    // when offline; the existing backoff path handles
-                    // that case correctly.
+                    // Schedule a deferred fire: if no replacement
+                    // default network arrives within
+                    // [LOST_FIRE_DELAY_MS], notify the wrapper so it
+                    // can tear down its now-orphaned socket without
+                    // waiting on SO_TIMEOUT. Guarded inside
+                    // safeFireIfStillOffline by currentNetwork == null
+                    // so a late onAvailable can preempt this even if
+                    // removeCallbacks lost a race with the post.
+                    debounceHandler.removeCallbacks(lostFireRunnable)
+                    debounceHandler.postDelayed(lostFireRunnable, LOST_FIRE_DELAY_MS)
                 }
             }
 
@@ -119,6 +138,7 @@ class NetworkAvailabilityWatcher(
         // delivering after stop() would race against any new watcher
         // the caller spins up against a fresh transport.
         debounceHandler.removeCallbacks(debounceRunnable)
+        debounceHandler.removeCallbacks(lostFireRunnable)
         registered = false
         currentNetwork = null
         Log.i(TAG, "stopped")
@@ -139,6 +159,23 @@ class NetworkAvailabilityWatcher(
         }
     }
 
+    /**
+     * Fire the still-offline event scheduled from [onLost]. Guarded
+     * by [currentNetwork] == null so a late onAvailable that raced
+     * with removeCallbacks (different binder thread post + a main
+     * looper drain) does NOT deliver a doomed swap notification on
+     * top of the normal swap path.
+     */
+    private fun safeFireIfStillOffline() {
+        if (currentNetwork != null) {
+            // Replacement landed while we were waiting — the
+            // onAvailable swap path already handled it.
+            return
+        }
+        Log.i(TAG, "still-offline fire: no replacement within ${LOST_FIRE_DELAY_MS}ms — notifying")
+        safeFire()
+    }
+
     private fun NetworkCapabilities.transportSummary(): String {
         val parts = mutableListOf<String>()
         if (hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) parts += "wifi"
@@ -152,10 +189,22 @@ class NetworkAvailabilityWatcher(
         private const val TAG = "XvNetWatch"
 
         // Cellular bounce / wifi reassociation tends to fire 3-5
-        // onAvailable callbacks inside ~200ms. 500ms covers that and
-        // still feels instantaneous from the operator's perspective —
-        // they wouldn't notice a half-second of "reconnecting…" jitter
-        // collapse into a single attempt.
-        private const val SWAP_DEBOUNCE_MS: Long = 500L
+        // onAvailable callbacks inside ~200ms. 250ms covers that —
+        // tightened from the prior 500ms after field reports that
+        // the perceived freeze on a handoff was dominated by this
+        // debounce. Cellular bounce typically settles in ~200ms, so
+        // 250ms still coalesces the burst into one fire but halves
+        // the wall-clock delay before the wrapper sees the swap.
+        private const val SWAP_DEBOUNCE_MS: Long = 250L
+
+        // How long to wait on bare network loss before firing the
+        // wrapper. If a replacement default network shows up within
+        // this window the onAvailable path delivers the swap event
+        // and this fire is cancelled. If no replacement arrives, we
+        // still need to nudge the wrapper so its inner socket can
+        // unwind before SO_TIMEOUT (~20s post-fix). 2 s matches the
+        // typical Wi-Fi -> cell promotion latency Android needs to
+        // bring up the cellular default route.
+        private const val LOST_FIRE_DELAY_MS: Long = 2_000L
     }
 }

@@ -28,6 +28,12 @@ class MulticastTransport(
     private val context: Context,
     private val playback: AudioPlayback,
     private val opusDecoderFactory: () -> OpusDecoder,
+    // Test seam — production callers leave this at the default, which
+    // builds a real [MulticastSocket] bound to the config port. The
+    // unit suite replaces this with a stub-socket factory so the swap
+    // path's "close and rebuild on fresh interface" behavior can be
+    // verified without touching the real OS networking stack.
+    private val socketFactory: (Int) -> MulticastSocket = { port -> MulticastSocket(port) },
 ) : VoiceTransport {
     @Volatile
     private var connected: Boolean = false
@@ -62,7 +68,7 @@ class MulticastTransport(
         val l = listener ?: return
         try {
             acquireMulticastLock()
-            val sock = MulticastSocket(config.port)
+            val sock = socketFactory(config.port)
             socket = sock
             val group = InetAddress.getByName(config.groupAddress)
             val intf =
@@ -151,6 +157,51 @@ class MulticastTransport(
         receiveThread = null
         listener?.onDisconnected("disconnect requested")
         listener = null
+    }
+
+    /**
+     * External signal that the underlying network link just changed
+     * (wifi -> LTE handoff, IP rotation, interface flap).
+     *
+     * BUG FIX (2026-06-15): without this, after a Wi-Fi -> cellular
+     * handoff the MulticastSocket stayed bound to the now-down
+     * interface (wlan0). The receive loop blocks in `sock.receive()`
+     * indefinitely — there is no SO_TIMEOUT on the multicast socket
+     * — so the transport silently delivers nothing and `connected`
+     * stays true. Operator perception: voice freezes, no UI signal,
+     * no recovery until the next manual reconnect.
+     *
+     * Fix: flip `connected` false, close the socket (which unblocks
+     * `receive()` with SocketException so the loop exits cleanly),
+     * interrupt the receive thread, then re-enter [runReceiveLoop]
+     * on a fresh thread. The loop rebuilds the MulticastSocket,
+     * picks the current default multicast-capable interface, and
+     * rejoins the group on it.
+     *
+     * Idempotent: a swap fired while no listener is installed (we
+     * were never connected) is a no-op.
+     */
+    fun notifyNetworkSwap() {
+        val l = listener
+        if (l == null) {
+            Log.i(TAG, "notifyNetworkSwap — no listener installed, ignoring")
+            return
+        }
+        Log.i(TAG, "notifyNetworkSwap — closing socket and rejoining on fresh interface")
+        connected = false
+        try {
+            socket?.close()
+        } catch (_: Throwable) {
+        }
+        receiveThread?.interrupt()
+        // Don't null receiveThread before the fresh one is spawned —
+        // we use the local `l` to re-enter directly. Cleanup of the
+        // prior thread/socket happens in its own finally block as the
+        // old receive() unblocks on the close above.
+        receiveThread =
+            thread(start = true, name = "XvMulticast-${config.port}-swap") {
+                runReceiveLoop()
+            }
     }
 
     private fun cleanup() {
