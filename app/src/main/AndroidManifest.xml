@@ -228,5 +228,22 @@
              registerReceiver() in XvMapComponent is also gated on
              BuildConfig.DEBUG, so any caller broadcasting these actions
              against a release APK gets nothing. -->
+
+        <!-- FileProvider for the in-plugin "Share diagnostic bundle" action.
+             DiagnosticBundler writes a zip into cacheDir/diagnostics/ and
+             we hand the receiver (Gmail, Drive, GitHub issue paste, etc.)
+             a content:// URI that points at it. Exported=false but
+             grantUriPermissions=true so ACTION_SEND can pass a per-call
+             read grant to the chooser target without exposing the path
+             persistently. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_provider_paths"/>
+        </provider>
     </application>
 </manifest>

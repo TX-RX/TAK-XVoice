@@ -432,6 +432,39 @@
                     android:textColor="@color/xv_text"
                     android:background="@drawable/xv_button_bg"/>
 
+                <!-- Diagnostics: one-tap "capture redacted logcat + metadata,
+                     hand the zip to ACTION_SEND". Designed for field
+                     reports where the operator has Gmail / Drive / a
+                     GitHub issue draft open and just needs a triageable
+                     attachment. No backend, no creds — share-intent only. -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Diagnostics"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <Button
+                    android:id="@+id/xv_btn_share_diagnostics"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="4dp"
+                    android:text="Share diagnostic bundle"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Captures the last few minutes of XV log output (BT MACs and public IPs masked) plus build/device info, zipped for sharing via email/Drive/etc."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="40dp"/>

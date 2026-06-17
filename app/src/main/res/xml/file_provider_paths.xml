@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider paths for the "Share diagnostic bundle" action.
+
+    DiagnosticBundler writes its zip to cacheDir/diagnostics/, and that's
+    the only place we hand out content:// URIs from. Keeping the exposed
+    path narrowly scoped to the cache subdir (instead of all of cacheDir)
+    means an accidental future use of cacheDir for unrelated transient
+    state — auth tokens, voice keying material, etc. — can't be leaked
+    through the same provider authority.
+-->
+<paths>
+    <cache-path
+        name="xv_diagnostics"
+        path="diagnostics/"/>
+</paths>

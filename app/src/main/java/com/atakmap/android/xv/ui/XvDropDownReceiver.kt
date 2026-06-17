@@ -1223,6 +1223,18 @@ class XvDropDownReceiver(
             controller.playTptPreview()
         }
 
+        v.findViewById<Button>(R.id.xv_btn_share_diagnostics).setOnClickListener {
+            // Capture + ACTION_SEND chooser on a worker thread (logcat + zip
+            // off the main looper). pluginContext owns the FileProvider
+            // authority; mapViewContext() is what we actually call
+            // startActivity on so the chooser lands in ATAK's task stack.
+            com.atakmap.android.xv.debug.DiagnosticBundler.captureAndShare(
+                context = pluginContext,
+                launchContext = mapViewContext(),
+                mainHandler = mainHandler,
+            )
+        }
+
         wireAinaPicker(v)
         wireBtAudioOverridePicker(v)
     }
