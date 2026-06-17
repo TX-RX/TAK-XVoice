@@ -1,0 +1,141 @@
+# CLAUDE.md — Operator handoff for Claude Code sessions
+
+This file is the standing brief for any Claude Code (or other agentic
+assistant) session working on this repository. Read it before making
+edits, opening shells, or composing commit messages.
+
+## Project identity
+
+TAK-XVoice (XV) is a **public, Apache-2.0-licensed ATAK plugin**. The
+repository at `https://github.com/TX-RX/TAK-XVoice` is public and the
+default branch is `main`. Anything that lands on `main` is, for
+practical purposes, world-readable forever — assume git history is a
+publication surface, not a private workspace.
+
+## Sensitive-content rules
+
+The following content categories MUST NEVER appear in committed files,
+commit messages, PR descriptions, code comments, log output captured
+into the repo, or any message text that gets pushed to a remote (this
+includes chat replies the assistant emits while pairing with the
+operator):
+
+- **Credentials of any kind**
+  - Personal access tokens (GitHub PATs, GitLab PATs, anything similar)
+  - API keys, service account keys, OAuth client secrets, OAuth tokens
+    (access or refresh)
+  - Android/JKS signing keys, keystore passwords, key aliases tied to
+    a production keystore
+  - SSH private keys, GPG private keys
+- **Bluetooth MAC addresses tied to a specific operator's hardware.**
+  Use the redacted placeholder `XX:XX:XX:XX:XX:XX` in examples,
+  docstrings, log lines, and tests. Realistic-looking fake MACs are
+  also fine (e.g. `AA:BB:CC:DD:EE:FF`) — the point is never to ship a
+  real operator's device address.
+- **TAK server hostnames, FQDNs, URLs, or IP addresses.** This
+  includes staging/dev servers as well as production. Use
+  `tak.example` / `tak.example.com` / RFC 5737 (`192.0.2.x`,
+  `198.51.100.x`, `203.0.113.x`) for examples. Multicast group
+  literals derived from server cert fingerprints are also off-limits
+  even when they "look" generic.
+- **Customer, agency, or unit names.** No identifying organization
+  strings, no real operator callsigns, no team identifiers from live
+  deployments. Use `Alpha`/`Bravo`/`Charlie` or numbered placeholders
+  in examples.
+- **Operator GPS coordinates** of any precision. If a bug repro
+  involves a real location, replace with a coordinate inside a known
+  uninhabited region (e.g. `0.0, 0.0`) or a published city centroid
+  before pasting.
+- **Internal IP ranges.** No RFC 1918 prefixes that identify a real
+  internal network. Generic illustrations of `10.0.0.0/8` etc. are
+  fine; specific subnets observed in the field are not.
+
+If the assistant is unsure whether a string falls into one of the
+above categories, the default is **redact and ask** — never commit
+and apologize later. Operator deployments depend on this; the public
+history of an ATAK plugin is one of the first things an adversary
+will read.
+
+## Commit-message style
+
+- Subject line: terse, conventional-commit-style prefix
+  (`feat:` / `fix:` / `chore:` / `docs:` / `refactor:` / `test:`),
+  imperative mood, under ~72 characters.
+- Body: technical and descriptive. Explain *why* the change was made,
+  what subsystem it touches, and any constraints a future reader
+  needs to know. The single squashed `Initial public commit —
+  TAK-XVoice` commit is the canonical tone reference: dense,
+  factual, organized by subsystem, zero operator-identifying detail.
+- Never name customers, agencies, units, real operators, or specific
+  field deployments in commit messages, even at a high level.
+- Do not paste log excerpts, device serials, or BT MACs into commit
+  bodies. Summarize ("verified against an AINA V2 puck") instead of
+  quoting raw evidence.
+
+## Branching + PR workflow
+
+- `main` is protected by convention — **never push directly**.
+- Feature work: `feat/<short-slug>`
+- Bug fixes: `fix/<short-slug>`
+- Chores / tooling / docs: `chore/<short-slug>`
+- Open a pull request against `main` for every change. Even one-line
+  fixes go through a PR so the public history has a reviewable
+  audit trail.
+- Squash-merge is the expected merge style; keep the PR description
+  in the same technical-and-descriptive tone as commits.
+
+## Build commands the user expects to be green before merge
+
+Run all three from the repository root before considering a branch
+ready for review:
+
+```sh
+./gradlew ktlintCheck
+./gradlew assembleCivDebug
+./gradlew testCivDebugUnitTest
+```
+
+`ktlintCheck` enforces the formatting baseline. `assembleCivDebug`
+exercises the takdev SDK wiring + manifest, which is the most common
+way a refactor breaks plugin loading. `testCivDebugUnitTest` is the
+JUnit/MockK/Robolectric unit suite for the state machines listed in
+the initial commit.
+
+## ATAK SDK jar
+
+`app/libs/main.jar` is gitignored and is **not** vendored in this
+repository. The build resolves it from the local SDK distribution
+per `build.gradle.kts` — the default search path is
+`../ATAK-CIV-5.6.0.17-SDK/atak-gradle-takdev.jar` relative to the
+repo root. If a Claude session reports a missing-jar error, the
+correct response is to point the operator at the SDK installation
+step, **not** to try to commit a copy of the jar into `app/libs/`.
+
+## logs/ and capture directories
+
+Anything under `logs/`, `.logs/`, `.tmp/`, or `diagnostics/` is
+local-only field-capture material — logcat dumps, `dumpsys`
+snapshots, batterystats pulls, post-mortem traces. **Never commit
+anything from these directories**, even if it looks innocuous.
+Field captures routinely contain Bluetooth MACs, device serials,
+TAK server URLs, and call metadata that fall under the sensitive-
+content rules above. The `.gitignore` already excludes them; do not
+add `git add -f` overrides.
+
+## Pre-commit hooks
+
+This repo uses the `pre-commit` framework (configured in
+`.pre-commit-config.yaml`) plus `gitleaks` (configured in
+`.gitleaks.toml`) as belt-and-suspenders against accidental secret
+commits. Install once per clone:
+
+```sh
+pipx install pre-commit
+pre-commit install
+```
+
+After that, `git commit` will run `gitleaks` + `end-of-file-fixer`
+locally and refuse commits that trip either hook. If a hook trips,
+**investigate the underlying content** — do not bypass with
+`--no-verify` unless the operator explicitly approves it for a
+specific commit, and even then prefer fixing the content.

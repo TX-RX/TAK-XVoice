@@ -1,0 +1,48 @@
+# gitleaks configuration for TAK-XVoice.
+#
+# We extend the gitleaks-shipped default ruleset (all built-in secret
+# detection rules stay active) and only add an allowlist for strings
+# that are known to be safe in this repository but which look secret-
+# adjacent enough to trip a generic scanner.
+#
+# DO NOT add allowlist entries to silence real findings — every entry
+# below must correspond to a value that is intentionally public and
+# whose presence in the repo has been reviewed.
+
+# Pull in the gitleaks-bundled default rules. Without this line our
+# config would replace the defaults instead of extending them.
+[extend]
+useDefault = true
+
+# Repository-wide allowlist. `gitleaks` evaluates this in addition to
+# rule-level allowlists; matches here suppress any rule.
+[[allowlists]]
+description = "TAK-XVoice known-safe public constants and example strings"
+# `commits` and `paths` left unset so the allowlist applies repo-wide.
+# `regexTarget = "match"` would only inspect the matched secret span;
+# we leave it unset so the default ("line") applies, which is what we
+# want for the multicast-formula and magic-number cases below.
+regexes = [
+    # Multicast group derivation formula. Appears in source comments
+    # and design docs as a literal template; the `{sha256[0]}` /
+    # `{sha256[1]}` placeholders are not secrets, just byte indices
+    # into a SHA-256 digest of (server cert fingerprint, channel id).
+    '''239\.42\.\{sha256\[0\]\}\.\{sha256\[1\]\}''',
+
+    # ControlPacket magic — first four bytes of the XV mesh-bridge
+    # control wire format. Public protocol constant, not a token.
+    '''"XVMC"''',
+
+    # FNV-1a 32-bit offset basis. Standardized public constant used
+    # for SSRC derivation in the RTP framing layer.
+    '''0x811c9dc5''',
+
+    # FNV-1a 32-bit prime. Same context as above.
+    '''0x01000193''',
+
+    # AinaA2dpController connection-policy sentinels. These mirror
+    # Android `BluetoothProfile.CONNECTION_POLICY_*` integer values
+    # and are reproduced as named constants in the controller.
+    '''CONNECTION_POLICY_ALLOWED\s*=\s*100''',
+    '''CONNECTION_POLICY_FORBIDDEN\s*=\s*-1''',
+]

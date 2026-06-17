@@ -1,0 +1,29 @@
+# Pre-commit framework configuration for TAK-XVoice.
+#
+# Install once per clone:
+#   pipx install pre-commit
+#   pre-commit install
+#
+# After install, `git commit` runs the hooks below and refuses commits
+# that trip them. See CLAUDE.md for the project-wide sensitive-content
+# rules these hooks back up.
+#
+# Tag pins are deliberate: floating refs (HEAD / main) make builds
+# non-reproducible and let upstream silently change behavior between
+# clones.
+---
+repos:
+  # Secret scanner. Backed by .gitleaks.toml at the repo root, which
+  # extends the gitleaks default ruleset with project-specific
+  # allowlist entries for known-safe public constants.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # Whitespace / EOL hygiene. Catches files committed without a
+  # trailing newline, which trips diff tools and editor configs.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
