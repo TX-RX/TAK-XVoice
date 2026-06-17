@@ -1031,6 +1031,14 @@ class VoicePlant(
         name: String?,
         kind: String?,
     ) {
+        // Quick-win: log the resolved kind at the call site so field
+        // logs distinguish "auto leaked through" from "operator
+        // override applied". Routed via the MAC redactor per CLAUDE.md
+        // sensitive-content rules.
+        Log.i(
+            TAG,
+            "connectAina kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
+        )
         disconnectAina()
         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
         if (adapter == null) {
