@@ -119,6 +119,11 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var currentAinaDevice: BluetoothDevice? = null
 
+    // V2-AINA SDP-cache-gap probe — see [AinaProtocolProbe]. Lazily
+    // constructed against the held plugin context.
+    @Volatile
+    private var ainaProbe: com.atakmap.android.xv.aina.AinaProtocolProbe? = null
+
     // The most recently-joined slot-0 channel name + id, formatted as
     // "<name>#<id>" for use as the Telecom call's caller-id. Null when
     // no channel is joined. The Telecom call only spans active voice,
@@ -2237,6 +2242,19 @@ class XvMapComponent : AbstractMapComponent() {
                         "majorClass=${cls?.majorDeviceClass ?: "?"} proto=$proto plausible=$plausible " +
                         "hasButton=$hasButton uuids=$uuids → ${if (accept) "INCLUDE" else "skip"}",
                 )
+                // V2 SDP-cache gap: opportunistically probe APTT devices
+                // that classify as SPP so the next picker open shows BLE
+                // if the probe wins. Bounded to once-per-MAC per probe
+                // lifetime by [AinaProtocolProbe.probeOpportunistically].
+                if (proto == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP) {
+                    heldPluginContext?.let { ctx ->
+                        ainaProbeFor(ctx).probeOpportunistically(
+                            dev,
+                            { settings.persistedAinaProtocolOverride(it) },
+                            { mac, kind -> settings.persistAinaProtocolOverride(mac, kind) },
+                        )
+                    }
+                }
                 Triple(dev, proto, accept)
             }
         return candidates
@@ -2259,6 +2277,9 @@ class XvMapComponent : AbstractMapComponent() {
     // [com.atakmap.android.xv.aina.AinaDeviceClassifier] during the
     // L5+L6 split. Pure functions of BluetoothDevice — independently
     // unit-testable.
+
+    private fun ainaProbeFor(ctx: Context): com.atakmap.android.xv.aina.AinaProtocolProbe =
+        ainaProbe ?: com.atakmap.android.xv.aina.AinaProtocolProbe(ctx).also { ainaProbe = it }
 
     private fun setSelectedAinaInternal(mac: String?) {
         settings.persistAinaMac(mac)
@@ -2816,7 +2837,23 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.i(TAG, "per-MAC override for ${device.address}: protocol='$overrideKind'")
                 overrideKind
             } else if (kind == "auto") {
-                when (com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(device)) {
+                val classified = com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(device)
+                // V2 SDP-cache gap: APTT device classified as SPP → kick
+                // off a live probe; on BLE persist the override and
+                // re-enter connectAinaInternal so the V2 reader binds.
+                if (classified == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP &&
+                    com.atakmap.android.xv.aina.AinaDeviceClassifier.isAinaByName(device)
+                ) {
+                    ainaProbeFor(context).probe(device) { resolved ->
+                        if (resolved == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE) {
+                            settings.persistAinaProtocolOverride(device.address, "v2")
+                            val rd = com.atakmap.android.xv.aina.AinaProtocolProbe.redactMac(device.address)
+                            Log.i(TAG, "XvAinaProbe: override persisted mac=$rd protocol=BLE")
+                            connectAinaInternal(context, device.address, name, "auto")
+                        }
+                    }
+                }
+                when (classified) {
                     com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> {
                         Log.i(TAG, "auto-detect: SPP UUID present → V1 (SPP)")
                         "v1"

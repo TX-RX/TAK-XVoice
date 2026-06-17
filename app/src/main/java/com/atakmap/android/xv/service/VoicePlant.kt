@@ -297,6 +297,21 @@ class VoicePlant(
     // longer exists in the bond table.
     @Volatile private var connectedAinaMac: String? = null
 
+    // Same SharedPreferences file as the plugin-side XvSettings — this
+    // service runs in the same APK / UID, so it shares prefs storage.
+    // Used to clear stale per-MAC AINA protocol overrides on BOND_NONE
+    // (operator re-paired the device; the override may no longer
+    // match the firmware they re-paired against).
+    private val settingsForOverride =
+        com.atakmap.android.xv.plugin.XvSettings(
+            prefsProvider = {
+                context.getSharedPreferences(
+                    com.atakmap.android.xv.plugin.XvSettings.PREFS_NAME,
+                    Context.MODE_PRIVATE,
+                )
+            },
+        )
+
     private val bondStateReceiver =
         object : android.content.BroadcastReceiver() {
             override fun onReceive(
@@ -313,13 +328,27 @@ class VoicePlant(
                 val device: android.bluetooth.BluetoothDevice? =
                     i.getParcelableExtra(android.bluetooth.BluetoothDevice.EXTRA_DEVICE)
                 val mac = device?.address ?: return
-                val current = connectedAinaMac
-                if (current != null && current.equals(mac, ignoreCase = true)) {
-                    Log.w(TAG, "AINA $mac was unpaired — tearing down reader to stop reconnect storm")
-                    disconnectAina()
-                }
+                onBondNone(mac)
             }
         }
+
+    // Extracted as a private (effectively-internal) helper so the
+    // BOND_NONE behavior can be exercised by VoicePlantBondNoneTest
+    // without standing up the rest of the plant. Clears the per-MAC
+    // protocol override (so a re-pair starts clean) and tears down
+    // the live AINA reader if this MAC is the connected one.
+    internal fun onBondNone(mac: String) {
+        try {
+            settingsForOverride.clearAinaProtocolOverride(mac, reason = "BOND_NONE")
+        } catch (t: Throwable) {
+            Log.w(TAG, "clearAinaProtocolOverride threw", t)
+        }
+        val current = connectedAinaMac
+        if (current != null && current.equals(mac, ignoreCase = true)) {
+            Log.w(TAG, "AINA $mac was unpaired — tearing down reader to stop reconnect storm")
+            disconnectAina()
+        }
+    }
 
     // Re-applies our no-SCO route preference whenever SCO transitions
     // to DISCONNECTED with a Telecom call still active. Without this,

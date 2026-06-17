@@ -74,6 +74,28 @@ class XvSettings(
         }
     }
 
+    // Removes any persisted override for [mac]. Called from the
+    // BOND_NONE branch of the bond-state receiver so that a re-pair
+    // (a likely operator response to a misbehaving AINA) starts from
+    // a clean auto-detect rather than a stale override that might no
+    // longer match the device's firmware. Idempotent: safe to call
+    // for a MAC with no recorded override.
+    fun clearAinaProtocolOverride(
+        mac: String?,
+        reason: String = "manual",
+    ) {
+        if (mac.isNullOrBlank()) return
+        val key = prefAinaProtocolKeyFor(mac)
+        prefs()?.edit()?.remove(key)?.apply()
+        android.util.Log.i("XvSettings", "override cleared mac=${redactMacForLog(mac)} reason=$reason")
+    }
+
+    private fun redactMacForLog(mac: String): String {
+        val parts = mac.split(":")
+        if (parts.size != 6) return "??:XX:XX:XX:XX:??"
+        return "${parts.first()}:XX:XX:XX:XX:${parts.last()}"
+    }
+
     private fun prefAinaProtocolKeyFor(mac: String): String = PREF_AINA_PROTOCOL_PREFIX + mac.uppercase()
 
     fun persistedLatchedMode(): Boolean = prefs()?.getBoolean(PREF_LATCHED, false) ?: false
