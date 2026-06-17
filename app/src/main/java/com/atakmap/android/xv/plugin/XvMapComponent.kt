@@ -2811,9 +2811,17 @@ class XvMapComponent : AbstractMapComponent() {
         // V1 and lose BLE buttons. V1 devices without an override
         // still flow through auto-detect.
         val overrideKind = settings.persistedAinaProtocolOverride(device.address)
+        // Quick-win: always log the override lookup result so field
+        // logs can distinguish "no override set" from "override
+        // mechanism never ran". MAC routed through the redactor per
+        // CLAUDE.md sensitive-content rules.
+        val redactedMac = com.atakmap.android.xv.aina.redactMac(device.address)
+        if (overrideKind == null) {
+            Log.i(TAG, "per-MAC override checked for $redactedMac: ABSENT")
+        }
         val resolvedKind =
             if (kind == "auto" && overrideKind != null) {
-                Log.i(TAG, "per-MAC override for ${device.address}: protocol='$overrideKind'")
+                Log.i(TAG, "per-MAC override for $redactedMac: protocol='$overrideKind'")
                 overrideKind
             } else if (kind == "auto") {
                 when (com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(device)) {
