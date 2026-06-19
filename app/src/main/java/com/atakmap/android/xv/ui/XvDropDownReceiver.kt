@@ -183,6 +183,29 @@ class XvDropDownReceiver(
         // launches; auto-connect on plugin load uses this MAC if set.
         fun setSelectedAina(mac: String?)
 
+        // ---- Secondary PTT (Settings → Preferences) ----
+        // Optional second AINA / Pryme / BLE PTT input that keys
+        // slot 0 in parallel with the primary. Motorcyclist use case:
+        // helmet speakermic + handlebar puck both keying VS1 without
+        // one cutting the other off. Independent of the primary so
+        // either can be swapped without affecting the other.
+        fun availableSecondaryAinaDevices(): List<AinaDeviceInfo> = emptyList()
+
+        fun selectedSecondaryAinaMac(): String? = null
+
+        fun secondaryAinaConnectionUp(): Boolean = false
+
+        fun setSelectedSecondaryAina(mac: String?) {}
+
+        // ---- BT auto-connect toggle ----
+        // When ON (default), XV auto-connects the first compatible
+        // bonded speakermic / BLE PTT button it finds on plugin load.
+        // When OFF, the operator must pick from the AINA picker by
+        // hand. Persists across launches.
+        fun autoConnectBtEnabled(): Boolean = true
+
+        fun setAutoConnectBtEnabled(enabled: Boolean) {}
+
         // ---- TX / RX preferences (Settings → TX/RX) ----
         // Latched (full-duplex) call mode. While on, channel stays
         // open in both directions. Off = standard half-duplex PTT.
@@ -1224,6 +1247,8 @@ class XvDropDownReceiver(
         }
 
         wireAinaPicker(v)
+        wireSecondaryAinaPicker(v)
+        wireAutoConnectBtSwitch(v)
         wireBtAudioOverridePicker(v)
     }
 
@@ -1341,6 +1366,63 @@ class XvDropDownReceiver(
 
                 override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
             }
+    }
+
+    // Secondary PTT picker. Same shape as wireAinaPicker but routes
+    // through setSelectedSecondaryAina. The Controller's
+    // availableSecondaryAinaDevices already filters out the primary
+    // so the operator can't double-pick.
+    private fun wireSecondaryAinaPicker(v: View) {
+        val spinner = v.findViewById<Spinner>(R.id.xv_spinner_aina_secondary) ?: return
+        val statusLabel = v.findViewById<TextView>(R.id.xv_label_aina_secondary_status)
+        val devices = controller.availableSecondaryAinaDevices()
+        val labels = mutableListOf(AINA_NONE_LABEL)
+        labels.addAll(devices.map { it.displayLabel() })
+        spinner.adapter =
+            ArrayAdapter(pluginContext, R.layout.xv_spinner_item, labels)
+        val selectedMac = controller.selectedSecondaryAinaMac()
+        val selectedIdx =
+            if (selectedMac == null) {
+                0
+            } else {
+                (devices.indexOfFirst { it.mac.equals(selectedMac, ignoreCase = true) } + 1)
+                    .coerceAtLeast(0)
+            }
+        spinner.setSelection(selectedIdx)
+        statusLabel?.text =
+            formatAinaStatus(devices, selectedMac, controller.secondaryAinaConnectionUp())
+        spinner.onItemSelectedListener =
+            object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    p: android.widget.AdapterView<*>?,
+                    vw: View?,
+                    pos: Int,
+                    id: Long,
+                ) {
+                    val pickedMac =
+                        if (pos == 0) {
+                            null
+                        } else {
+                            devices.getOrNull(pos - 1)?.mac
+                        }
+                    val current = controller.selectedSecondaryAinaMac()
+                    if (pickedMac != current) {
+                        controller.setSelectedSecondaryAina(pickedMac)
+                        statusLabel?.text =
+                            formatAinaStatus(devices, pickedMac, controller.secondaryAinaConnectionUp())
+                    }
+                }
+
+                override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+            }
+    }
+
+    private fun wireAutoConnectBtSwitch(v: View) {
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_auto_connect_bt) ?: return
+        sw.isChecked = controller.autoConnectBtEnabled()
+        sw.setOnCheckedChangeListener { _, isChecked ->
+            controller.setAutoConnectBtEnabled(isChecked)
+        }
     }
 
     private fun formatAinaStatus(

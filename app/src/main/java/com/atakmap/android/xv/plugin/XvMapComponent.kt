@@ -114,6 +114,17 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var lastAinaMac: String? = null
 
+    // Last secondary AINA / Pryme / BLE PTT MAC the plugin asked the
+    // service to bind, and a best-effort cached connect state for the
+    // UI. The service is the source of truth; we just need a snapshot
+    // for the picker status row so it doesn't have to round-trip AIDL
+    // on every refresh.
+    @Volatile
+    private var lastSecondaryAinaMac: String? = null
+
+    @Volatile
+    private var lastSecondaryAinaConnected: Boolean = false
+
     // Resolved BluetoothDevice for the currently-connected AINA, set in
     // connectAinaInternal and cleared in disconnectAinaInternal.
     @Volatile
@@ -1007,6 +1018,10 @@ class XvMapComponent : AbstractMapComponent() {
         // the speakermic's PTT / PTTE buttons produce events — that's
         // wrong for hardware the user has explicitly bonded.
         autoConnectAina()
+        // Restore the operator's secondary PTT input (e.g. handlebar
+        // Pryme puck for a motorcyclist whose helmet AINA is the
+        // primary). No-op when no secondary is persisted.
+        autoConnectAinaSecondary()
 
         // Trigger runtime permission prompts for our own UID. The
         // MapComponent runs in ATAK's process; checkSelfPermission here
@@ -1952,6 +1967,33 @@ class XvMapComponent : AbstractMapComponent() {
                 setSelectedAinaInternal(mac)
             }
 
+            override fun availableSecondaryAinaDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
+                // Hide the device the operator picked as PRIMARY from
+                // the secondary picker so they can't accidentally
+                // double-connect to the same MAC (which would race
+                // for BLE GATT / SPP socket ownership).
+                val primary = settings.persistedAinaMac()
+                return listBondedAinaDevices().filterNot {
+                    primary != null && it.mac.equals(primary, ignoreCase = true)
+                }
+            }
+
+            override fun selectedSecondaryAinaMac(): String? = settings.persistedSecondaryAinaMac()
+
+            override fun secondaryAinaConnectionUp(): Boolean = lastSecondaryAinaConnected
+
+            override fun setSelectedSecondaryAina(mac: String?) {
+                Log.i(TAG, "Controller.setSelectedSecondaryAina('$mac')")
+                setSelectedSecondaryAinaInternal(mac)
+            }
+
+            override fun autoConnectBtEnabled(): Boolean = settings.persistedAutoConnectBtEnabled()
+
+            override fun setAutoConnectBtEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setAutoConnectBtEnabled($enabled)")
+                settings.persistAutoConnectBtEnabled(enabled)
+            }
+
             override fun latchedMode(): Boolean = settings.persistedLatchedMode()
 
             override fun setLatchedMode(enabled: Boolean) {
@@ -2280,6 +2322,96 @@ class XvMapComponent : AbstractMapComponent() {
 
     private fun ainaProbeFor(ctx: Context): com.atakmap.android.xv.aina.AinaProtocolProbe =
         ainaProbe ?: com.atakmap.android.xv.aina.AinaProtocolProbe(ctx).also { ainaProbe = it }
+
+    @SuppressWarnings("MissingPermission")
+    private fun setSelectedSecondaryAinaInternal(mac: String?) {
+        settings.persistSecondaryAinaMac(mac)
+        if (mac.isNullOrBlank()) {
+            voiceClient?.ifBound { it.disconnectAinaSecondary() }
+            lastSecondaryAinaMac = null
+            lastSecondaryAinaConnected = false
+            settings.persistSecondaryAinaKind(null)
+            return
+        }
+        // Refuse silently if it collides with the primary — picker
+        // already filters it out, but defend in depth.
+        val primary = settings.persistedAinaMac()
+        if (primary != null && primary.equals(mac, ignoreCase = true)) {
+            Log.w(TAG, "setSelectedSecondaryAinaInternal: $mac collides with primary — ignored")
+            settings.persistSecondaryAinaMac(null)
+            return
+        }
+        val kind =
+            try {
+                val adapter = BluetoothAdapter.getDefaultAdapter()
+                val device = adapter?.getRemoteDevice(mac)
+                if (device == null) {
+                    "auto"
+                } else {
+                    when (com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(device)) {
+                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
+                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
+                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
+                        else -> "auto"
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "could not classify secondary $mac, falling back to auto", t)
+                "auto"
+            }
+        Log.i(TAG, "setSelectedSecondaryAinaInternal: connecting $mac as kind=$kind")
+        settings.persistSecondaryAinaKind(kind)
+        lastSecondaryAinaMac = mac
+        voiceClient?.ifBound { it.connectAinaSecondary(mac, null, kind) }
+        // No service-side state-edge callback for the secondary yet —
+        // optimistically cache "connected" so the UI shows progress.
+        // A future commit could thread an onAinaSecondaryConnectionChanged
+        // through the AIDL listener; for now the operator sees the picker
+        // status flip green on successful connect.
+        lastSecondaryAinaConnected = true
+    }
+
+    @SuppressWarnings("MissingPermission")
+    private fun autoConnectAinaSecondary() {
+        // Slight delay to match autoConnectAina + give the BT adapter
+        // time to settle. Runs only when the operator has explicitly
+        // selected a secondary device (no heuristic guessing).
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            heldPluginContext ?: return@postDelayed
+            val savedMac =
+                settings.persistedSecondaryAinaMac() ?: run {
+                    Log.i(TAG, "autoConnectAinaSecondary: no saved secondary — skipping")
+                    return@postDelayed
+                }
+            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@postDelayed
+            val bonded =
+                try {
+                    adapter.bondedDevices ?: emptySet()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "autoConnectAinaSecondary: bondedDevices threw", t)
+                    return@postDelayed
+                }
+            val device =
+                bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
+                    ?: run {
+                        Log.w(TAG, "autoConnectAinaSecondary: saved MAC $savedMac no longer bonded")
+                        return@postDelayed
+                    }
+            // Refuse if it now collides with the primary's saved MAC —
+            // the operator may have picked the same device for both
+            // slots between launches.
+            val primary = settings.persistedAinaMac()
+            if (primary != null && primary.equals(savedMac, ignoreCase = true)) {
+                Log.w(TAG, "autoConnectAinaSecondary: collides with primary saved selection — skipping")
+                return@postDelayed
+            }
+            val kind = settings.persistedSecondaryAinaKind() ?: "auto"
+            Log.i(TAG, "autoConnectAinaSecondary: ${device.name} ${device.address} kind=$kind")
+            lastSecondaryAinaMac = device.address
+            voiceClient?.ifBound { it.connectAinaSecondary(device.address, null, kind) }
+            lastSecondaryAinaConnected = true
+        }, 1400)
+    }
 
     private fun setSelectedAinaInternal(mac: String?) {
         settings.persistAinaMac(mac)

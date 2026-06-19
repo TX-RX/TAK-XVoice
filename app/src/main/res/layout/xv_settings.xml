@@ -350,6 +350,74 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="4dp"/>
 
+                <!-- Section header: Secondary PTT input -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="SECONDARY PTT"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.15"
+                    android:layout_marginTop="24dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Optional second button (e.g. a Pryme handlebar puck for motorcyclists, or any compatible BLE PTT). Either button can key the primary channel without one cutting off the other."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="2dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_aina_secondary"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <TextView
+                    android:id="@+id/xv_label_aina_secondary_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- Auto-connect toggle for compatible BT speakermics / buttons -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="16dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Auto-connect compatible Bluetooth"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_auto_connect_bt"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="When ON, XV automatically connects the first compatible bonded AINA / BLE PTT button it finds on launch. Turn OFF to control connections manually from the pickers above. Persists across launches."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
                 <!-- Section header: Audio device -->
                 <TextView
                     android:layout_width="match_parent"
