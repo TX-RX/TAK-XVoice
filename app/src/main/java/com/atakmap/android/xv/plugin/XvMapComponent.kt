@@ -2185,35 +2185,66 @@ class XvMapComponent : AbstractMapComponent() {
         // since classify() is keyed off it for the HFP_ONLY decision.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             val ctx = heldPluginContext ?: return@postDelayed
-            // Auto-connect ONLY honours an explicit saved selection.
-            // Without a saved MAC there's no longer a sensible "guess
-            // the speakermic" heuristic — XV supports any HFP-class
-            // device, so picking one for the user would be wrong as
-            // often as right. Operator picks once in Settings →
-            // Preferences; subsequent launches restore that pick.
-            val savedMac =
-                settings.persistedAinaMac() ?: run {
-                    Log.i(TAG, "autoConnectAina: no saved selection — skipping auto-connect")
-                    return@postDelayed
-                }
-            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@postDelayed
-            val bonded =
-                try {
-                    adapter.bondedDevices ?: emptySet()
-                } catch (t: Throwable) {
-                    Log.w(TAG, "autoConnectAina: bondedDevices threw", t)
-                    return@postDelayed
-                }
-            val device =
-                bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
-                    ?: run {
-                        Log.w(TAG, "autoConnectAina: saved MAC $savedMac no longer bonded")
-                        return@postDelayed
-                    }
-            Log.i(TAG, "autoConnectAina: saved selection → ${device.name} ${device.address}")
-            lastAinaMac = device.address
-            connectAinaInternal(ctx, device.address, null, "auto")
+            val savedMac = settings.persistedAinaMac()
+            if (savedMac != null) {
+                // Explicit operator pick wins — always restore it.
+                connectSavedAinaPrimary(ctx, savedMac)
+                return@postDelayed
+            }
+            if (!settings.persistedAutoConnectBtEnabled()) {
+                Log.i(TAG, "autoConnectAina: no saved selection and auto-connect disabled — skipping")
+                return@postDelayed
+            }
+            // Auto-pick: scan bonded devices for the first compatible
+            // speakermic / BLE PTT button. listBondedAinaDevices already
+            // filters by AinaDeviceClassifier.isPlausibleSpeakermic AND
+            // sorts SPP → BLE → BLE_HID so a speakermic always beats a
+            // button-only puck for the primary slot. Picking the first
+            // entry is a "smart default" — operator can override by
+            // picking a different device in Settings → Preferences,
+            // and that pick then persists.
+            val candidates = listBondedAinaDevices()
+            if (candidates.isEmpty()) {
+                Log.i(TAG, "autoConnectAina: no compatible bonded device found — nothing to auto-pick")
+                return@postDelayed
+            }
+            val picked = candidates.first()
+            Log.i(TAG, "autoConnectAina: auto-picked compatible device → ${picked.name} ${picked.mac} (${picked.buttonProtocol})")
+            // Persist so it sticks across launches AND so the picker UI
+            // shows the auto-picked device as the current selection.
+            // Operator can change the pick later; "(none)" in the
+            // picker then disconnects, and the next launch's auto-pick
+            // is suppressed because savedMac is now blank-but-set if
+            // we choose to write a "auto-pick locked off" sentinel.
+            // For now: just persist the MAC like a manual pick would.
+            settings.persistAinaMac(picked.mac)
+            lastAinaMac = picked.mac
+            connectAinaInternal(ctx, picked.mac, null, "auto")
         }, 1200)
+    }
+
+    @SuppressWarnings("MissingPermission")
+    private fun connectSavedAinaPrimary(
+        ctx: Context,
+        savedMac: String,
+    ) {
+        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
+        val bonded =
+            try {
+                adapter.bondedDevices ?: emptySet()
+            } catch (t: Throwable) {
+                Log.w(TAG, "connectSavedAinaPrimary: bondedDevices threw", t)
+                return
+            }
+        val device =
+            bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
+                ?: run {
+                    Log.w(TAG, "connectSavedAinaPrimary: saved MAC $savedMac no longer bonded")
+                    return
+                }
+        Log.i(TAG, "connectSavedAinaPrimary: saved selection → ${device.name} ${device.address}")
+        lastAinaMac = device.address
+        connectAinaInternal(ctx, device.address, null, "auto")
     }
 
     // ============================================================
@@ -2374,43 +2405,88 @@ class XvMapComponent : AbstractMapComponent() {
     @SuppressWarnings("MissingPermission")
     private fun autoConnectAinaSecondary() {
         // Slight delay to match autoConnectAina + give the BT adapter
-        // time to settle. Runs only when the operator has explicitly
-        // selected a secondary device (no heuristic guessing).
+        // time to settle.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            heldPluginContext ?: return@postDelayed
-            val savedMac =
-                settings.persistedSecondaryAinaMac() ?: run {
-                    Log.i(TAG, "autoConnectAinaSecondary: no saved secondary — skipping")
-                    return@postDelayed
-                }
-            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@postDelayed
-            val bonded =
-                try {
-                    adapter.bondedDevices ?: emptySet()
-                } catch (t: Throwable) {
-                    Log.w(TAG, "autoConnectAinaSecondary: bondedDevices threw", t)
-                    return@postDelayed
-                }
-            val device =
-                bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
-                    ?: run {
-                        Log.w(TAG, "autoConnectAinaSecondary: saved MAC $savedMac no longer bonded")
-                        return@postDelayed
-                    }
-            // Refuse if it now collides with the primary's saved MAC —
-            // the operator may have picked the same device for both
-            // slots between launches.
-            val primary = settings.persistedAinaMac()
-            if (primary != null && primary.equals(savedMac, ignoreCase = true)) {
-                Log.w(TAG, "autoConnectAinaSecondary: collides with primary saved selection — skipping")
+            val savedMac = settings.persistedSecondaryAinaMac()
+            if (savedMac != null) {
+                connectSavedAinaSecondary(savedMac)
                 return@postDelayed
             }
-            val kind = settings.persistedSecondaryAinaKind() ?: "auto"
-            Log.i(TAG, "autoConnectAinaSecondary: ${device.name} ${device.address} kind=$kind")
-            lastSecondaryAinaMac = device.address
-            voiceClient?.ifBound { it.connectAinaSecondary(device.address, null, kind) }
+            if (!settings.persistedAutoConnectBtEnabled()) {
+                Log.i(TAG, "autoConnectAinaSecondary: no saved selection and auto-connect disabled — skipping")
+                return@postDelayed
+            }
+            // Auto-pick a SECONDARY: prefer a BLE_HID puck (typical
+            // motorcyclist handlebar button) over an additional
+            // speakermic, since the operator's primary is the audio
+            // path and a second audio device on slot 0 would compete
+            // for SCO. Filter out the primary's MAC so we don't pick
+            // the same device twice.
+            val primaryMac = settings.persistedAinaMac()
+            val candidates =
+                listBondedAinaDevices()
+                    .filterNot {
+                        primaryMac != null && it.mac.equals(primaryMac, ignoreCase = true)
+                    }
+            if (candidates.isEmpty()) {
+                Log.i(TAG, "autoConnectAinaSecondary: no compatible secondary candidate — skipping")
+                return@postDelayed
+            }
+            val picked =
+                candidates.firstOrNull {
+                    it.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
+                } ?: run {
+                    // No BLE_HID puck bonded — don't auto-pick a second
+                    // speakermic. Audio routing only sensibly engages
+                    // one BT speakermic, so picking another would
+                    // create operator-surprise side effects. Operator
+                    // can still manually pick a second AINA in the
+                    // Settings → Preferences picker if they want it.
+                    Log.i(TAG, "autoConnectAinaSecondary: no BLE PTT button bonded — leaving secondary empty")
+                    return@postDelayed
+                }
+            val kind =
+                when (picked.buttonProtocol) {
+                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
+                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
+                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
+                    else -> "auto"
+                }
+            Log.i(TAG, "autoConnectAinaSecondary: auto-picked → ${picked.name} ${picked.mac} kind=$kind")
+            settings.persistSecondaryAinaMac(picked.mac)
+            settings.persistSecondaryAinaKind(kind)
+            lastSecondaryAinaMac = picked.mac
+            voiceClient?.ifBound { it.connectAinaSecondary(picked.mac, null, kind) }
             lastSecondaryAinaConnected = true
         }, 1400)
+    }
+
+    @SuppressWarnings("MissingPermission")
+    private fun connectSavedAinaSecondary(savedMac: String) {
+        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
+        val bonded =
+            try {
+                adapter.bondedDevices ?: emptySet()
+            } catch (t: Throwable) {
+                Log.w(TAG, "connectSavedAinaSecondary: bondedDevices threw", t)
+                return
+            }
+        val device =
+            bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
+                ?: run {
+                    Log.w(TAG, "connectSavedAinaSecondary: saved MAC $savedMac no longer bonded")
+                    return
+                }
+        val primary = settings.persistedAinaMac()
+        if (primary != null && primary.equals(savedMac, ignoreCase = true)) {
+            Log.w(TAG, "connectSavedAinaSecondary: collides with primary — skipping")
+            return
+        }
+        val kind = settings.persistedSecondaryAinaKind() ?: "auto"
+        Log.i(TAG, "connectSavedAinaSecondary: ${device.name} ${device.address} kind=$kind")
+        lastSecondaryAinaMac = device.address
+        voiceClient?.ifBound { it.connectAinaSecondary(device.address, null, kind) }
+        lastSecondaryAinaConnected = true
     }
 
     private fun setSelectedAinaInternal(mac: String?) {

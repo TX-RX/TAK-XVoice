@@ -137,11 +137,16 @@ class VoicePlant(
         ScoLink(
             context = context,
             preferredBtMac = {
-                // Explicit operator override beats the AINA picker's
-                // implicit hint. Both stored on AudioRouter; ScoLink
-                // doesn't depend on AudioRouter directly (avoids a
-                // construction-order coupling).
-                router.outputBtOverrideMac ?: router.preferredBtMacHint
+                // ScoLink controls MIC INPUT via SCO/HFP — and the mic
+                // lives on whichever device the operator picked as
+                // their speakermic (the AINA picker = preferredBtMacHint).
+                // The AUDIO DEVICE override (outputBtOverrideMac) is
+                // for output routing only — splitting it across, e.g.,
+                // a car-stereo A2DP sink while the AINA still carries
+                // the mic. So the hint wins here; the override is a
+                // fallback for the no-speakermic-picked case so a
+                // single-BT operator's override still drives SCO.
+                router.preferredBtMacHint ?: router.outputBtOverrideMac
             },
         ).also { link ->
             // Wire ScoLink into AudioControllerImpl so focus-loss
