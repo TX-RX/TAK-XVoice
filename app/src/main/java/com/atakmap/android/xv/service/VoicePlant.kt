@@ -14,12 +14,14 @@ import com.atakmap.android.xv.audio.AinaA2dpWiring
 import com.atakmap.android.xv.audio.AudioCapture
 import com.atakmap.android.xv.audio.AudioController
 import com.atakmap.android.xv.audio.AudioControllerImpl
+import com.atakmap.android.xv.audio.AudioOutputCycler
 import com.atakmap.android.xv.audio.AudioPlayback
 import com.atakmap.android.xv.audio.AudioRouter
 import com.atakmap.android.xv.audio.BtAudioMode
 import com.atakmap.android.xv.audio.BtAudioPolicy
 import com.atakmap.android.xv.audio.ConcentusOpusDecoder
 import com.atakmap.android.xv.audio.ConcentusOpusEncoder
+import com.atakmap.android.xv.audio.MicInputToggle
 import com.atakmap.android.xv.audio.OpusDecoder
 import com.atakmap.android.xv.audio.OpusEncoder
 import com.atakmap.android.xv.audio.OutputRoute
@@ -181,6 +183,24 @@ class VoicePlant(
 
     private val statusTones = StatusTones(tptPlayer = tptPlayer, enabled = { statusTonesEnabled })
 
+    // PTTB1 = audio-output cycle. Operator's "send audio to that
+    // device" toggle — cycles between Auto and each connected BT
+    // output, bonking when there's nothing to switch to. See
+    // [AudioOutputCycler] for the dedupe / no-op-handling rationale.
+    private val outputCycler: AudioOutputCycler =
+        AudioOutputCycler(
+            router = router,
+            setOverride = { mac -> setOutputBtOverride(mac) },
+            tptPlayer = tptPlayer,
+        )
+
+    // PTTB2 = mic-input source toggle. Independent of output so the
+    // operator can split "listen on the AINA, talk through the phone
+    // mic" (e.g. AINA mic muffled, ambient noise too high). See
+    // [MicInputToggle] for the two-state design.
+    private val micInputToggle: MicInputToggle =
+        MicInputToggle(tptPlayer = tptPlayer)
+
     @Volatile private var statusTonesEnabled: Boolean = true
 
     @Volatile private var currentTptTone: TptTone = TptTone.DEFAULT
@@ -249,6 +269,10 @@ class VoicePlant(
             // anything. TxController consults this in the cool-down
             // release runnable to decide whether to release SCO.
             hotMicMode = { hotMicEnabled },
+            // Mic-input source toggle: when the operator has tapped
+            // PTTB2 into FORCE_PHONE, the TxController bypasses the
+            // SCO acquire branch and captures from the phone mic.
+            forcePhoneMic = { micInputToggle.shouldForcePhoneMic() },
         ).also {
             // Tell the router how to ask "is TX in flight right now?"
             // so notifyChange() knows whether to defer. Set after
@@ -1290,7 +1314,13 @@ class VoicePlant(
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
                 AinaButton.PTTS -> if (down) pttDown(1, source) else pttUp(1, source)
                 AinaButton.MFB -> if (!down) callbacks.onCallButtonTapped()
-                else -> { /* unmapped */ }
+                // PTTB1 = output device cycle. Short tap cycles
+                // through connected BT outputs; long press jumps
+                // back to Auto.
+                AinaButton.PTTB1 -> if (down) outputCycler.onPttB1Down() else outputCycler.onPttB1Up()
+                // PTTB2 = mic-input source toggle (Auto ↔ phone mic).
+                // Long press resets to Auto.
+                AinaButton.PTTB2 -> if (down) micInputToggle.onPttB2Down() else micInputToggle.onPttB2Up()
             }
         }
 
@@ -1375,6 +1405,10 @@ class VoicePlant(
         }
         try {
             disconnectAinaSecondary()
+        } catch (_: Throwable) {
+        }
+        try {
+            outputCycler.stop()
         } catch (_: Throwable) {
         }
         try {

@@ -91,6 +91,12 @@ class TxController(
     // bursts. Read on every cool-down decision so a runtime toggle
     // takes effect on the next burst without restarting anything.
     private val hotMicMode: () -> Boolean = { false },
+    // Operator preference: when true, skip the SCO acquire path on
+    // PTT-down and capture from the phone's built-in mic instead of
+    // the BT speakermic's HFP mic. Driven by [MicInputToggle] (PTTB2
+    // on the primary AINA). Read at every PTT-down so a runtime
+    // toggle takes effect on the next burst without a restart.
+    private val forcePhoneMic: () -> Boolean = { false },
 ) {
     // Lifecycle phases of one TX cycle. Visibility relaxed from `private`
     // to `internal` so TxControllerStateMachineTest can drive transitions
@@ -325,7 +331,10 @@ class TxController(
         // forth pushes don't pay SCO setup latency.
         cooldownHandler.removeCallbacks(coolDownReleaseRunnable)
 
-        val useSco = btPolicy.classify() == BtAudioMode.HFP_ONLY
+        val useSco = btPolicy.classify() == BtAudioMode.HFP_ONLY && !forcePhoneMic()
+        if (forcePhoneMic() && btPolicy.classify() == BtAudioMode.HFP_ONLY) {
+            Log.i(TAG, "start: HFP route available but FORCE_PHONE mic preference set — using non-SCO path")
+        }
         if (useSco) {
             // SCO already up — either we held it via TX cool-down OR
             // AudioPlayback held it via RX SCO_HOT (the whole point of
