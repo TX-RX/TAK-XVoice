@@ -14,6 +14,7 @@ import com.atakmap.android.xv.audio.AinaA2dpWiring
 import com.atakmap.android.xv.audio.AudioCapture
 import com.atakmap.android.xv.audio.AudioController
 import com.atakmap.android.xv.audio.AudioControllerImpl
+import com.atakmap.android.xv.audio.AudioOutputCycler
 import com.atakmap.android.xv.audio.AudioPlayback
 import com.atakmap.android.xv.audio.AudioRouter
 import com.atakmap.android.xv.audio.BtAudioMode
@@ -180,6 +181,18 @@ class VoicePlant(
         ).also { router.start(it) }
 
     private val statusTones = StatusTones(tptPlayer = tptPlayer, enabled = { statusTonesEnabled })
+
+    // PTTB1 audio-output cycler. Operator taps PTTB1 to advance the
+    // AUDIO DEVICE override through connected BT outputs (car BT,
+    // headphones, etc.) + back to "Auto" (local AINA speakermic).
+    // Long-press jumps to Auto. Each step is announced via TTS.
+    // See [AudioOutputCycler] for the design rationale.
+    private val outputCycler: AudioOutputCycler =
+        AudioOutputCycler(
+            context = context,
+            router = router,
+            setOverride = { mac -> setOutputBtOverride(mac) },
+        ).also { it.start() }
 
     @Volatile private var statusTonesEnabled: Boolean = true
 
@@ -1290,7 +1303,11 @@ class VoicePlant(
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
                 AinaButton.PTTS -> if (down) pttDown(1, source) else pttUp(1, source)
                 AinaButton.MFB -> if (!down) callbacks.onCallButtonTapped()
-                else -> { /* unmapped */ }
+                // PTTB1: audio-output cycler. Operator's "I just stepped
+                // out of the car" button — advances the BT audio
+                // override or jumps to Auto on long-press.
+                AinaButton.PTTB1 -> if (down) outputCycler.onPttB1Down() else outputCycler.onPttB1Up()
+                else -> { /* PTTB2 reserved for future feature */ }
             }
         }
 
@@ -1375,6 +1392,10 @@ class VoicePlant(
         }
         try {
             disconnectAinaSecondary()
+        } catch (_: Throwable) {
+        }
+        try {
+            outputCycler.stop()
         } catch (_: Throwable) {
         }
         try {
