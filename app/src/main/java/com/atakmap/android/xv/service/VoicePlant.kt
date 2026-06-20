@@ -192,6 +192,7 @@ class VoicePlant(
             context = context,
             router = router,
             setOverride = { mac -> setOutputBtOverride(mac) },
+            tptPlayer = tptPlayer,
         ).also { it.start() }
 
     @Volatile private var statusTonesEnabled: Boolean = true

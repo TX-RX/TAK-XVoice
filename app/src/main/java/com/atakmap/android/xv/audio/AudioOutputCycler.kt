@@ -47,6 +47,11 @@ class AudioOutputCycler(
     // the SCO-state recompute happen on the same path the UI picker
     // uses — no parallel mechanism.
     private val setOverride: (String?) -> Unit,
+    // Plays the "nothing to cycle to" bonk when there's only one
+    // effective audio output target (e.g. only the AINA speakermic
+    // is paired — toggling Auto↔AINA-MAC both land on the same
+    // physical device, no actual route change happens).
+    private val tptPlayer: TptPlayer? = null,
 ) {
     @Volatile private var tts: TextToSpeech? = null
 
@@ -131,7 +136,32 @@ class AudioOutputCycler(
         val held = System.currentTimeMillis() - pttB1DownAtMs
         pttB1DownAtMs = 0L
         if (held >= LONG_PRESS_MS) {
+            // Long-press: jump to Auto regardless of cycle. If Auto
+            // is already the effective state AND there's only one
+            // effective option, the operator gets the same bonk +
+            // "no other audio device" hint as a tap would — avoids
+            // the surprise of "I held the button and nothing
+            // happened, with no audible feedback."
             Log.i(TAG, "PTTB1 long press (${held}ms) → jump to Auto (local speaker)")
+            val outputs = router.availableBtOutputs()
+            val currentResolved =
+                router.outputBtOverrideMac ?: router.preferredBtMacHint
+            val targetResolved = router.preferredBtMacHint
+            val onlyOneEffective =
+                outputs.isEmpty() ||
+                    (outputs.size == 1 && outputs.first().address.equals(targetResolved, ignoreCase = true))
+            val alreadyOnTarget =
+                if (currentResolved == null) {
+                    targetResolved == null
+                } else {
+                    currentResolved.equals(targetResolved, ignoreCase = true)
+                }
+            if (onlyOneEffective && alreadyOnTarget) {
+                tptPlayer?.playBonk(useScoRoute = false)
+                mainHandler.removeCallbacksAndMessages(null)
+                mainHandler.postDelayed({ speak(ANNOUNCE_NO_OTHER) }, ANNOUNCE_AFTER_BONK_MS)
+                return
+            }
             applyAndAnnounce(targetMac = null, label = ANNOUNCE_LOCAL)
         } else {
             advance()
@@ -139,28 +169,86 @@ class AudioOutputCycler(
     }
 
     private fun advance() {
+        // Build the cycle as DISTINCT EFFECTIVE OUTPUT TARGETS, not
+        // raw override values. The override has a quirk that breaks
+        // the naive cycle: `null` (= Auto, follow hint) and the
+        // AINA-MAC override both resolve to the AINA when AINA is
+        // the current PTT-input pick — so toggling between them is
+        // a no-op the operator perceives as "the button isn't doing
+        // anything." Dedupe by collapsing all entries that share a
+        // target MAC into one. With only the AINA paired, the cycle
+        // is just [AINA] — size 1 — and we bonk instead.
         val outputs = router.availableBtOutputs()
-        val cycle: List<String?> = listOf(null) + outputs.map { it.address }
+        val hint = router.preferredBtMacHint
         val current = router.outputBtOverrideMac
+        // The Auto entry effectively targets the BT hint (= the AINA
+        // pick) when there's one; if there's no hint, Auto resolves
+        // to the built-in route and we still represent it as a
+        // distinct cycle position so the operator can switch off any
+        // BT-override pin.
+        val autoTargetMac = hint
+        val effectiveTargets = mutableListOf<EffectiveTarget>()
+        // Auto first (so the long-press / fresh cycle lands on it
+        // first naturally). Only include if the resulting target
+        // differs from any BT output that's also in the list — the
+        // dedupe pass below collapses those collisions.
+        effectiveTargets += EffectiveTarget(overrideMac = null, resolvedMac = autoTargetMac, label = ANNOUNCE_LOCAL)
+        for (o in outputs) {
+            val label =
+                o.displayName.ifBlank { ANNOUNCE_REMOTE_GENERIC }
+            effectiveTargets += EffectiveTarget(overrideMac = o.address, resolvedMac = o.address, label = label)
+        }
+        val distinct = dedupeByResolvedMac(effectiveTargets)
+        if (distinct.size <= 1) {
+            Log.i(TAG, "PTTB1 tap: only one effective output (${distinct.firstOrNull()?.label}) — bonk, no cycle")
+            tptPlayer?.playBonk(useScoRoute = false)
+            // Brief TTS hint so the operator hears WHY nothing
+            // happened — silence-after-bonk is confusing the first
+            // time it occurs.
+            mainHandler.removeCallbacksAndMessages(null)
+            mainHandler.postDelayed({ speak(ANNOUNCE_NO_OTHER) }, ANNOUNCE_AFTER_BONK_MS)
+            return
+        }
+        // Locate the current position by resolved-MAC equivalence so
+        // a stale override that matches Auto's resolved MAC still
+        // lands on the right index.
+        val currentResolved =
+            if (current.isNullOrBlank()) autoTargetMac else current
         val currentIdx =
-            cycle.indexOfFirst {
-                if (it == null) current == null else it.equals(current, ignoreCase = true)
+            distinct.indexOfFirst {
+                if (it.resolvedMac == null) currentResolved == null else it.resolvedMac.equals(currentResolved, ignoreCase = true)
             }.coerceAtLeast(0)
-        val nextIdx = (currentIdx + 1) % cycle.size
-        val nextMac = cycle[nextIdx]
-        val label =
-            if (nextMac == null) {
-                ANNOUNCE_LOCAL
-            } else {
-                outputs
-                    .firstOrNull { it.address.equals(nextMac, ignoreCase = true) }
-                    ?.displayName
-                    ?.ifBlank { ANNOUNCE_REMOTE_GENERIC }
-                    ?: ANNOUNCE_REMOTE_GENERIC
-            }
-        Log.i(TAG, "PTTB1 tap: cycle $currentIdx→$nextIdx mac=$nextMac label=$label")
-        applyAndAnnounce(targetMac = nextMac, label = label)
+        val nextIdx = (currentIdx + 1) % distinct.size
+        val next = distinct[nextIdx]
+        Log.i(
+            TAG,
+            "PTTB1 tap: cycle $currentIdx→$nextIdx target=${next.overrideMac ?: "Auto"} " +
+                "resolved=${next.resolvedMac} label=${next.label}",
+        )
+        applyAndAnnounce(targetMac = next.overrideMac, label = next.label)
     }
+
+    /** Keep the FIRST occurrence of each resolved MAC so the cycle
+     *  order matches the operator's mental model: Auto first, then
+     *  the picker's bonded order. A second entry resolving to the
+     *  same physical output is dropped silently. */
+    private fun dedupeByResolvedMac(entries: List<EffectiveTarget>): List<EffectiveTarget> {
+        val seen = mutableSetOf<String>()
+        val out = mutableListOf<EffectiveTarget>()
+        for (e in entries) {
+            // Null-resolved = no BT routing target (built-in path).
+            // Use a sentinel string so null collisions still dedupe.
+            val key = e.resolvedMac?.uppercase() ?: "<built-in>"
+            if (seen.add(key)) out += e
+        }
+        return out
+    }
+
+    private data class EffectiveTarget(
+        val overrideMac: String?,
+        val resolvedMac: String?,
+        val label: String,
+    )
 
     private fun applyAndAnnounce(
         targetMac: String?,
@@ -211,8 +299,16 @@ class AudioOutputCycler(
         // AINA-speakermic / built-in fallback case (= no override);
         // device-specific product name otherwise. Generic fallback
         // when the BT device has no product name (rare — some car
-        // kits report blank).
+        // kits report blank). "No other audio device" is the bonk
+        // case — only one effective output is paired, cycle is a
+        // no-op.
         private const val ANNOUNCE_LOCAL = "Local speaker"
         private const val ANNOUNCE_REMOTE_GENERIC = "Remote speaker"
+        private const val ANNOUNCE_NO_OTHER = "No other audio device"
+
+        // Delay between the bonk tone and the TTS hint. Bonk runs
+        // ~120ms; we want the TTS to start AFTER the tone clears so
+        // the operator hears both unambiguously.
+        private const val ANNOUNCE_AFTER_BONK_MS = 250L
     }
 }
