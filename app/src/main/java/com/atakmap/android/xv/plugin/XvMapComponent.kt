@@ -608,7 +608,20 @@ class XvMapComponent : AbstractMapComponent() {
                         // speakermic TX left the "HOLD TO TX" label
                         // showing instead of "● TRANSMITTING" because
                         // lastRequestedTxSlot was stale at -1.
-                        txActiveSlot = slot
+                        //
+                        // Slot 1 (secondary) without a live VS2 session
+                        // is a legitimate operator setup — the transport
+                        // already handles it in pickSlotForSend by
+                        // routing the audio to the primary. Mirror that
+                        // fallback here so the on-screen VS1 button
+                        // lights instead of leaving no indicator at all
+                        // (the VS2 button is hidden / disabled when
+                        // secondaryConnected() is false). Keeps the UI
+                        // in sync with the wire behavior.
+                        val secondaryLive =
+                            mumbleTransport()?.secondaryConnected() == true
+                        txActiveSlot =
+                            if (slot == 1 && !secondaryLive) 0 else slot
                     } else {
                         txActiveSlot = -1
                     }
