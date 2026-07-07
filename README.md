@@ -2,7 +2,7 @@
 
 An ATAK voice plugin focused on operational use cases that existing
 options don't cover well: correct Bluetooth audio routing, predictable
-auto-reconnect, a flexible model for external PTT hardware, and a
+auto-reconnect, a curated model for external PTT hardware, and a
 foundation for bridging server-mediated voice to mesh radios.
 
 ## Status and intended use
@@ -29,9 +29,8 @@ actually use their phones in the field:
 - **No broad external-PTT support.** VX did not integrate cleanly with
   the range of Bluetooth speakermics and BLE PTT pucks that operators
   had already invested in. XV registers external buttons per-MAC
-  address and ships with defaults for common hardware (AINA APTT V1
-  SPP, AINA APTT V2 BLE, Pryme BT-PTT-Z, and generic BLE HID pucks
-  via a learn-mode wizard).
+  address and ships with vetted defaults for a small, curated set of
+  hardware (see below).
 - **Audio routing that fought the rest of the phone.** With VX in the
   loop, keeping music, navigation prompts, and ATAK alerts flowing to
   their normal outputs while driving between event checkpoints was
@@ -49,9 +48,18 @@ cell handoff, fast reconnect, Bluetooth stability across audio-plant
 edge cases, and correct behavior on locked/sleeping phones. Once that
 baseline is solid, the roadmap moves toward **multicast and
 decentralized voice**: server-optional operation, mesh-radio
-interoperability (OpenMANET / Doodle Labs Mesh Rider RTP framing), and
-per-frame AEAD with distributed key election so a channel can keep
-running when the server is gone.
+interoperability via standard RTP framing, and per-frame AEAD with
+distributed key election so a channel can keep running when the server
+is gone.
+
+## Hardware philosophy — curated, not exhaustive
+
+The goal is **not** to claim support for every Bluetooth PTT device on
+the market. Each device that ships as "supported" is deliberately
+curated — sourced, integrated, and validated against real event
+traffic — so operators can trust that what's listed actually works
+under load. New hardware is added on that basis, not on a spec-sheet
+claim. If a device isn't listed as supported, it isn't yet.
 
 ## Primary mission
 
@@ -81,16 +89,16 @@ and feature polish.
    ATAK restart.
 
 3. **External button registration.** XV registers BT speakermic buttons
-   per-MAC, including SPP-based hardware (AINA APTT V1, similar Pryme /
-   Sheepdog speakermics) and BLE GATT devices (AINA APTT V2, Pryme
-   BT-PTT-Z, and other generic BLE PTT pucks via a learn-mode wizard).
+   per-MAC for the curated device list — SPP-based hardware (AINA APTT
+   V1 and similar Pryme speakermics) and BLE GATT devices (AINA APTT V2,
+   Pryme BT-PTT-Z).
 
 XV also adds:
 
-- **Per-device defaults with overrides** — each speakermic ships pre-
-  mapped (PTT → Channel 1, secondary → Channel 2, emergency button,
-  prev/next channel) so a fresh pairing "just works." Operators edit
-  the defaults; overrides persist by BT address.
+- **Per-device defaults with overrides** — each supported speakermic
+  ships pre-mapped (PTT → Channel 1, secondary → Channel 2, emergency
+  button, prev/next channel) so a fresh pairing "just works." Operators
+  edit the defaults; overrides persist by BT address.
 - **LMR-style emergency button** — short press fires the emergency
   configured in ATAK's Alert Tool; long press (1 s) cancels.
 - **Configurable Talk Permit Tones** (ASTRO 25 / Nextel / DMR / MOTOTRBO
@@ -102,8 +110,8 @@ XV also adds:
 - **Direct calling** — Notification.CallStyle ring + full-screen call
   surface, VX-compatible private-call signaling.
 - **Mesh-voice-bridge foundation** — per-frame AEAD (ChaCha20-Poly1305),
-  TAK-cert-wrapped channel keys, distributed key election. RTP framing
-  (RFC 3550 + 7587) for OpenMANET / Doodle Labs Mesh Rider interop.
+  TAK-cert-wrapped channel keys, distributed key election. Standard
+  RTP framing (RFC 3550 + 7587) for mesh-radio interop.
 
 ## Roadmap
 
@@ -113,8 +121,8 @@ XV also adds:
 - **Next:** multicast channel operation, offline / server-optional
   calling, mesh-radio RTP bridge.
 - **Later:** decentralized channel key management (already scaffolded
-  via distributed key election and AEAD), expanded hardware coverage,
-  additional interoperability targets as operator needs surface.
+  via distributed key election and AEAD), and additional curated
+  hardware as devices are validated in the field.
 
 ## Reporting issues
 
@@ -159,12 +167,21 @@ portal.
 
 ## Hardware tested
 
+Test devices:
+
 - Pixel 9 Pro (primary test device)
 - Motorola legacy Android (AINA APTT V1 SPP rig)
 - Samsung Galaxy Tab (XV + existing voice-plugin coexistence)
 
-Speakermics: AINA APTT V1 (BR/EDR SPP), AINA APTT V2 (BLE GATT), Pryme
-BT-PTT-Z (HM-10 UART), generic BLE HID pucks.
+Curated / validated speakermics:
+
+- AINA APTT V1 (BR/EDR SPP)
+- AINA APTT V2 (BLE GATT)
+- Pryme BT-PTT-Z (HM-10 UART)
+
+This list only includes devices that have been integrated end-to-end
+and validated against event traffic. Additional hardware is added the
+same way — one device at a time, once it's been tested.
 
 ## License
 
