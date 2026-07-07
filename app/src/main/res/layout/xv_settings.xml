@@ -386,6 +386,58 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="4dp"/>
 
+                <!-- Manual MAC entry for BLE PTT buttons that Android's
+                     system Bluetooth settings refuses to pair (device
+                     advertises a vendor service, not HID / HoGP, so the
+                     "Pair new device" flow can't complete). Fetch the
+                     MAC from nRF Connect or a laptop BLE probe once,
+                     paste it here, and XV connects via unbonded GATT
+                     through the same PrymeBleReader path Pryme
+                     BT-PTT-Z uses. -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="12dp">
+
+                    <EditText
+                        android:id="@+id/xv_edit_manual_ble_ptt_mac"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:hint="AA:BB:CC:DD:EE:FF"
+                        android:textColor="@color/xv_text"
+                        android:textColorHint="@color/xv_text_dim"
+                        android:textSize="13sp"
+                        android:fontFamily="monospace"
+                        android:inputType="textCapCharacters"
+                        android:maxLength="17"
+                        android:background="@drawable/xv_card_bg"
+                        android:padding="10dp"/>
+
+                    <Button
+                        android:id="@+id/xv_btn_add_manual_ble_ptt"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="Add"
+                        android:textColor="@color/xv_text"
+                        android:textAllCaps="false"
+                        android:background="@drawable/xv_button_bg"
+                        android:minHeight="44dp"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"/>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="For BLE PTT buttons that won't pair via system Bluetooth (they advertise a vendor service, not HID). MAC lives in nRF Connect's scanner or on the device sticker."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
                 <!-- Auto-connect toggle for compatible BT speakermics / buttons -->
                 <LinearLayout
                     android:layout_width="match_parent"

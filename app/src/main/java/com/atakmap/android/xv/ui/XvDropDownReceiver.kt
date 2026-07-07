@@ -197,6 +197,15 @@ class XvDropDownReceiver(
 
         fun setSelectedSecondaryAina(mac: String?) {}
 
+        // Manually add a BLE PTT button by MAC when the device can't
+        // be paired via system Bluetooth settings (advertises a vendor
+        // service, not HID). Persists as the secondary PTT source and
+        // connects immediately via the same PrymeBleReader path Pryme
+        // BT-PTT-Z uses. Returns null on success, or a short operator-
+        // actionable error string ("Invalid MAC format" / "MAC collides
+        // with primary") on failure.
+        fun addManualBlePttSecondary(mac: String): String? = "not implemented"
+
         // ---- BT auto-connect toggle ----
         // When ON (default), XV auto-connects the first compatible
         // bonded speakermic / BLE PTT button it finds on plugin load.
@@ -1248,6 +1257,7 @@ class XvDropDownReceiver(
 
         wireAinaPicker(v)
         wireSecondaryAinaPicker(v)
+        wireManualBlePttEntry(v)
         wireAutoConnectBtSwitch(v)
         wireBtAudioOverridePicker(v)
     }
@@ -1415,6 +1425,41 @@ class XvDropDownReceiver(
 
                 override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
             }
+    }
+
+    // Manual MAC entry for BLE PTT buttons that don't pair via
+    // system Bluetooth. Delegates all the real work to the Controller;
+    // this is UI plumbing (validate, invoke, feedback via Toast).
+    private fun wireManualBlePttEntry(v: View) {
+        val edit = v.findViewById<android.widget.EditText>(R.id.xv_edit_manual_ble_ptt_mac) ?: return
+        val btn = v.findViewById<Button>(R.id.xv_btn_add_manual_ble_ptt) ?: return
+        btn.setOnClickListener {
+            val raw = edit.text?.toString()?.trim().orEmpty()
+            if (raw.isEmpty()) {
+                android.widget.Toast
+                    .makeText(pluginContext, "Enter the button's MAC address first", android.widget.Toast.LENGTH_SHORT)
+                    .show()
+                return@setOnClickListener
+            }
+            val err = controller.addManualBlePttSecondary(raw.uppercase())
+            if (err == null) {
+                android.widget.Toast
+                    .makeText(pluginContext, "Added BLE PTT $raw — connecting…", android.widget.Toast.LENGTH_SHORT)
+                    .show()
+                edit.text?.clear()
+                // Rebuild the secondary picker so the status label
+                // reflects the new persisted MAC (spinner itself
+                // stays on "(none)" because the device isn't bonded).
+                try {
+                    wireSecondaryAinaPicker(v)
+                } catch (_: Throwable) {
+                }
+            } else {
+                android.widget.Toast
+                    .makeText(pluginContext, err, android.widget.Toast.LENGTH_LONG)
+                    .show()
+            }
+        }
     }
 
     private fun wireAutoConnectBtSwitch(v: View) {
