@@ -64,8 +64,8 @@ class AudioRoutePreferenceTest {
     @Test
     fun `outputBtOverrideMac round-trip — set then re-read`() {
         val p = pref()
-        p.outputBtOverrideMac = "38:B8:EB:31:67:82"
-        assertEquals("38:B8:EB:31:67:82", p.outputBtOverrideMac)
+        p.outputBtOverrideMac = "AA:BB:CC:DD:EE:FF"
+        assertEquals("AA:BB:CC:DD:EE:FF", p.outputBtOverrideMac)
     }
 
     @Test

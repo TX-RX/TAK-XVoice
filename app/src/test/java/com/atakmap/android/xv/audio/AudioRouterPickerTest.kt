@@ -124,12 +124,12 @@ class AudioRouterPickerTest {
     fun `BT override matches an output and wins over other BT`() {
         val pick =
             AudioRouter.pickPreferredDeviceFromCandidates(
-                outputs = listOf(bt("AA:11"), bt("38:B8:EB:31:67:82")),
+                outputs = listOf(bt("AA:11"), bt("AA:BB:CC:DD:EE:FF")),
                 route = OutputRoute.AUTO,
-                overrideMac = "38:B8:EB:31:67:82",
+                overrideMac = "AA:BB:CC:DD:EE:FF",
                 preferredBtHintMac = null,
             )
-        assertEquals("38:B8:EB:31:67:82", pick!!.address)
+        assertEquals("AA:BB:CC:DD:EE:FF", pick!!.address)
     }
 
     @Test
