@@ -104,6 +104,15 @@ class ReconnectingMumbleTransport(
     // swap path calls runAttempt() directly instead.
     private val swapInProgress = AtomicBoolean(false)
 
+    // Latched once a Fatal outcome has been observed (e.g. self-kicked
+    // because the server sees a duplicate username). Blocks any
+    // subsequent scheduleRetry — including the Transient one that
+    // onDisconnected fires when the read loop exits after the same
+    // failure — from tight-looping the reconnect. Cleared by an
+    // operator-initiated connect() or by a successful onConnected
+    // (network swap / manual retry re-arms the wrapper).
+    private val fatalRejected = AtomicBoolean(false)
+
     @Volatile
     private var lastScheduledDelayMs: Long = 0L
 
@@ -195,6 +204,7 @@ class ReconnectingMumbleTransport(
         teardownRequested = false
         policy.reset()
         secondaryUsernameInUseAttempts.set(0)
+        fatalRejected.set(false)
         executor.submit { runAttempt() }
     }
 
@@ -314,6 +324,18 @@ class ReconnectingMumbleTransport(
 
     private fun scheduleRetry(outcome: ReconnectPolicy.Outcome) {
         if (teardownRequested) return
+        // Fatal outcomes latch fatalRejected so the follow-up Transient
+        // outcome that onDisconnected fires (the read loop exits after
+        // the same server-side kick) can't slip past shouldRetry and
+        // reopen a session that will just get kicked again. Field bug
+        // 2026-07-06: a self-kick loop hammered Murmur once a second
+        // because Fatal was logged as "not retrying" but the paired
+        // Transient scheduled a retry anyway. See fatalRejected doc.
+        if (fatalRejected.get()) {
+            Log.i(TAG, "scheduleRetry($outcome): fatal already surfaced — ignoring")
+            reconnecting.set(false)
+            return
+        }
         // A single failed connect can produce multiple listener calls
         // (onError → onConnectionFailed AND read-loop finally →
         // onDisconnected). The single-threaded executor guarantees
@@ -326,6 +348,9 @@ class ReconnectingMumbleTransport(
         }
         if (!policy.shouldRetry(outcome)) {
             Log.w(TAG, "not retrying — outcome=$outcome")
+            if (outcome is ReconnectPolicy.Outcome.Fatal) {
+                fatalRejected.set(true)
+            }
             reconnecting.set(false)
             return
         }
@@ -430,6 +455,7 @@ class ReconnectingMumbleTransport(
                 policy.reset()
                 reconnecting.set(false)
                 secondaryUsernameInUseAttempts.set(0)
+                fatalRejected.set(false)
                 upstream?.onConnected()
             }
 
