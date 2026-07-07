@@ -51,7 +51,7 @@ class TxController(
     // UserState to the server. Open-source Mumble clients (Mumla et al)
     // do this on PTT-down / PTT-up so the server's UI / suppression
     // logic knows the client is keying.
-    private val onPttStateChanged: (Boolean) -> Unit = {},
+    private val onPttStateChanged: (Boolean, Int) -> Unit = { _, _ -> },
     private val tonePreference: () -> TptTone = { TptTone.DEFAULT },
     // Returns true only when XV is actually in a state where transmitted
     // audio would be heard by someone on the given slot. Two reasons
@@ -313,7 +313,7 @@ class TxController(
             // actually transmitted — listeners (Mumble UserState
             // burst-start) only react to ON, so a lone OFF is safe.
             try {
-                onPttStateChanged(false)
+                onPttStateChanged(false, slot)
             } catch (t: Throwable) {
                 Log.w(TAG, "onPttStateChanged(false) on deny path threw", t)
             }
@@ -810,7 +810,7 @@ class TxController(
         }
         Log.i(TAG, "TX: resetting voice sequence (mic already running from TPT prewarm)")
         try {
-            onPttStateChanged(true)
+            onPttStateChanged(true, activeSlot)
         } catch (t: Throwable) {
             Log.w(TAG, "onPttStateChanged(true) threw", t)
         }
@@ -1097,7 +1097,7 @@ class TxController(
                 Log.w(TAG, "sendTerminator threw", t)
             }
             try {
-                onPttStateChanged(false)
+                onPttStateChanged(false, burstSlot)
             } catch (t: Throwable) {
                 Log.w(TAG, "onPttStateChanged(false) threw", t)
             }

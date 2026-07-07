@@ -13,7 +13,13 @@ interface IXvVoiceListener {
     void onTxTerminator(int slot);
 
     // PTT-state edges, for the Mumble UserState selfMute heartbeat.
-    void onPttStateChanged(boolean transmitting);
+    // [slot] identifies which channel is going hot — 0 = primary (VS1),
+    // 1 = secondary (VS2). On the transmitting=false edge slot echoes
+    // which slot just went idle. Needed on the plugin side so the
+    // on-screen "● TRANSMITTING" indicator lights the correct button
+    // when TX was initiated from a BT speakermic / BLE PTT button
+    // (which doesn't route through the plugin's Controller.startTx).
+    void onPttStateChanged(boolean transmitting, int slot);
 
     // AINA reader connection up/down — plugin updates the UI dot.
     void onAinaConnectionChanged(boolean connected);

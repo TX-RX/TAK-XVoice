@@ -62,7 +62,10 @@ class VoicePlant(
 
         fun onTxTerminator(slot: Int)
 
-        fun onPttStateChanged(transmitting: Boolean)
+        fun onPttStateChanged(
+            transmitting: Boolean,
+            slot: Int,
+        )
 
         fun onAinaConnectionChanged(connected: Boolean)
 
@@ -228,8 +231,8 @@ class VoicePlant(
             audioController = audioController,
             sendOpus = { opus, slot -> callbacks.onTxOpus(slot, opus) },
             sendTerminator = { slot -> callbacks.onTxTerminator(slot) },
-            onPttStateChanged = { transmitting ->
-                callbacks.onPttStateChanged(transmitting)
+            onPttStateChanged = { transmitting, slot ->
+                callbacks.onPttStateChanged(transmitting, slot)
                 // TX-state edge → end Telecom call when transmitting
                 // turns false. Covers latched mode (where pttUp is a
                 // no-op but stopInternal still fires this callback on
