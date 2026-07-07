@@ -208,13 +208,34 @@ class TptPlayer(
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                 .build()
+        // Buffer must fit BOTH the silence preRoll AND the tone PCM AND
+        // a matching postRoll of trailing silence. Under-sizing it
+        // silently drops the tail in MODE_STATIC — the second write past
+        // capacity is a no-op, playback stops early, and (worse) the
+        // notificationMarkerPosition set at end-of-buffer never fires
+        // because the head position never gets there.
+        //
+        // The postRoll matters even more than the preRoll: the
+        // AudioTrack head-position counter (which the marker fires on)
+        // advances as samples are consumed by the DAC internal buffer,
+        // NOT when they leave the physical speaker. On Pixel there is
+        // typically 10-30 ms of samples in the hardware output pipeline
+        // that hasn't reached the driver's audible-output stage yet.
+        // Firing the marker at "end of tone PCM" and calling t.stop()
+        // there flushes that pipeline — the operator perceives the tone
+        // getting truncated. Padding the buffer with SILENCE_POSTROLL_MS
+        // of silence means the marker fires on silent samples and the
+        // hardware flush eats silence, not tone. Field-observed
+        // 2026-07-07 on the built-in speaker.
+        val preRollSamples = sampleRateHz * SILENCE_PREROLL_MS / 1000
+        val postRollSamples = sampleRateHz * SILENCE_POSTROLL_MS / 1000
         val t =
             try {
                 AudioTrack
                     .Builder()
                     .setAudioAttributes(attrs)
                     .setAudioFormat(format)
-                    .setBufferSizeInBytes(pcm.size * 2)
+                    .setBufferSizeInBytes((preRollSamples + pcm.size + postRollSamples) * 2)
                     .setTransferMode(AudioTrack.MODE_STATIC)
                     .build()
             } catch (th: Throwable) {
@@ -246,10 +267,24 @@ class TptPlayer(
         // perceived TPT start (no operator can react that fast) but
         // long enough to cover the worst-case BT chipset settling
         // window measured on the AINA V1.
-        val preRoll = ShortArray(sampleRateHz * SILENCE_PREROLL_MS / 1000)
+        val preRoll = ShortArray(preRollSamples)
+        val postRoll = ShortArray(postRollSamples)
+        // Concatenate preRoll + pcm + postRoll into a single buffer so
+        // MODE_STATIC gets exactly one write() call. Some AudioTrack
+        // implementations refuse subsequent write() calls after the
+        // first for MODE_STATIC — the effective sample count then
+        // matched only preRoll+pcm, and the postRoll silence never
+        // reached the hardware, so marker firing on a truncated buffer
+        // still cut the tone tail.
+        val buffered = ShortArray(preRoll.size + pcm.size + postRoll.size)
+        System.arraycopy(preRoll, 0, buffered, 0, preRoll.size)
+        System.arraycopy(pcm, 0, buffered, preRoll.size, pcm.size)
+        System.arraycopy(postRoll, 0, buffered, preRoll.size + pcm.size, postRoll.size)
         try {
-            t.write(preRoll, 0, preRoll.size)
-            t.write(pcm, 0, pcm.size)
+            val written = t.write(buffered, 0, buffered.size)
+            if (written < buffered.size) {
+                Log.w(TAG, "$label short write: wrote $written / ${buffered.size} samples")
+            }
             t.play()
         } catch (th: Throwable) {
             Log.e(TAG, "$label write/play failed", th)
@@ -261,7 +296,12 @@ class TptPlayer(
             return
         }
         track = t
-        Log.i(TAG, "playing $label (${pcm.size} samples + ${preRoll.size} preRoll, useSco=$useScoRoute)")
+        Log.i(
+            TAG,
+            "playing $label (${pcm.size} tone + ${preRoll.size} preRoll + ${postRoll.size} postRoll " +
+                "= ${buffered.size} total samples, marker@${preRoll.size + pcm.size + postRoll.size}, " +
+                "useSco=$useScoRoute)",
+        )
         logAudioContext("playing $label")
         val finalize: () -> Unit = {
             try {
@@ -291,6 +331,7 @@ class TptPlayer(
             t.setPlaybackPositionUpdateListener(
                 object : AudioTrack.OnPlaybackPositionUpdateListener {
                     override fun onMarkerReached(track: AudioTrack?) {
+                        Log.i(TAG, "$label marker reached — finalizing (playback complete)")
                         mainHandler.post {
                             mainHandler.removeCallbacks(watchdog)
                             finalize()
@@ -300,7 +341,13 @@ class TptPlayer(
                     override fun onPeriodicNotification(track: AudioTrack?) {}
                 },
             )
-            t.notificationMarkerPosition = pcm.size
+            // Marker fires at end-of-buffer = preRoll + tone PCM +
+            // postRoll. Setting it here (rather than at end-of-tone-PCM)
+            // means finalize()'s t.stop() flushes the postRoll silence
+            // out of the hardware pipeline, not the tone tail. Paired
+            // with the buffer-size expansion above — the two invariants
+            // move together.
+            t.notificationMarkerPosition = preRoll.size + pcm.size + postRoll.size
         } catch (th: Throwable) {
             Log.w(TAG, "$label marker setup failed; relying on watchdog", th)
         }
@@ -856,5 +903,13 @@ class TptPlayer(
          * TPT start by anything an operator can detect.
          */
         private const val SILENCE_PREROLL_MS: Int = 50
+
+        // Trailing silence appended after the tone PCM so the
+        // notification marker fires on silent samples — that way the
+        // t.stop() call in finalize() flushes silence out of the
+        // hardware output pipeline rather than the tone's last few ms.
+        // Matched to the preRoll size so total added latency (before +
+        // after) is symmetric.
+        private const val SILENCE_POSTROLL_MS: Int = 50
     }
 }
