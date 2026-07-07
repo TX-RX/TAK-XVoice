@@ -1991,13 +1991,29 @@ class XvMapComponent : AbstractMapComponent() {
             }
 
             override fun availableSecondaryAinaDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
-                // Hide the device the operator picked as PRIMARY from
-                // the secondary picker so they can't accidentally
-                // double-connect to the same MAC (which would race
-                // for BLE GATT / SPP socket ownership).
+                // Secondary PTT is a BUTTON slot — a handlebar puck,
+                // hand-held BLE PTT, or similar hardware whose sole
+                // job is to key the primary channel when the operator
+                // can't easily reach the speakermic (motorcyclist
+                // scenario: AINA on the vest + BLE puck on the bar).
+                // Speakermics (AINA V1 SPP + AINA V2 BLE, both audio-
+                // carrying) are deliberately hidden — the operator
+                // wears at most one speakermic at a time, so a
+                // "second speakermic" pick is confusing UX with no
+                // real use case. Field-observed 2026-07-07: operator
+                // saw AINA entries in the secondary picker and asked
+                // why speakermics were listed there when the label
+                // already promised "Optional second button (e.g. a
+                // Pryme handlebar puck)".
+                //
+                // Also hides the device the operator picked as PRIMARY
+                // so they can't accidentally double-connect to the
+                // same MAC (which would race for BLE GATT / SPP
+                // socket ownership).
                 val primary = settings.persistedAinaMac()
-                return listBondedAinaDevices().filterNot {
-                    primary != null && it.mac.equals(primary, ignoreCase = true)
+                return listBondedAinaDevices().filter { info ->
+                    info.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID &&
+                        !(primary != null && info.mac.equals(primary, ignoreCase = true))
                 }
             }
 
