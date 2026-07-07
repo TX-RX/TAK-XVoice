@@ -72,6 +72,44 @@ will read.
   bodies. Summarize ("verified against an AINA V2 puck") instead of
   quoting raw evidence.
 
+## README maintenance
+
+The top-level `README.md` is the project's public-facing description
+of what TAK-XVoice does, who it's for, and what hardware and features
+are supported. Because this repo is public, the README is often the
+first thing an operator, contributor, or downstream packager reads —
+keep it current alongside the code.
+
+- When a change lands that affects user-visible behavior — new
+  supported hardware, a new UX affordance, a new transport, a new
+  build task, a changed default, a retired feature — update the
+  relevant README section in the same PR that ships the code.
+  Do not treat README updates as a follow-up task; a merged feature
+  that isn't in the README is functionally invisible to new
+  operators.
+- The **curated-hardware policy** is load-bearing: nothing is listed
+  under "Hardware tested" as supported until it has been integrated
+  and validated end-to-end against real event traffic. Do not add
+  speculative, aspirational, or "should work" entries. When a device
+  graduates to supported (or is retired), update both "What's
+  different" and "Hardware tested" together.
+- When shipped work materially reshapes the roadmap
+  ("Now / Next / Later"), promote or retire bullets to reflect
+  reality rather than intent. A roadmap that reads like a wish list
+  loses signal.
+- The **status-and-intended-use disclaimer**, the
+  **hardware-philosophy** section, and the **reporting-issues**
+  guidance are load-bearing legal / policy language. Do not reword
+  them unilaterally — flag proposed changes to the operator first.
+- Vendor names for downstream / interop targets that the operator has
+  chosen to keep out of the README stay out. If unsure whether a
+  vendor or product name belongs, treat it like sensitive content:
+  redact and ask.
+- README updates are subject to the same sensitive-content rules as
+  commits and code (no real MACs, TAK URLs, callsigns, unit or
+  organization names, or operator GPS coordinates), and they go
+  through the same PR workflow described below.
+
 ## Branching + PR workflow
 
 - `main` is protected by convention — **never push directly**.
