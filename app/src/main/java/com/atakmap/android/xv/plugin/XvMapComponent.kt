@@ -2021,6 +2021,39 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun secondaryAinaConnectionUp(): Boolean = lastSecondaryAinaConnected
 
+            override fun addManualBlePttSecondary(mac: String): String? {
+                // Validate the format up-front — a malformed MAC would
+                // fail later inside adapter.getRemoteDevice with a less
+                // useful error. Standard EUI-48 dashes / colons pattern.
+                val normalized = mac.trim().uppercase().replace('-', ':')
+                val macRegex = Regex("^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
+                if (!macRegex.matches(normalized)) {
+                    return "Invalid MAC format (expected AA:BB:CC:DD:EE:FF)"
+                }
+                val primary = settings.persistedAinaMac()
+                if (primary != null && primary.equals(normalized, ignoreCase = true)) {
+                    return "MAC collides with primary — cannot use same device on both slots"
+                }
+                Log.i(
+                    TAG,
+                    "addManualBlePttSecondary: mac=${com.atakmap.android.xv.aina.redactMac(normalized)}",
+                )
+                // Persist + kick the service side into connecting via
+                // the same PrymeBleReader path Pryme BT-PTT-Z uses. The
+                // "ble-hid" kind forces PrymeBleReader regardless of
+                // whether classifyButtonProtocol can read the device
+                // name (unbonded LE devices report name=null until
+                // service discovery, so name-based classification
+                // would fall through to "auto" and then wrongly pick
+                // AinaBleReader).
+                settings.persistSecondaryAinaMac(normalized)
+                settings.persistSecondaryAinaKind("ble-hid")
+                lastSecondaryAinaMac = normalized
+                lastSecondaryAinaConnected = true
+                voiceClient?.ifBound { it.connectAinaSecondary(normalized, null, "ble-hid") }
+                return null
+            }
+
             override fun setSelectedSecondaryAina(mac: String?) {
                 Log.i(TAG, "Controller.setSelectedSecondaryAina('$mac')")
                 setSelectedSecondaryAinaInternal(mac)
