@@ -1155,17 +1155,35 @@ class XvDropDownReceiver(
     private fun wireBtOffBanner(v: View) {
         val banner = v.findViewById<TextView>(R.id.xv_prefs_bt_off_banner) ?: return
         banner.setOnClickListener {
-            try {
-                val i =
-                    Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                pluginContext.startActivity(i)
-            } catch (_: Throwable) {
-                // ACTION_BLUETOOTH_SETTINGS is present on every
-                // consumer Android build we ship against; swallow
-                // silently on the vanishing chance a stripped
-                // ROM refuses.
+            // Prefer the in-place system prompt over dropping the
+            // operator into full Bluetooth settings — the prompt is a
+            // one-tap "Allow XV to turn on Bluetooth?" dialog that
+            // leaves the operator on XV's screen. Falls back to the
+            // system Bluetooth settings screen only if the prompt
+            // intent isn't resolvable (stripped ROM, unusual OEM
+            // policy). Field-observed 2026-07-07: operator flagged
+            // the ACTION_BLUETOOTH_SETTINGS detour as more UX
+            // friction than necessary.
+            val requested =
+                try {
+                    val enableIntent =
+                        Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                    pluginContext.startActivity(enableIntent)
+                    true
+                } catch (_: Throwable) {
+                    false
+                }
+            if (!requested) {
+                try {
+                    val fallback =
+                        Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                    pluginContext.startActivity(fallback)
+                } catch (_: Throwable) {
+                }
             }
         }
 
@@ -1187,7 +1205,40 @@ class XvDropDownReceiver(
                     context: Context?,
                     intent: Intent?,
                 ) {
-                    if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) refresh()
+                    if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                    refresh()
+                    // Repopulate the AINA + secondary AINA pickers so
+                    // newly-visible (or newly-hidden) bonded devices
+                    // show up without the operator having to close
+                    // and reopen the Settings panel. wireAinaPicker /
+                    // wireSecondaryAinaPicker are idempotent — each
+                    // just resets adapter + selection + listener on
+                    // the same spinner view. Field-observed 2026-07-07:
+                    // after re-enabling Bluetooth from the banner tap,
+                    // the AINA picker was stuck on "Screen-only PTT"
+                    // even though the operator's bonded AINA was
+                    // back in system BT state — the picker had been
+                    // populated once at Settings-open time when the
+                    // adapter reported no devices.
+                    val state =
+                        intent.getIntExtra(
+                            BluetoothAdapter.EXTRA_STATE,
+                            BluetoothAdapter.ERROR,
+                        )
+                    if (state == BluetoothAdapter.STATE_ON ||
+                        state == BluetoothAdapter.STATE_OFF
+                    ) {
+                        try {
+                            wireAinaPicker(v)
+                        } catch (t: Throwable) {
+                            android.util.Log.w("XvSettings", "wireAinaPicker refresh after BT state change threw", t)
+                        }
+                        try {
+                            wireSecondaryAinaPicker(v)
+                        } catch (t: Throwable) {
+                            android.util.Log.w("XvSettings", "wireSecondaryAinaPicker refresh after BT state change threw", t)
+                        }
+                    }
                 }
             }
 
