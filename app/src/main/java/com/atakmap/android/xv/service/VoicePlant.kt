@@ -9,6 +9,8 @@ import com.atakmap.android.xv.aina.AinaBleReader
 import com.atakmap.android.xv.aina.AinaButton
 import com.atakmap.android.xv.aina.AinaSppReader
 import com.atakmap.android.xv.aina.PrymeBleReader
+import com.atakmap.android.xv.audio.AinaA2dpController
+import com.atakmap.android.xv.audio.AinaA2dpWiring
 import com.atakmap.android.xv.audio.AudioCapture
 import com.atakmap.android.xv.audio.AudioController
 import com.atakmap.android.xv.audio.AudioControllerImpl
@@ -22,6 +24,7 @@ import com.atakmap.android.xv.audio.OpusDecoder
 import com.atakmap.android.xv.audio.OpusEncoder
 import com.atakmap.android.xv.audio.OutputRoute
 import com.atakmap.android.xv.audio.PttDispatcher
+import com.atakmap.android.xv.audio.PttSource
 import com.atakmap.android.xv.audio.ScoLink
 import com.atakmap.android.xv.audio.StatusTones
 import com.atakmap.android.xv.audio.TptPlayer
@@ -109,6 +112,21 @@ class VoicePlant(
     private val audioController: AudioController = AudioControllerImpl(context)
     private val btPolicy: BtAudioPolicy = BtAudioPolicy(context).also { it.start() }
 
+    // A2DP forbid for AINA speakermics. Prevents phone media (Spotify,
+    // YouTube, system sounds) from routing through the AINA when a
+    // peer's voice isn't on the air. Without this, the AINA's A2DP
+    // sink stays advertised as a valid music sink to the OS and
+    // operators leak entertainment audio onto a tactical mic. See
+    // [AinaA2dpController] for the reflection-based forbid mechanism
+    // and [AinaA2dpWiring] for the connect-time invocation +
+    // Pixel-signature-permission fallback prompt.
+    private val ainaA2dpController: AinaA2dpController =
+        AinaA2dpController(context).also { it.start() }
+    private val ainaA2dpWiring: AinaA2dpWiring =
+        AinaA2dpWiring(context, ainaA2dpController).also { wiring ->
+            btPolicy.addConnectListener(wiring)
+        }
+
     // Router constructed BEFORE scoLink so scoLink's preferred-MAC
     // accessor can close over it. The lambda is read on each comm-
     // device pick (cold start, warm re-assert, AudioDeviceCallback
@@ -119,11 +137,16 @@ class VoicePlant(
         ScoLink(
             context = context,
             preferredBtMac = {
-                // Explicit operator override beats the AINA picker's
-                // implicit hint. Both stored on AudioRouter; ScoLink
-                // doesn't depend on AudioRouter directly (avoids a
-                // construction-order coupling).
-                router.outputBtOverrideMac ?: router.preferredBtMacHint
+                // ScoLink controls MIC INPUT via SCO/HFP — and the mic
+                // lives on whichever device the operator picked as
+                // their speakermic (the AINA picker = preferredBtMacHint).
+                // The AUDIO DEVICE override (outputBtOverrideMac) is
+                // for output routing only — splitting it across, e.g.,
+                // a car-stereo A2DP sink while the AINA still carries
+                // the mic. So the hint wins here; the override is a
+                // fallback for the no-speakermic-picked case so a
+                // single-BT operator's override still drives SCO.
+                router.preferredBtMacHint ?: router.outputBtOverrideMac
             },
         ).also { link ->
             // Wire ScoLink into AudioControllerImpl so focus-loss
@@ -273,12 +296,43 @@ class VoicePlant(
 
     @Volatile private var prymeBle: PrymeBleReader? = null
 
+    // Secondary PTT slot (e.g. a Pryme handlebar puck for motorcyclists
+    // who already wear an AINA speakermic). Independent connect /
+    // disconnect surface so the operator can pair both a speakermic
+    // AND a secondary button without one tearing the other down.
+    // PttDispatcher's OR-gate keeps concurrent presses from cutting
+    // each other off — see [PttDispatcher.down]. Secondary input is
+    // hard-locked to slot 0 (primary channel) and ignores PTTS/PTTE
+    // because the typical motorcyclist use case is "talk on the main
+    // channel without taking a hand off the bar" — not a full second
+    // input device with its own emergency button.
+    @Volatile private var ainaSecondarySpp: AinaSppReader? = null
+
+    @Volatile private var ainaSecondaryBle: AinaBleReader? = null
+
+    @Volatile private var prymeSecondaryBle: PrymeBleReader? = null
+
     // MAC of the currently-connected AINA (or null when none). Used by
     // the BOND_STATE_CHANGED receiver to detect "the operator just
     // unpaired the AINA we're using" and tear the reader down before
     // its reconnect loop wastes BLE scanning on a device that no
     // longer exists in the bond table.
     @Volatile private var connectedAinaMac: String? = null
+
+    // Same SharedPreferences file as the plugin-side XvSettings — this
+    // service runs in the same APK / UID, so it shares prefs storage.
+    // Used to clear stale per-MAC AINA protocol overrides on BOND_NONE
+    // (operator re-paired the device; the override may no longer
+    // match the firmware they re-paired against).
+    private val settingsForOverride =
+        com.atakmap.android.xv.plugin.XvSettings(
+            prefsProvider = {
+                context.getSharedPreferences(
+                    com.atakmap.android.xv.plugin.XvSettings.PREFS_NAME,
+                    Context.MODE_PRIVATE,
+                )
+            },
+        )
 
     private val bondStateReceiver =
         object : android.content.BroadcastReceiver() {
@@ -296,13 +350,27 @@ class VoicePlant(
                 val device: android.bluetooth.BluetoothDevice? =
                     i.getParcelableExtra(android.bluetooth.BluetoothDevice.EXTRA_DEVICE)
                 val mac = device?.address ?: return
-                val current = connectedAinaMac
-                if (current != null && current.equals(mac, ignoreCase = true)) {
-                    Log.w(TAG, "AINA $mac was unpaired — tearing down reader to stop reconnect storm")
-                    disconnectAina()
-                }
+                onBondNone(mac)
             }
         }
+
+    // Extracted as a private (effectively-internal) helper so the
+    // BOND_NONE behavior can be exercised by VoicePlantBondNoneTest
+    // without standing up the rest of the plant. Clears the per-MAC
+    // protocol override (so a re-pair starts clean) and tears down
+    // the live AINA reader if this MAC is the connected one.
+    internal fun onBondNone(mac: String) {
+        try {
+            settingsForOverride.clearAinaProtocolOverride(mac, reason = "BOND_NONE")
+        } catch (t: Throwable) {
+            Log.w(TAG, "clearAinaProtocolOverride threw", t)
+        }
+        val current = connectedAinaMac
+        if (current != null && current.equals(mac, ignoreCase = true)) {
+            Log.w(TAG, "AINA $mac was unpaired — tearing down reader to stop reconnect storm")
+            disconnectAina()
+        }
+    }
 
     // Re-applies our no-SCO route preference whenever SCO transitions
     // to DISCONNECTED with a Telecom call still active. Without this,
@@ -372,6 +440,16 @@ class VoicePlant(
     private val routeUiListener =
         object : AudioRouter.RouteListener {
             override fun onPreferredDeviceChanged(device: android.media.AudioDeviceInfo?) {
+                // Piggyback on the route-change fan-out to let the AINA
+                // A2DP wiring drop its diag notification once the AINA
+                // A2DP sink is no longer in the output device list
+                // (operator powered off the mic, or actioned the
+                // manual "disable Media audio" fix).
+                try {
+                    ainaA2dpWiring.reconcileNotification()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "ainaA2dpWiring.reconcileNotification threw", t)
+                }
                 val label = router.currentRouteLabel()
                 if (label == lastPublishedRouteLabel) return
                 lastPublishedRouteLabel = label
@@ -536,6 +614,13 @@ class VoicePlant(
     }
 
     fun pttDown(slot: Int) {
+        pttDown(slot, PttSource.DEFAULT)
+    }
+
+    fun pttDown(
+        slot: Int,
+        source: PttSource,
+    ) {
         if (callRinging) {
             // Incoming call ringing: turn any PTT-like button press
             // (AINA PTT, BLE HID HEADSETHOOK, etc.) into an
@@ -597,7 +682,7 @@ class VoicePlant(
         } else {
             Log.i(TAG, "pttDown(slot=$slot): canTransmit=false — skipping Telecom call placement")
         }
-        pttDispatcher.down(slot)
+        pttDispatcher.down(slot, source)
     }
 
     /** Internal entry point bypassing the privateCallActive gate.
@@ -619,6 +704,13 @@ class VoicePlant(
             canSpeakOnSlot[slot]
 
     fun pttUp(slot: Int) {
+        pttUp(slot, PttSource.DEFAULT)
+    }
+
+    fun pttUp(
+        slot: Int,
+        source: PttSource,
+    ) {
         if (callRinging || privateCallActive) {
             // pttDown was the call-button trigger — just absorb the
             // matching up so PttDispatcher's edge-trigger state stays
@@ -626,7 +718,7 @@ class VoicePlant(
             Log.i(TAG, "pttUp(slot=$slot) ignored — call-mode (ringing=$callRinging, active=$privateCallActive)")
             return
         }
-        pttDispatcher.up(slot)
+        pttDispatcher.up(slot, source)
     }
 
     /** Force-release any active TX (latched or momentary) and cancel
@@ -975,6 +1067,14 @@ class VoicePlant(
         name: String?,
         kind: String?,
     ) {
+        // Quick-win: log the resolved kind at the call site so field
+        // logs distinguish "auto leaked through" from "operator
+        // override applied". Routed via the MAC redactor per CLAUDE.md
+        // sensitive-content rules.
+        Log.i(
+            TAG,
+            "connectAina kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
+        )
         disconnectAina()
         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
         if (adapter == null) {
@@ -1025,12 +1125,12 @@ class VoicePlant(
         }
         when (resolvedKind) {
             "v1", "spp" -> {
-                val r = AinaSppReader(context, ainaV1OnEvent, onConn)
+                val r = AinaSppReader(context, primaryAinaEvent(PttSource.AINA_V1), onConn)
                 ainaSpp = r
                 r.connect(device)
             }
             "v2", "ble" -> {
-                val r = AinaBleReader(context, ainaV2OnEvent, onConn)
+                val r = AinaBleReader(context, primaryAinaEvent(PttSource.AINA_V2), onConn)
                 ainaBle = r
                 r.connect(device)
             }
@@ -1042,13 +1142,120 @@ class VoicePlant(
                 // characteristic (service 00420000-8f59-…, sourced from
                 // VX 2.1.0). Mirrors AinaBleReader's connect / retry
                 // strategy. Fires VS1 only.
-                val r = PrymeBleReader(context, ainaV1OnEvent, onConn)
+                val r = PrymeBleReader(context, primaryAinaEvent(PttSource.PRYME_BLE), onConn)
                 prymeBle = r
                 r.connect(device)
             }
             else -> Log.w(TAG, "unknown AINA kind '$resolvedKind'")
         }
     }
+
+    /**
+     * Connect a SECONDARY AINA / Pryme / BLE PTT input. Use case:
+     * motorcyclist with an AINA V2 helmet speakermic AND a Pryme
+     * BLE PTT puck mounted on the handlebar — they need both to be
+     * able to key VS1 without one tearing the other down. Hard-
+     * locked to slot 0 (primary channel) and ignores PTTS/PTTE
+     * because the typical handlebar-button use case is "talk on
+     * the main channel"; a real second-channel split / emergency
+     * input would be its own redesign. Independent disconnect via
+     * [disconnectAinaSecondary] so the operator can swap the
+     * secondary independently of the primary.
+     */
+    fun connectAinaSecondary(
+        mac: String?,
+        name: String?,
+        kind: String?,
+    ) {
+        Log.i(
+            TAG,
+            "connectAinaSecondary kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
+        )
+        disconnectAinaSecondary()
+        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null) {
+            Log.w(TAG, "connectAinaSecondary: no Bluetooth adapter")
+            return
+        }
+        val device =
+            try {
+                if (!mac.isNullOrBlank()) {
+                    adapter.getRemoteDevice(mac)
+                } else if (!name.isNullOrBlank()) {
+                    val needle = name.lowercase()
+                    adapter.bondedDevices?.firstOrNull {
+                        (it.name ?: "").lowercase().contains(needle)
+                    }
+                } else {
+                    null
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "connectAinaSecondary: resolve threw", t)
+                null
+            }
+        if (device == null) {
+            Log.w(TAG, "connectAinaSecondary: no device for mac=$mac name=$name")
+            return
+        }
+        val resolvedKind =
+            if (kind == "auto" || kind.isNullOrBlank()) {
+                when (device.type) {
+                    android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE,
+                    android.bluetooth.BluetoothDevice.DEVICE_TYPE_DUAL,
+                    -> "v2"
+                    else -> "v1"
+                }
+            } else {
+                kind
+            }
+        val onConn: (Boolean) -> Unit = { up ->
+            Log.i(TAG, "Secondary AINA connection up=$up")
+            // Secondary doesn't drive the AINA-connected dot in the UI
+            // (that's the primary's indicator). Logged only.
+        }
+        when (resolvedKind) {
+            "v1", "spp" -> {
+                val r = AinaSppReader(context, secondaryAinaEvent(PttSource.AINA_V1), onConn)
+                ainaSecondarySpp = r
+                r.connect(device)
+            }
+            "v2", "ble" -> {
+                val r = AinaBleReader(context, secondaryAinaEvent(PttSource.AINA_V2), onConn)
+                ainaSecondaryBle = r
+                r.connect(device)
+            }
+            "ble-hid", "hid" -> {
+                val r = PrymeBleReader(context, secondaryAinaEvent(PttSource.PRYME_BLE), onConn)
+                prymeSecondaryBle = r
+                r.connect(device)
+            }
+            else -> Log.w(TAG, "connectAinaSecondary: unknown kind '$resolvedKind'")
+        }
+    }
+
+    fun disconnectAinaSecondary() {
+        ainaSecondaryBle?.disconnect()
+        ainaSecondaryBle = null
+        ainaSecondarySpp?.disconnect()
+        ainaSecondarySpp = null
+        prymeSecondaryBle?.disconnect()
+        prymeSecondaryBle = null
+        // Clear any held-source bookkeeping the secondary left behind
+        // mid-burst — otherwise the OR-gate would think a press is
+        // still in flight on a now-disconnected source.
+        try {
+            // Multiple sources might match; clear all the secondary
+            // ones to be safe. Idempotent inside PttDispatcher.
+            pttDispatcher.forgetSource(PttSource.AINA_V1)
+            pttDispatcher.forgetSource(PttSource.AINA_V2)
+            pttDispatcher.forgetSource(PttSource.PRYME_BLE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetSource on secondary disconnect threw", t)
+        }
+    }
+
+    fun isAinaSecondaryConnected(): Boolean =
+        ainaSecondaryBle != null || ainaSecondarySpp != null || prymeSecondaryBle != null
 
     fun disconnectAina() {
         ainaBle?.disconnect()
@@ -1072,32 +1279,42 @@ class VoicePlant(
 
     fun isAinaConnected(): Boolean = ainaBle != null || ainaSpp != null || prymeBle != null
 
-    // V1 (SPP) and V2 (BLE) button handlers — same routing for now.
-    // MFB (Voice Responder's multifunction call button) fires on RELEASE
+    // Per-source button-handler factory for the primary input. Captures
+    // [source] so PttDispatcher's OR-gate can distinguish concurrent
+    // presses from different physical buttons (primary AINA + screen
+    // PTT, primary AINA + secondary handlebar puck, etc.). MFB
+    // (Voice Responder's multifunction call button) fires on RELEASE
     // only — single tap toggles the call state: answer if currently
     // ringing, hang up if currently active. Press-down is ignored so
     // there's no risk of half-press accidental dispatch.
-    private val ainaV1OnEvent: (AinaButton, Boolean) -> Unit = { btn, down ->
-        Log.i(TAG, "AINA-V1 button $btn down=$down")
-        when (btn) {
-            AinaButton.PTTE -> callbacks.onEmergencyButton(down)
-            AinaButton.PTT -> if (down) pttDown(0) else pttUp(0)
-            AinaButton.PTTS -> if (down) pttDown(1) else pttUp(1)
-            AinaButton.MFB -> if (!down) callbacks.onCallButtonTapped()
-            else -> { /* unmapped */ }
+    private fun primaryAinaEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
+        { btn, down ->
+            Log.i(TAG, "primary AINA button $btn down=$down source=$source")
+            when (btn) {
+                AinaButton.PTTE -> callbacks.onEmergencyButton(down)
+                AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
+                AinaButton.PTTS -> if (down) pttDown(1, source) else pttUp(1, source)
+                AinaButton.MFB -> if (!down) callbacks.onCallButtonTapped()
+                else -> { /* unmapped */ }
+            }
         }
-    }
 
-    private val ainaV2OnEvent: (AinaButton, Boolean) -> Unit = { btn, down ->
-        Log.i(TAG, "AINA-V2 button $btn down=$down")
-        when (btn) {
-            AinaButton.PTTE -> callbacks.onEmergencyButton(down)
-            AinaButton.PTT -> if (down) pttDown(0) else pttUp(0)
-            AinaButton.PTTS -> if (down) pttDown(1) else pttUp(1)
-            AinaButton.MFB -> if (!down) callbacks.onCallButtonTapped()
-            else -> { /* unmapped */ }
+    // Secondary input handler factory. Hard-locked to slot 0 (primary
+    // channel) and ignores PTTS / PTTE / MFB because the typical
+    // secondary-button use case is a motorcyclist's handlebar puck:
+    // "let me key the main channel from a second physical button I
+    // already have on the bike." Anything more nuanced (a real second
+    // input with full per-channel/emergency capability) is a separate
+    // redesign — out of scope for the "low-risk multi-PTT" the user
+    // asked for.
+    private fun secondaryAinaEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
+        { btn, down ->
+            Log.i(TAG, "secondary AINA button $btn down=$down source=$source")
+            when (btn) {
+                AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
+                else -> { /* secondary input does not drive PTTS/PTTE/MFB */ }
+            }
         }
-    }
 
     // ---- RX path ----
 
@@ -1162,11 +1379,32 @@ class VoicePlant(
         } catch (_: Throwable) {
         }
         try {
+            disconnectAinaSecondary()
+        } catch (_: Throwable) {
+        }
+        try {
             router.stop()
         } catch (_: Throwable) {
         }
         try {
             scoLink.forceStop()
+        } catch (_: Throwable) {
+        }
+        try {
+            // De-register before tearing down btPolicy so we don't
+            // race with a final fan-out on shutdown.
+            btPolicy.removeConnectListener(ainaA2dpWiring)
+        } catch (_: Throwable) {
+        }
+        try {
+            ainaA2dpWiring.stop()
+        } catch (_: Throwable) {
+        }
+        try {
+            // Restores A2DP policy on every device we forbade during
+            // this lifetime. Leaving the AINA permanently forbidden
+            // after XV unloads would be a hostile side effect.
+            ainaA2dpController.stop()
         } catch (_: Throwable) {
         }
         try {

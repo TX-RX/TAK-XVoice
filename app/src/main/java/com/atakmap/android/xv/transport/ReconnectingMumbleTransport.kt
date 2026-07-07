@@ -2,6 +2,7 @@ package com.atakmap.android.xv.transport
 
 import android.util.Log
 import com.atakmap.android.xv.transport.mumble.FatalMumbleException
+import com.atakmap.android.xv.transport.mumble.MumbleSession
 import com.atakmap.android.xv.transport.mumble.SelfKickedException
 import com.atakmap.android.xv.transport.mumble.UsernameInUseException
 import java.util.concurrent.Executors
@@ -161,6 +162,23 @@ class ReconnectingMumbleTransport(
         executor.submit {
             if (teardownRequested) return@submit
             val pending = pendingRetry
+            val currentInner = inner
+            val primaryState = currentInner?.primarySession()?.currentState()
+            // CONNECTING / AUTHENTICATING means a fresh inner is mid-
+            // handshake: TLS or Authenticate already on the wire, but
+            // ServerSync hasn't landed yet so [isConnected] reads false.
+            // Without the explicit handshake branch below, this case
+            // matched the "no live inner" else and we waited ~30-50 s
+            // for the stale-link watchdog to notice the orphaned socket
+            // (see field bug 2026-06-15: operator hits "voice gone" on
+            // Wi-Fi -> cell handoff right at the moment of connect).
+            // Treat mid-handshake exactly like a live-inner swap: tear
+            // down, await quiescence, drive a fresh attempt.
+            val handshakeInFlight =
+                primaryState == MumbleSession.ConnectState.CONNECTING ||
+                    primaryState == MumbleSession.ConnectState.AUTHENTICATING
+            val midHandshake =
+                currentInner != null && !currentInner.isConnected && handshakeInFlight
             when {
                 pending != null && !pending.isDone -> {
                     Log.i(TAG, "network swap — collapsing pending backoff and retrying immediately")
@@ -169,7 +187,7 @@ class ReconnectingMumbleTransport(
                     policy.reset()
                     runAttempt()
                 }
-                inner?.isConnected == true -> {
+                currentInner?.isConnected == true -> {
                     Log.i(TAG, "network swap — tearing down live inner for immediate reattempt")
                     // Tell intercept.onDisconnected to skip its retry
                     // schedule; we're driving the next attempt directly
@@ -179,14 +197,35 @@ class ReconnectingMumbleTransport(
                     // with the flag already visible.
                     swapInProgress.set(true)
                     try {
-                        inner?.disconnect()
+                        currentInner.disconnect()
                         // Brief wait so runAttempt's Step 1 (which also
                         // disconnects + awaits) doesn't burn 1.5s on a
                         // socket that's already mid-teardown here. Cap
                         // matches awaitFullyDisconnected's own budget.
-                        inner?.awaitFullyDisconnected(1500)
+                        currentInner.awaitFullyDisconnected(1500)
                     } catch (t: Throwable) {
                         Log.w(TAG, "inner.disconnect threw on network swap", t)
+                    }
+                    policy.reset()
+                    runAttempt()
+                }
+                midHandshake -> {
+                    // BUG FIX (2026-06-15): mid-handshake swap previously
+                    // fell through to the "no live inner" else and the
+                    // orphaned socket sat there until the SO_TIMEOUT /
+                    // stale-link watchdog noticed — ~30-50 s of dead air
+                    // on a network-promotion event the watcher had
+                    // already told us about.
+                    Log.i(
+                        TAG,
+                        "network swap — inner mid-handshake ($primaryState); tearing down for immediate reattempt",
+                    )
+                    swapInProgress.set(true)
+                    try {
+                        currentInner!!.disconnect()
+                        currentInner.awaitFullyDisconnected(1500)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "inner.disconnect threw on mid-handshake network swap", t)
                     }
                     policy.reset()
                     runAttempt()

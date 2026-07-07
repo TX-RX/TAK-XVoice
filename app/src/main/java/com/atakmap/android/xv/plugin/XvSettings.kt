@@ -43,6 +43,46 @@ class XvSettings(
         }
     }
 
+    // Secondary PTT input — an OPTIONAL second bonded BT device whose
+    // PTT button drives slot 0 in parallel with the primary. Motorcyclist
+    // use case: AINA helmet speakermic + Pryme handlebar puck both
+    // keying VS1. Independent of the primary so the operator can swap
+    // either side without affecting the other. Null/blank = no secondary
+    // selected (single-input behaviour).
+    fun persistedSecondaryAinaMac(): String? =
+        prefs()?.getString(PREF_AINA_MAC_SECONDARY, null)?.takeIf { it.isNotBlank() }
+
+    fun persistSecondaryAinaMac(mac: String?) {
+        prefs()?.edit()?.apply {
+            if (mac.isNullOrBlank()) remove(PREF_AINA_MAC_SECONDARY) else putString(PREF_AINA_MAC_SECONDARY, mac)
+            apply()
+        }
+    }
+
+    fun persistedSecondaryAinaKind(): String? =
+        prefs()?.getString(PREF_AINA_KIND_SECONDARY, null)?.takeIf { it.isNotBlank() }
+
+    fun persistSecondaryAinaKind(kind: String?) {
+        prefs()?.edit()?.apply {
+            if (kind.isNullOrBlank()) remove(PREF_AINA_KIND_SECONDARY) else putString(PREF_AINA_KIND_SECONDARY, kind)
+            apply()
+        }
+    }
+
+    // Operator preference: should XV auto-connect a compatible
+    // speakermic / BLE PTT button it detects in the bond table on
+    // plugin load? Default true so first-launch UX is "pair the device
+    // in Android Settings → open ATAK → it just works." Operators who
+    // don't want the auto-pick (e.g. running multiple speakermics for
+    // testing) can flip this off and rely on the explicit AINA picker
+    // in Settings → Preferences. Persists across launches.
+    fun persistedAutoConnectBtEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_AUTO_CONNECT_BT, true) ?: true
+
+    fun persistAutoConnectBtEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_AUTO_CONNECT_BT, enabled)?.apply()
+    }
+
     // Per-MAC protocol override used when the SDP-based classifier picks
     // wrong. Necessary because the AINA APTT v18 spec doesn't put the V2
     // BLE vendor service `127FACE1-...` in the BR/EDR SDP record — it's
@@ -72,6 +112,28 @@ class XvSettings(
             if (proto.isNullOrBlank()) remove(key) else putString(key, proto.lowercase())
             apply()
         }
+    }
+
+    // Removes any persisted override for [mac]. Called from the
+    // BOND_NONE branch of the bond-state receiver so that a re-pair
+    // (a likely operator response to a misbehaving AINA) starts from
+    // a clean auto-detect rather than a stale override that might no
+    // longer match the device's firmware. Idempotent: safe to call
+    // for a MAC with no recorded override.
+    fun clearAinaProtocolOverride(
+        mac: String?,
+        reason: String = "manual",
+    ) {
+        if (mac.isNullOrBlank()) return
+        val key = prefAinaProtocolKeyFor(mac)
+        prefs()?.edit()?.remove(key)?.apply()
+        android.util.Log.i("XvSettings", "override cleared mac=${redactMacForLog(mac)} reason=$reason")
+    }
+
+    private fun redactMacForLog(mac: String): String {
+        val parts = mac.split(":")
+        if (parts.size != 6) return "??:XX:XX:XX:XX:??"
+        return "${parts.first()}:XX:XX:XX:XX:${parts.last()}"
     }
 
     private fun prefAinaProtocolKeyFor(mac: String): String = PREF_AINA_PROTOCOL_PREFIX + mac.uppercase()
@@ -138,6 +200,14 @@ class XvSettings(
 
         // Persistent keys.
         private const val PREF_AINA_MAC = "aina_mac"
+
+        // Secondary PTT input pair — see persistedSecondaryAinaMac.
+        private const val PREF_AINA_MAC_SECONDARY = "aina_mac_secondary"
+        private const val PREF_AINA_KIND_SECONDARY = "aina_kind_secondary"
+
+        // BT auto-connect on plugin load (default true). See
+        // persistedAutoConnectBtEnabled.
+        private const val PREF_AUTO_CONNECT_BT = "auto_connect_bt"
 
         // Per-MAC AINA protocol override; key suffix is the upper-cased
         // MAC. Value is "v1" / "v2" / "ble-hid" or absent for auto-detect.

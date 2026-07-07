@@ -21,7 +21,16 @@ class AinaBleReader(
     private val context: Context,
     private val onEvent: (AinaButton, isDown: Boolean) -> Unit,
     private val onConnectionState: (Boolean) -> Unit = {},
+    // Test seam — abstracts BluetoothDevice.connectGatt so unit
+    // tests can supply a fake BluetoothGatt + drive callbacks
+    // synchronously. Production uses [DefaultGattConnector]. Public
+    // (rather than internal) so unit tests in the same module can
+    // pass a SAM lambda via this primary constructor — Kotlin's
+    // overload-resolution rules reject the lambda when the SAM type
+    // is internal. Production callers never reference this type.
+    private val gattConnector: GattConnector = DefaultGattConnector,
 ) {
+
     private val decoder = ButtonMaskDecoder()
     private val handler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
@@ -32,6 +41,16 @@ class AinaBleReader(
 
     private var directRetryCount: Int = 0
     private var autoConnectArmed: Boolean = false
+
+    // Test-only read access to the retry counter / auto-arm flag.
+    // Package-internal because the M6 quick-win specifically needs
+    // to verify that onServicesDiscovered success resets the
+    // counter — there's no other clean way to observe this without
+    // reaching for reflection or driving a multi-minute reconnect
+    // schedule.
+    internal fun directRetryCountForTest(): Int = directRetryCount
+
+    internal fun autoConnectArmedForTest(): Boolean = autoConnectArmed
 
     // Set in onServicesDiscovered after we kick off the CCCD write.
     // Cleared in onDescriptorWrite after we chain into the CONFIG read.
@@ -79,14 +98,10 @@ class AinaBleReader(
         decoder.reset()
         Log.i(
             TAG,
-            "Connecting to AINA at ${device.address} (autoConnect=$useAutoConnect, attempt=${directRetryCount + 1})",
+            "Connecting to AINA at ${redactMac(device.address)} " +
+                "(autoConnect=$useAutoConnect, attempt=${directRetryCount + 1})",
         )
-        gatt =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                device.connectGatt(context, useAutoConnect, callback, BluetoothDevice.TRANSPORT_LE)
-            } else {
-                device.connectGatt(context, useAutoConnect, callback)
-            }
+        gatt = gattConnector.connect(context, device, useAutoConnect, callback)
     }
 
     fun isConnecting(): Boolean = gatt != null
@@ -147,7 +162,8 @@ class AinaBleReader(
 
         Log.i(
             TAG,
-            "Scheduling reconnect to ${device.address} in ${delayMs}ms ($reason, autoConnect=$autoConnectArmed)",
+            "Scheduling reconnect to ${redactMac(device.address)} in ${delayMs}ms " +
+                "($reason, autoConnect=$autoConnectArmed)",
         )
         handler.removeCallbacks(retryRunnable)
         handler.postDelayed(retryRunnable, delayMs)
@@ -162,18 +178,43 @@ class AinaBleReader(
             ) {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
-                        Log.i(TAG, "Connected (status=$status), discovering services")
+                        Log.i(
+                            TAG,
+                            "Connected (status=$status ${gattStatusName(status)}), discovering services",
+                        )
+                        // Quick-win M6 part 1: retry counter resets on
+                        // any successful CONNECTED transition. Part 2
+                        // mirrors this in onServicesDiscovered to
+                        // cover drops that occur AFTER CONNECTED but
+                        // before services finish discovery (the
+                        // pendingConfigReadModifyWrite window).
                         directRetryCount = 0
                         autoConnectArmed = false
                         onConnectionState(true)
                         g.discoverServices()
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
-                        Log.i(TAG, "Disconnected (status=$status)")
+                        Log.i(
+                            TAG,
+                            "Disconnected (status=$status ${gattStatusName(status)} " +
+                                "pendingConfig=$pendingConfigReadModifyWrite)",
+                        )
                         decoder.reset()
+                        // Clear the pending flag — a disconnect in the
+                        // middle of the CCCD-write -> CONFIG-read
+                        // sequence has invalidated the half-configured
+                        // state. The reconnect path will re-enter
+                        // onServicesDiscovered cleanly.
+                        if (pendingConfigReadModifyWrite) {
+                            Log.i(
+                                TAG,
+                                "pendingConfigReadModifyWrite: true -> false (disconnect mid-sequence)",
+                            )
+                            pendingConfigReadModifyWrite = false
+                        }
                         onConnectionState(false)
                         if (!intentionalDisconnect) {
-                            scheduleReconnect("status=$status")
+                            scheduleReconnect("status=$status ${gattStatusName(status)}")
                         }
                     }
                 }
@@ -184,9 +225,20 @@ class AinaBleReader(
                 status: Int,
             ) {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    Log.w(TAG, "Service discovery failed: $status")
+                    Log.w(TAG, "Service discovery failed: $status ${gattStatusName(status)}")
                     return
                 }
+                // Quick-win M6 part 2: reset directRetryCount on the
+                // success path of service discovery. The drop window
+                // between STATE_CONNECTED and onServicesDiscovered (the
+                // pendingConfigReadModifyWrite period) was previously
+                // not covered by the reset in
+                // onConnectionStateChange(STATE_CONNECTED) — if a drop
+                // happened during this window the counter kept
+                // growing forever even though the previous attempt
+                // had made measurable progress.
+                directRetryCount = 0
+                autoConnectArmed = false
                 val service =
                     g.getService(SERVICE_UUID) ?: run {
                         Log.w(TAG, "AINA service not found on device")
@@ -207,6 +259,12 @@ class AinaBleReader(
                         return
                     }
                 val enableValue = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                Log.i(
+                    TAG,
+                    "Firing CCCD write to enable button notifications " +
+                        "(pendingConfigReadModifyWrite: false -> true)",
+                )
+                pendingConfigReadModifyWrite = true
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     g.writeDescriptor(cccd, enableValue)
                 } else {
@@ -221,7 +279,6 @@ class AinaBleReader(
                 // a descriptor write returns false. The deferred read
                 // sets a pending flag here so the descriptor-write callback
                 // knows to chain into the read-modify-write.
-                pendingConfigReadModifyWrite = true
             }
 
             override fun onDescriptorWrite(
@@ -231,11 +288,32 @@ class AinaBleReader(
             ) {
                 if (descriptor.uuid != CCCD_UUID) return
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    Log.w(TAG, "CCCD write failed: status=$status — buttons may not notify")
+                    // Quick-win M5: CCCD-write failure used to just
+                    // log + clear the pending flag. But
+                    // setCharacteristicNotification(true) was already
+                    // applied above, so the device sees a half-
+                    // configured subscription — notifications may or
+                    // may not flow, and there's no retry. Treat as a
+                    // full reconnect: tear the GATT down and let
+                    // scheduleReconnect's backoff bring it up clean.
+                    Log.e(
+                        TAG,
+                        "CCCD write FAILED status=$status ${gattStatusName(status)} — " +
+                            "device left half-configured, forcing reconnect",
+                    )
+                    Log.i(
+                        TAG,
+                        "pendingConfigReadModifyWrite: true -> false (CCCD-write failure)",
+                    )
                     pendingConfigReadModifyWrite = false
+                    scheduleReconnect("CCCD write failed status=$status")
                     return
                 }
                 if (!pendingConfigReadModifyWrite) return
+                Log.i(
+                    TAG,
+                    "CCCD write OK — pendingConfigReadModifyWrite: true -> false, chaining to CONFIG read",
+                )
                 pendingConfigReadModifyWrite = false
                 val service = g.getService(SERVICE_UUID) ?: return
                 val configCh = service.getCharacteristic(CONFIG_CHAR_UUID)
@@ -277,7 +355,7 @@ class AinaBleReader(
                 rawValue: ByteArray?,
             ) {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    Log.w(TAG, "CONFIG read failed: status=$status")
+                    Log.w(TAG, "CONFIG read failed: status=$status ${gattStatusName(status)}")
                     return
                 }
                 if (rawValue == null || rawValue.isEmpty()) {
@@ -326,7 +404,7 @@ class AinaBleReader(
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     Log.i(TAG, "CONFIG write OK — A2DP-controls-disable bit applied")
                 } else {
-                    Log.w(TAG, "CONFIG write FAILED: status=$status")
+                    Log.w(TAG, "CONFIG write FAILED: status=$status ${gattStatusName(status)}")
                 }
             }
 
@@ -356,6 +434,37 @@ class AinaBleReader(
                 }
             }
         }
+
+    /**
+     * Test seam — abstracts BluetoothDevice.connectGatt so unit
+     * tests can supply a fake BluetoothGatt and drive callbacks
+     * synchronously without standing up a real BLE stack. Public
+     * so the unit tests in this module can pass a SAM lambda (Kotlin
+     * rejects the lambda when the SAM type is internal). Production
+     * callers don't reference this type at all.
+     */
+    fun interface GattConnector {
+        fun connect(
+            context: Context,
+            device: BluetoothDevice,
+            autoConnect: Boolean,
+            callback: BluetoothGattCallback,
+        ): BluetoothGatt?
+    }
+
+    object DefaultGattConnector : GattConnector {
+        override fun connect(
+            context: Context,
+            device: BluetoothDevice,
+            autoConnect: Boolean,
+            callback: BluetoothGattCallback,
+        ): BluetoothGatt? =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                device.connectGatt(context, autoConnect, callback, BluetoothDevice.TRANSPORT_LE)
+            } else {
+                device.connectGatt(context, autoConnect, callback)
+            }
+    }
 
     companion object {
         private const val TAG = "AinaBleReader"
@@ -391,5 +500,19 @@ class AinaBleReader(
         // can brick the device per the spec's NOT-FOR-PRODUCTION note.
         const val CONFIG_BIT_PHONE_CONTROLS_DISABLE = 0x10
         const val CONFIG_BIT_A2DP_CONTROLS_DISABLE = 0x20
+
+        // Decoded names for the common BluetoothGatt status codes we
+        // see in field logs. Helps an operator skimming logcat tell
+        // "133 = stack glitch, will retry" from "8 = AINA went to
+        // sleep / out of range" without consulting a reference table.
+        internal fun gattStatusName(status: Int): String =
+            when (status) {
+                BluetoothGatt.GATT_SUCCESS -> "GATT_SUCCESS"
+                8 -> "CONN_TIMEOUT"
+                19 -> "GATT_CONN_TERMINATE_PEER_USER"
+                22 -> "LMP_RESPONSE_TIMEOUT"
+                133 -> "GATT_ERROR"
+                else -> "STATUS_$status"
+            }
     }
 }

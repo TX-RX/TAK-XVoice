@@ -328,6 +328,97 @@ class ReconnectingMumbleTransportTest {
     }
 
     // ============================================================
+    // Bug fix (2026-06): notifyNetworkSwap during the TLS / Authenticate
+    // handshake must tear down and re-attempt — without this branch the
+    // previous wrapper code matched the "no live inner" else and
+    // silently waited 30-50 s for the stale-link watchdog to notice the
+    // orphaned socket. Verified by faking a MumbleSession that reports
+    // CONNECTING (or AUTHENTICATING) while isConnected stays false.
+    // ============================================================
+
+    @Test
+    fun `notifyNetworkSwap_duringHandshake_tearsDownAndReattempts`() {
+        val r = build()
+        r.connect(upstream)
+        // Fresh attempt: inner.isConnected is false (no ServerSync yet)
+        // and the primary MumbleSession reports CONNECTING — exactly
+        // the window where the prior code dropped the swap on the floor.
+        primaryConnectedResult = false
+        val freshInner = factoryInvocations[0]
+        val fakeSession = mockk<MumbleSession>(relaxed = true)
+        every { fakeSession.currentState() } returns MumbleSession.ConnectState.CONNECTING
+        every { freshInner.primarySession() } returns fakeSession
+
+        r.notifyNetworkSwap()
+
+        // Mid-handshake branch ran: disconnect + awaitFullyDisconnected
+        // on the SAME inner, then a fresh attempt via the factory.
+        // Two disconnect calls are expected — one from the swap path
+        // itself, one from runAttempt's Step 1 (which tears down any
+        // prior inner before building the new one). The important
+        // invariant is the swap path called it AT LEAST once, vs the
+        // pre-fix behavior where it was never called and we waited
+        // ~30-50s for the stale-link watchdog.
+        verify(atLeast = 1) { freshInner.disconnect() }
+        verify { freshInner.awaitFullyDisconnected(1500) }
+        assertEquals(
+            "mid-handshake swap must drive a brand-new factory attempt, not wait on the orphaned socket",
+            2,
+            factoryInvocations.size,
+        )
+    }
+
+    @Test
+    fun `notifyNetworkSwap_duringAuthenticating_tearsDownAndReattempts`() {
+        val r = build()
+        r.connect(upstream)
+        // AUTHENTICATING is the same critical window — TLS up, Version /
+        // Authenticate on the wire, ServerSync not yet landed so the
+        // wrapper's isConnected reads false.
+        primaryConnectedResult = false
+        val freshInner = factoryInvocations[0]
+        val fakeSession = mockk<MumbleSession>(relaxed = true)
+        every { fakeSession.currentState() } returns MumbleSession.ConnectState.AUTHENTICATING
+        every { freshInner.primarySession() } returns fakeSession
+
+        r.notifyNetworkSwap()
+
+        // Same as the CONNECTING test: at least one disconnect from
+        // the swap path itself; runAttempt's Step 1 may add a second.
+        verify(atLeast = 1) { freshInner.disconnect() }
+        assertEquals(2, factoryInvocations.size)
+    }
+
+    @Test
+    fun `notifyNetworkSwap with disconnected inner does not reattempt`() {
+        val r = build()
+        r.connect(upstream)
+        // Inner exists but its primary session is fully gone — no
+        // pending retry, no live connection, no in-flight handshake.
+        // Per the wrapper contract this is a no-op: the next user
+        // action (operator reconnect, listener-driven retry) will
+        // build a fresh attempt.
+        primaryConnectedResult = false
+        val freshInner = factoryInvocations[0]
+        val fakeSession = mockk<MumbleSession>(relaxed = true)
+        every { fakeSession.currentState() } returns MumbleSession.ConnectState.DISCONNECTED
+        every { freshInner.primarySession() } returns fakeSession
+
+        // Drain the post-construction pending future so the
+        // pending-backoff branch doesn't pick this up.
+        executor.fireScheduled()
+        val attemptsBefore = factoryInvocations.size
+
+        r.notifyNetworkSwap()
+
+        assertEquals(
+            "swap on a fully disconnected inner with no pending retry must NOT spawn a new attempt",
+            attemptsBefore,
+            factoryInvocations.size,
+        )
+    }
+
+    // ============================================================
     // sendFrame — proxies to live inner; tolerates a torn-down inner
     // ============================================================
 
