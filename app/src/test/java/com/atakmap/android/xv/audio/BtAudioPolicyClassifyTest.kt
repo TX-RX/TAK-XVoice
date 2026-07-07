@@ -20,7 +20,7 @@ class BtAudioPolicyClassifyTest {
     fun `HFP profile reports a device — classify HFP_ONLY`() {
         val mode =
             BtAudioPolicy.classifyFromInputs(
-                hfpProxyMacs = listOf("38:B8:EB:31:67:82"),
+                hfpProxyMacs = listOf("AA:BB:CC:DD:EE:FF"),
                 aclDisconnectedMacs = emptySet(),
                 hasScoOutput = true,
                 hasA2dpOutput = true,
@@ -36,8 +36,8 @@ class BtAudioPolicyClassifyTest {
         // verdict is NONE.
         val mode =
             BtAudioPolicy.classifyFromInputs(
-                hfpProxyMacs = listOf("38:B8:EB:31:67:82"),
-                aclDisconnectedMacs = setOf("38:B8:EB:31:67:82"),
+                hfpProxyMacs = listOf("AA:BB:CC:DD:EE:FF"),
+                aclDisconnectedMacs = setOf("AA:BB:CC:DD:EE:FF"),
                 hasScoOutput = false,
                 hasA2dpOutput = false,
             )

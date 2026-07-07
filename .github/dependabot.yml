@@ -1,0 +1,59 @@
+# Dependabot configuration for TAK-XVoice.
+#
+# Two ecosystems are tracked:
+#   - github-actions: the workflow definitions in .github/workflows,
+#     so ktlint / CodeQL / setup-java action bumps come in as PRs.
+#   - gradle: the Kotlin / AndroidX / Concentus / Robolectric etc.
+#     dependencies declared in app/build.gradle.kts and elsewhere.
+#
+# We do NOT enable the ecosystem for the ATAK SDK — it's resolved
+# from a local path per CLAUDE.md and Dependabot has no way to see
+# updates for it.
+#
+# Weekly cadence keeps PR volume manageable; grouped updates so
+# minor + patch bumps land as a single PR per ecosystem per week
+# instead of one PR per dependency.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - gradle
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    groups:
+      gradle-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

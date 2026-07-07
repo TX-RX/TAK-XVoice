@@ -23,12 +23,12 @@ class ScoLinkPickerTest {
         val list =
             listOf(
                 sco("AA:11:11:11:11:11"),
-                sco("38:B8:EB:31:67:82"), // pinned AINA
-                a2dp("38:B8:EB:31:67:82"),
+                sco("AA:BB:CC:DD:EE:FF"), // pinned AINA
+                a2dp("AA:BB:CC:DD:EE:FF"),
             )
-        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "38:B8:EB:31:67:82")
+        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "AA:BB:CC:DD:EE:FF")
         assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, pick!!.type)
-        assertEquals("38:B8:EB:31:67:82", pick.mac)
+        assertEquals("AA:BB:CC:DD:EE:FF", pick.mac)
     }
 
     @Test
@@ -45,8 +45,8 @@ class ScoLinkPickerTest {
         // Some BT devices expose only A2DP (Bluetooth speakers, JBL etc.)
         // — the pin should still match if the operator wants that device
         // even though TX won't work without SCO.
-        val list = listOf(a2dp("38:B8:EB:31:67:82"))
-        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "38:B8:EB:31:67:82")
+        val list = listOf(a2dp("AA:BB:CC:DD:EE:FF"))
+        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "AA:BB:CC:DD:EE:FF")
         assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, pick!!.type)
     }
 
@@ -100,8 +100,8 @@ class ScoLinkPickerTest {
     fun `candidates of unrelated types are ignored even when MAC matches`() {
         // BUILTIN_SPEAKER with a MAC that happens to match (won't ever
         // happen in practice but the selector must be defensive).
-        val list = listOf(otherType("38:B8:EB:31:67:82"))
-        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "38:B8:EB:31:67:82")
+        val list = listOf(otherType("AA:BB:CC:DD:EE:FF"))
+        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "AA:BB:CC:DD:EE:FF")
         assertNull("non-BT candidates must be ignored entirely", pick)
     }
 
@@ -110,10 +110,10 @@ class ScoLinkPickerTest {
         // Device exposes both profiles; SCO must win because TX needs it.
         val list =
             listOf(
-                a2dp("38:B8:EB:31:67:82"),
-                sco("38:B8:EB:31:67:82"),
+                a2dp("AA:BB:CC:DD:EE:FF"),
+                sco("AA:BB:CC:DD:EE:FF"),
             )
-        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "38:B8:EB:31:67:82")
+        val pick = ScoLink.pickBtCommDeviceFromCandidates(list, "AA:BB:CC:DD:EE:FF")
         assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, pick!!.type)
     }
 
