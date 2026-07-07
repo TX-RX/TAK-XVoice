@@ -575,14 +575,37 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
 
-                override fun onPttStateChanged(transmitting: Boolean) {
+                override fun onPttStateChanged(
+                    transmitting: Boolean,
+                    slot: Int,
+                ) {
                     if (transmitting) {
                         beginMumbleVoiceBurst()
                         // Lock in the UI's "transmitting" state on whichever
-                        // slot the operator just pressed. AIDL doesn't pass
-                        // the slot (single-bool API), so we use the slot
-                        // tracked at startTx-time — see lastRequestedTxSlot.
-                        txActiveSlot = lastRequestedTxSlot
+                        // slot the service reports going hot. The service
+                        // passes the slot directly through the AIDL callback
+                        // so BT-speakermic / BLE-button PTTs (which never
+                        // route through the plugin's Controller.startTx and
+                        // therefore never populate lastRequestedTxSlot) still
+                        // light the correct on-screen indicator. Field-
+                        // observed 2026-07-07 on the umbrella branch: BT
+                        // speakermic TX left the "HOLD TO TX" label
+                        // showing instead of "● TRANSMITTING" because
+                        // lastRequestedTxSlot was stale at -1.
+                        //
+                        // Slot 1 (secondary) without a live VS2 session
+                        // is a legitimate operator setup — the transport
+                        // already handles it in pickSlotForSend by
+                        // routing the audio to the primary. Mirror that
+                        // fallback here so the on-screen VS1 button
+                        // lights instead of leaving no indicator at all
+                        // (the VS2 button is hidden / disabled when
+                        // secondaryConnected() is false). Keeps the UI
+                        // in sync with the wire behavior.
+                        val secondaryLive =
+                            mumbleTransport()?.secondaryConnected() == true
+                        txActiveSlot =
+                            if (slot == 1 && !secondaryLive) 0 else slot
                     } else {
                         txActiveSlot = -1
                     }
