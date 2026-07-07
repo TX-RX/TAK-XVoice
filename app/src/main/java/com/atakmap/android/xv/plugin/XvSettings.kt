@@ -69,6 +69,64 @@ class XvSettings(
         }
     }
 
+    // Manually-added BLE PTT devices (HM-10-based buttons — PTT-Z01,
+    // Pryme BT-PTT-Z, etc.). These buttons don't always show up in
+    // adapter.bondedDevices with a classifier-friendly SDP UUID set
+    // (PTT-Z01 in particular doesn't bond via system BT settings at
+    // all), so the settings picker would otherwise never surface them.
+    // We persist them here so the operator sees them in the picker on
+    // every subsequent plugin launch until they explicitly remove one.
+    //
+    // Storage format: Set<String> where each element is "MAC|Name".
+    // Name is best-effort — HM-10 modules sometimes advertise nothing,
+    // in which case we fall back to the MAC as the display label.
+    fun knownBlePttDevices(): List<Pair<String, String?>> {
+        val raw = prefs()?.getStringSet(PREF_BLE_PTT_KNOWN, emptySet()) ?: emptySet()
+        return raw.mapNotNull { entry ->
+            val idx = entry.indexOf('|')
+            if (idx < 0) {
+                entry.takeIf { it.isNotBlank() }?.let { it to null }
+            } else {
+                val mac = entry.substring(0, idx)
+                val name = entry.substring(idx + 1).takeIf { it.isNotBlank() }
+                if (mac.isBlank()) null else mac to name
+            }
+        }.sortedBy { (mac, name) -> (name ?: mac).lowercase() }
+    }
+
+    fun addKnownBlePttDevice(
+        mac: String,
+        name: String?,
+    ) {
+        val normalized = mac.trim().uppercase().takeIf { it.isNotBlank() } ?: return
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_BLE_PTT_KNOWN, emptySet())
+                ?.toMutableSet()
+                ?: mutableSetOf()
+        // Replace any existing entry for the same MAC so the name gets
+        // updated if the operator re-added the device after learning
+        // its advertised name.
+        existing.removeAll { it.startsWith("$normalized|") || it == normalized }
+        val cleanName = name?.trim()?.takeIf { it.isNotBlank() && !it.contains('|') }
+        existing.add(if (cleanName != null) "$normalized|$cleanName" else normalized)
+        prefs()?.edit()?.putStringSet(PREF_BLE_PTT_KNOWN, existing)?.apply()
+    }
+
+    fun removeKnownBlePttDevice(mac: String) {
+        val normalized = mac.trim().uppercase().takeIf { it.isNotBlank() } ?: return
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_BLE_PTT_KNOWN, emptySet())
+                ?.toMutableSet()
+                ?: return
+        val before = existing.size
+        existing.removeAll { it.startsWith("$normalized|") || it == normalized }
+        if (existing.size != before) {
+            prefs()?.edit()?.putStringSet(PREF_BLE_PTT_KNOWN, existing)?.apply()
+        }
+    }
+
     // Operator preference: should XV auto-connect a compatible
     // speakermic / BLE PTT button it detects in the bond table on
     // plugin load? Default true so first-launch UX is "pair the device
@@ -204,6 +262,10 @@ class XvSettings(
         // Secondary PTT input pair — see persistedSecondaryAinaMac.
         private const val PREF_AINA_MAC_SECONDARY = "aina_mac_secondary"
         private const val PREF_AINA_KIND_SECONDARY = "aina_kind_secondary"
+
+        // Manually-added BLE PTT devices — see knownBlePttDevices.
+        // Set<String> with "MAC|Name" entries.
+        private const val PREF_BLE_PTT_KNOWN = "ble_ptt_known"
 
         // BT auto-connect on plugin load (default true). See
         // persistedAutoConnectBtEnabled.

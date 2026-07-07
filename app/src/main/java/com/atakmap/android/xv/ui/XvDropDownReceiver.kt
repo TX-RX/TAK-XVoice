@@ -200,14 +200,38 @@ class XvDropDownReceiver(
 
         fun setSelectedSecondaryAina(mac: String?) {}
 
-        // Manually add a BLE PTT button by MAC when the device can't
-        // be paired via system Bluetooth settings (advertises a vendor
-        // service, not HID). Persists as the secondary PTT source and
-        // connects immediately via the same PrymeBleReader path Pryme
-        // BT-PTT-Z uses. Returns null on success, or a short operator-
-        // actionable error string ("Invalid MAC format" / "MAC collides
-        // with primary") on failure.
-        fun addManualBlePttSecondary(mac: String): String? = "not implemented"
+        // Assign a scan-discovered BLE PTT button to the primary or
+        // secondary PTT slot. Both persist the MAC + kind="ble-hid" and
+        // hand off to the existing service-side connect path
+        // (IXvVoice.connectAina / connectAinaSecondary), which uses
+        // PrymeBleReader on top of the HM-10 transparent-UART service.
+        // The device does NOT need to be bonded — BluetoothAdapter's
+        // getRemoteDevice(mac) constructs a BluetoothDevice from the
+        // MAC alone and BluetoothGatt.connectGatt works over an
+        // unbonded LE link. Returns null on success, or a short
+        // operator-actionable error string on failure.
+        // Add a scan-discovered BLE PTT button to the known-devices
+        // library. Does NOT assign it to a slot — the operator picks
+        // it from the primary or secondary picker afterwards, subject
+        // to the existing "primary MAC != secondary MAC" rule. Returns
+        // null on success or a short operator-actionable error.
+        fun addBlePttDevice(
+            mac: String,
+            name: String?,
+        ): String? = "not implemented"
+
+        // BLE PTT devices the operator has added via the scan-and-pick
+        // dialog. Surfaced so the "Remove PTT button" dialog can list
+        // them without exposing the raw SharedPreferences store. Empty
+        // list when nothing has been added.
+        fun knownBlePttDevices(): List<AinaDeviceInfo> = emptyList()
+
+        // Clear a persisted BLE PTT device by MAC. Also clears it from
+        // the primary / secondary slot if the operator had assigned it
+        // there. Returns null on success or an operator-actionable
+        // error string. No-op if the MAC isn't in the known-devices
+        // store.
+        fun removeBlePttDevice(mac: String): String? = "not implemented"
 
         // ---- BT auto-connect toggle ----
         // When ON (default), XV auto-connects the first compatible
@@ -1417,7 +1441,7 @@ class XvDropDownReceiver(
 
         wireAinaPicker(v)
         wireSecondaryAinaPicker(v)
-        wireManualBlePttEntry(v)
+        wireBlePttScanButton(v)
         wireAutoConnectBtSwitch(v)
         wireBtAudioOverridePicker(v)
     }
@@ -1513,6 +1537,20 @@ class XvDropDownReceiver(
         spinner.setSelection(selectedIdx)
         statusLabel.text = formatAinaStatus(devices, selectedMac, controller.ainaConnectionUp())
 
+        // Suppress the spurious onItemSelected that Android fires after
+        // setAdapter / setSelection. That first fire is Android draining
+        // its own queued event, NOT a user pick — but the callback runs
+        // with the pos we programmatically landed on, which may or may
+        // not match the operator's persisted selection depending on
+        // whether the persisted MAC survived into the current devices
+        // list. In the case where the persisted MAC ISN'T in devices
+        // (list was refreshed while BT was momentarily missing that
+        // entry, or a prior selection is now unbonded), setSelection
+        // falls back to pos=0 and the spurious fire writes null back
+        // to the persisted MAC. That clobbered the operator's primary
+        // AINA selection 2026-07-07 and left the speakermic disconnected
+        // on the next startup. Ignore the first fire per picker.
+        var suppressFirstFire = true
         spinner.onItemSelectedListener =
             object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(
@@ -1521,6 +1559,10 @@ class XvDropDownReceiver(
                     pos: Int,
                     id: Long,
                 ) {
+                    if (suppressFirstFire) {
+                        suppressFirstFire = false
+                        return
+                    }
                     val pickedMac =
                         if (pos == 0) {
                             null
@@ -1561,6 +1603,10 @@ class XvDropDownReceiver(
         spinner.setSelection(selectedIdx)
         statusLabel?.text =
             formatAinaStatus(devices, selectedMac, controller.secondaryAinaConnectionUp())
+        // See wireAinaPicker for the same first-fire suppression rationale.
+        // A spurious pos=0 fire from setAdapter/setSelection would write
+        // null back to persisted-secondary and disconnect the reader.
+        var suppressFirstFire = true
         spinner.onItemSelectedListener =
             object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(
@@ -1569,6 +1615,10 @@ class XvDropDownReceiver(
                     pos: Int,
                     id: Long,
                 ) {
+                    if (suppressFirstFire) {
+                        suppressFirstFire = false
+                        return
+                    }
                     val pickedMac =
                         if (pos == 0) {
                             null
@@ -1587,38 +1637,144 @@ class XvDropDownReceiver(
             }
     }
 
-    // Manual MAC entry for BLE PTT buttons that don't pair via
-    // system Bluetooth. Delegates all the real work to the Controller;
-    // this is UI plumbing (validate, invoke, feedback via Toast).
-    private fun wireManualBlePttEntry(v: View) {
-        val edit = v.findViewById<android.widget.EditText>(R.id.xv_edit_manual_ble_ptt_mac) ?: return
-        val btn = v.findViewById<Button>(R.id.xv_btn_add_manual_ble_ptt) ?: return
-        btn.setOnClickListener {
-            val raw = edit.text?.toString()?.trim().orEmpty()
-            if (raw.isEmpty()) {
-                android.widget.Toast
-                    .makeText(pluginContext, "Enter the button's MAC address first", android.widget.Toast.LENGTH_SHORT)
+    // BLE PTT discovery button. Scans for HM-10 / vendor-service PTT
+    // buttons (Pryme BT-PTT-Z, PTT-Z01, similar HM-10-based hardware
+    // that won't pair via the phone's system Bluetooth settings),
+    // shows results in a live-updating dialog, then asks the operator
+    // whether to assign the picked device to the primary or secondary
+    // PTT slot. Delegates the actual connect to the Controller.
+    private fun wireBlePttScanButton(v: View) {
+        val btn = v.findViewById<Button>(R.id.xv_btn_scan_ble_ptt) ?: return
+        btn.setOnClickListener { showBlePttScanDialog(v) }
+        val removeBtn = v.findViewById<Button>(R.id.xv_btn_remove_ble_ptt) ?: return
+        removeBtn.setOnClickListener { showBlePttRemoveDialog(v) }
+    }
+
+    private fun showBlePttRemoveDialog(rootView: View) {
+        val devices = controller.knownBlePttDevices()
+        if (devices.isEmpty()) {
+            android.widget.Toast
+                .makeText(
+                    pluginContext,
+                    "No BLE PTT devices to remove — none added yet.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            return
+        }
+        val labels = devices.map { "${it.name}  ·  ${it.mac}" }.toTypedArray()
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Remove which BLE PTT device?")
+            .setItems(labels) { _, which ->
+                val picked = devices.getOrNull(which) ?: return@setItems
+                android.app.AlertDialog
+                    .Builder(mapView.context)
+                    .setTitle("Remove ${picked.name}?")
+                    .setMessage(
+                        "This will forget ${picked.mac} and unassign it from any PTT slot. " +
+                            "You can re-add it later with Scan for BLE PTT device.",
+                    ).setPositiveButton("Remove") { _, _ ->
+                        val err = controller.removeBlePttDevice(picked.mac)
+                        android.widget.Toast
+                            .makeText(
+                                pluginContext,
+                                err ?: "Removed ${picked.name}",
+                                if (err == null) android.widget.Toast.LENGTH_SHORT else android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                        // Rebuild the primary + secondary pickers so
+                        // the removed device disappears immediately
+                        // without waiting for a settings re-open.
+                        wireAinaPicker(rootView)
+                        wireSecondaryAinaPicker(rootView)
+                    }.setNegativeButton("Cancel", null)
                     .show()
-                return@setOnClickListener
-            }
-            val err = controller.addManualBlePttSecondary(raw.uppercase())
-            if (err == null) {
-                android.widget.Toast
-                    .makeText(pluginContext, "Added BLE PTT $raw — connecting…", android.widget.Toast.LENGTH_SHORT)
-                    .show()
-                edit.text?.clear()
-                // Rebuild the secondary picker so the status label
-                // reflects the new persisted MAC (spinner itself
-                // stays on "(none)" because the device isn't bonded).
-                try {
-                    wireSecondaryAinaPicker(v)
-                } catch (_: Throwable) {
-                }
-            } else {
-                android.widget.Toast
-                    .makeText(pluginContext, err, android.widget.Toast.LENGTH_LONG)
-                    .show()
-            }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showBlePttScanDialog(rootView: View) {
+        val found =
+            mutableListOf<com.atakmap.android.xv.aina.BlePttScanResult>()
+        val labels = mutableListOf<String>()
+        // simple_list_item_1 renders as a plain TextView per row — safe
+        // in an AlertDialog's list slot, unlike xv_spinner_item which is
+        // sized for a Spinner popup and may render as a zero-height row
+        // in a dialog. Field-observed 2026-07-07: scan found PTT-Z01 in
+        // the log but the dialog's rows never appeared.
+        val adapter =
+            ArrayAdapter(mapView.context, android.R.layout.simple_list_item_1, labels)
+
+        var scanner: com.atakmap.android.xv.aina.BlePttScanner? = null
+
+        // NOTE: AlertDialog.setMessage AND setAdapter are mutually
+        // exclusive — providing setAdapter replaces the message slot
+        // with the list. Encoding the "press-the-button" hint into the
+        // title so the operator still sees it while the list renders.
+        val dialog =
+            android.app.AlertDialog
+                .Builder(mapView.context)
+                .setTitle("Scanning… press-and-hold the button now")
+                .setAdapter(adapter) { _, which ->
+                    val picked = found.getOrNull(which)
+                    scanner?.stop("device picked")
+                    if (picked != null) addPickedBlePttDevice(rootView, picked)
+                }.setNegativeButton("Cancel") { d, _ ->
+                    scanner?.stop("operator cancelled")
+                    d.dismiss()
+                }.create()
+        dialog.setOnDismissListener {
+            scanner?.stop("dialog dismissed")
+        }
+        dialog.show()
+
+        scanner =
+            com.atakmap.android.xv.aina.BlePttScanner(
+                context = pluginContext,
+                onDeviceFound = { result ->
+                    // De-dupe by MAC (scanner also de-dupes but the
+                    // adapter would otherwise show duplicates on rapid
+                    // rescans).
+                    if (found.any { it.mac.equals(result.mac, ignoreCase = true) }) return@BlePttScanner
+                    found.add(result)
+                    labels.add(result.displayLabel())
+                    adapter.notifyDataSetChanged()
+                    // Update the title once at least one match lands so
+                    // the operator sees "n found" instead of the
+                    // scanning hint that could imply nothing arrived.
+                    if (dialog.isShowing) {
+                        dialog.setTitle("Found ${found.size} — pick one, or wait")
+                    }
+                },
+                onScanEnded = { reason ->
+                    if (dialog.isShowing) {
+                        dialog.setTitle(
+                            if (found.isEmpty()) "No BLE PTT buttons found" else "Scan complete — pick one (${found.size})",
+                        )
+                    }
+                },
+            )
+        scanner.start(timeoutMs = 10_000L)
+    }
+
+    private fun addPickedBlePttDevice(
+        rootView: View,
+        picked: com.atakmap.android.xv.aina.BlePttScanResult,
+    ) {
+        val displayName = picked.name?.takeIf { it.isNotBlank() } ?: picked.mac
+        val err = controller.addBlePttDevice(picked.mac, picked.name)
+        val msg =
+            err ?: "Added $displayName — now pick it from the Primary PTT or Secondary PTT dropdown."
+        android.widget.Toast
+            .makeText(
+                pluginContext,
+                msg,
+                if (err == null) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_LONG,
+            ).show()
+        if (err == null) {
+            // Rebuild both pickers so the new device appears in the
+            // dropdowns immediately without a settings re-open.
+            wireAinaPicker(rootView)
+            wireSecondaryAinaPicker(rootView)
         }
     }
 
