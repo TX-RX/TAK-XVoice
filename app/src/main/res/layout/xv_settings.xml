@@ -34,7 +34,16 @@
             android:layout_marginStart="4dp"/>
     </LinearLayout>
 
-    <!-- Tab strip: TX/RX | Channels | Preferences -->
+    <!-- Tab strip: Devices | TX/RX | Server.
+         Devices sits leftmost + is the default because the AINA
+         speakermic / secondary PTT / audio-device pickers are the
+         controls operators touch every session; TX/RX (hot-mic,
+         timeouts, tone) is tuning; Server (TAK server picker, Mumble
+         connect/disconnect) is one-time enrollment. Tab IDs were
+         historically xv_tab_prefs / xv_tab_txrx / xv_tab_calls —
+         those IDs are preserved so the wireSettingsTabs findViewById
+         calls in XvDropDownReceiver don't break; only display order,
+         labels, and the default-selection index changed. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -43,10 +52,22 @@
         android:paddingEnd="12dp">
 
         <Button
+            android:id="@+id/xv_tab_prefs"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="Devices"
+            android:textColor="@color/xv_text"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
+
+        <Button
             android:id="@+id/xv_tab_txrx"
             android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
+            android:layout_marginStart="6dp"
             android:text="TX/RX"
             android:textColor="@color/xv_text"
             android:textSize="13sp"
@@ -60,18 +81,6 @@
             android:layout_weight="1"
             android:layout_marginStart="6dp"
             android:text="Server"
-            android:textColor="@color/xv_text"
-            android:textSize="13sp"
-            android:textAllCaps="false"
-            android:background="@drawable/xv_button_bg"/>
-
-        <Button
-            android:id="@+id/xv_tab_prefs"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:layout_marginStart="6dp"
-            android:text="Preferences"
             android:textColor="@color/xv_text"
             android:textSize="13sp"
             android:textAllCaps="false"
@@ -95,7 +104,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:visibility="visible">
+                android:visibility="gone">
 
                 <!-- Latched-mode toggle hidden from Settings UI per user
                      direction (2026-05-10). Latched mode remains
@@ -207,6 +216,39 @@
                     android:text="180 s"
                     android:visibility="gone"/>
 
+                <!-- Talk permit tone lives on the TX/RX tab because
+                     it's a transmit behavior, not a device choice —
+                     the tone plays when the operator keys, regardless
+                     of which speakermic / route is active. Moved here
+                     from the Devices tab so the Devices tab is closer
+                     to what operators reach for every session. -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Talk permit tone"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_tpt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <Button
+                    android:id="@+id/xv_btn_test_tpt"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Test tone"
+                    android:textColor="@color/xv_text"
+                    android:background="@drawable/xv_button_bg"/>
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="40dp"/>
@@ -310,7 +352,30 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:visibility="gone">
+                android:visibility="visible">
+
+                <!-- Persistent banner shown ONLY when the Bluetooth
+                     adapter is off. Tapping opens the system BT
+                     settings so the operator can turn it back on
+                     without leaving XV. Visibility is driven by an
+                     ACTION_STATE_CHANGED receiver registered while
+                     the dropdown view is attached — see
+                     XvDropDownReceiver.wireBtOffBanner. Default is
+                     gone so it doesn't flash at inflate; the receiver
+                     sets the correct state on the initial poll. -->
+                <TextView
+                    android:id="@+id/xv_prefs_bt_off_banner"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:padding="12dp"
+                    android:layout_marginBottom="16dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:text="Bluetooth is off — tap to enable"
+                    android:textColor="@color/xv_text"
+                    android:textSize="13sp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:visibility="gone"/>
 
                 <!-- Section header: PTT input -->
                 <TextView
@@ -471,34 +536,6 @@
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="4dp"/>
-
-                <!-- TPT -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Talk permit tone"
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:textAllCaps="true"
-                    android:letterSpacing="0.1"
-                    android:layout_marginTop="20dp"/>
-
-                <Spinner
-                    android:id="@+id/xv_spinner_tpt"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:popupBackground="@color/xv_surface_alt"/>
-
-                <Button
-                    android:id="@+id/xv_btn_test_tpt"
-                    android:layout_width="match_parent"
-                    android:layout_height="44dp"
-                    android:layout_marginTop="8dp"
-                    android:text="Test tone"
-                    android:textColor="@color/xv_text"
-                    android:background="@drawable/xv_button_bg"/>
 
                 <View
                     android:layout_width="match_parent"

@@ -1,7 +1,10 @@
 package com.atakmap.android.xv.ui
 
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.os.Handler
@@ -1038,6 +1041,7 @@ class XvDropDownReceiver(
         wireTxRxSection(v)
         wireChannelSelectors(v)
         wirePreferencesSection(v)
+        wireBtOffBanner(v)
 
         val takLabel = v.findViewById<TextView>(R.id.xv_tak_server_label)
         renderTakServerLabel(takLabel)
@@ -1118,6 +1122,92 @@ class XvDropDownReceiver(
     // plain Buttons swapping the visibility of three sibling LinearLayouts —
     // simpler than a TabLayout/ViewPager for a panel this small. The
     // selected tab is highlighted via alpha.
+    /**
+     * Banner at the top of the Devices tab that shows only when the
+     * Bluetooth adapter is disabled. Tapping opens the system BT
+     * settings so the operator can turn it back on without leaving
+     * XV.
+     *
+     * Wiring lifecycle: registers a broadcast receiver for
+     * `BluetoothAdapter.ACTION_STATE_CHANGED` when the settings view
+     * is attached to the window and unregisters on detach. That's
+     * scoped to the dropdown's lifetime — no receiver leaks past the
+     * moment the operator closes the panel.
+     *
+     * Rationale: previously, opening the AINA picker with BT off left
+     * the operator staring at an empty spinner with no explanation
+     * (`availableAinaDevices()` returns nothing when the adapter is
+     * off). This banner is the "why is the dropdown empty" answer,
+     * one tap away from the fix.
+     */
+    private fun wireBtOffBanner(v: View) {
+        val banner = v.findViewById<TextView>(R.id.xv_prefs_bt_off_banner) ?: return
+        banner.setOnClickListener {
+            try {
+                val i =
+                    Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                pluginContext.startActivity(i)
+            } catch (_: Throwable) {
+                // ACTION_BLUETOOTH_SETTINGS is present on every
+                // consumer Android build we ship against; swallow
+                // silently on the vanishing chance a stripped
+                // ROM refuses.
+            }
+        }
+
+        fun refresh() {
+            val adapter =
+                try {
+                    val bm = pluginContext.getSystemService(Context.BLUETOOTH_SERVICE)
+                        as? android.bluetooth.BluetoothManager
+                    bm?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+                } catch (_: Throwable) {
+                    null
+                }
+            banner.visibility = if (adapter?.isEnabled == true) View.GONE else View.VISIBLE
+        }
+
+        val stateReceiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    context: Context?,
+                    intent: Intent?,
+                ) {
+                    if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) refresh()
+                }
+            }
+
+        v.addOnAttachStateChangeListener(
+            object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(view: View) {
+                    try {
+                        pluginContext.registerReceiver(
+                            stateReceiver,
+                            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                        )
+                    } catch (_: Throwable) {
+                    }
+                    refresh()
+                }
+
+                override fun onViewDetachedFromWindow(view: View) {
+                    try {
+                        pluginContext.unregisterReceiver(stateReceiver)
+                    } catch (_: IllegalArgumentException) {
+                        // Not registered — attach-fail path or double-detach; ignore.
+                    } catch (_: Throwable) {
+                    }
+                }
+            },
+        )
+        // Set initial visibility BEFORE attach fires so the first
+        // frame of the panel is already correct — avoids a brief
+        // "banner missing then appears" flash if the adapter is off.
+        refresh()
+    }
+
     private fun wireSettingsTabs(v: View) {
         val tabTxRx = v.findViewById<Button>(R.id.xv_tab_txrx)
         val tabCalls = v.findViewById<Button>(R.id.xv_tab_calls)
@@ -1125,16 +1215,23 @@ class XvDropDownReceiver(
         val sectionTxRx = v.findViewById<View>(R.id.xv_section_txrx)
         val sectionCalls = v.findViewById<View>(R.id.xv_section_calls)
         val sectionPrefs = v.findViewById<View>(R.id.xv_section_prefs)
-        val tabs = listOf(tabTxRx, tabCalls, tabPrefs)
-        val sections = listOf(sectionTxRx, sectionCalls, sectionPrefs)
+        // List order MUST match the tab strip's visual order so
+        // select(0) puts the first tab up. Operator-visible ordering
+        // is Devices (prefs) | TX/RX | Server (calls) — Devices leads
+        // because it carries the AINA / secondary PTT / audio-device
+        // pickers operators touch every session. The XML id names
+        // still say "prefs" for backward compatibility with the
+        // findViewById calls above.
+        val tabs = listOf(tabPrefs, tabTxRx, tabCalls)
+        val sections = listOf(sectionPrefs, sectionTxRx, sectionCalls)
 
         fun select(idx: Int) {
             sections.forEachIndexed { i, s -> s.visibility = if (i == idx) View.VISIBLE else View.GONE }
             tabs.forEachIndexed { i, b -> b.alpha = if (i == idx) 1.0f else 0.55f }
         }
-        tabTxRx.setOnClickListener { select(0) }
-        tabCalls.setOnClickListener { select(1) }
-        tabPrefs.setOnClickListener { select(2) }
+        tabPrefs.setOnClickListener { select(0) }
+        tabTxRx.setOnClickListener { select(1) }
+        tabCalls.setOnClickListener { select(2) }
         select(0)
     }
 
