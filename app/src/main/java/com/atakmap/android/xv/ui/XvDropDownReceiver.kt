@@ -454,11 +454,23 @@ class XvDropDownReceiver(
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     android.util.Log.i("XV_PTT", ">>> ON-SCREEN $label (slot=$slot) DOWN <<<")
+                    // Manually flip the pressed state so xv_button_bg's
+                    // state_pressed selector fires immediately. Returning
+                    // true below consumes the event and prevents Android
+                    // from setting isPressed via the View's own touch
+                    // dispatch, so without this the operator sees no red
+                    // feedback until refreshMain() eventually swaps the
+                    // background to xv_button_bg_transmitting — a lag of
+                    // up to ~700 ms while mic priming, TPT playback, and
+                    // Telecom-call transition all serialize. That looks
+                    // like a broken button. Field-observed 2026-07-07.
+                    btn.isPressed = true
                     controller.startTx(slot)
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     android.util.Log.i("XV_PTT", ">>> ON-SCREEN $label (slot=$slot) UP <<<")
+                    btn.isPressed = false
                     controller.stopTx()
                     btn.performClick()
                     true
