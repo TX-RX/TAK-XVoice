@@ -219,6 +219,27 @@ class ReconnectingMumbleTransportTest {
         assertFalse(executor.hasPendingSchedule())
     }
 
+    // Regression test for the 2026-07-06 field bug: a self-kick surfaces
+    // BOTH as onConnectionFailed(Fatal) AND as onDisconnected(Transient)
+    // because the server-side kick closes the socket, which trips the
+    // read loop's finally-block. Without the fatalRejected latch, the
+    // Transient path scheduled a fresh reconnect ~1s later that got
+    // kicked again — infinite loop hammering the server.
+    @Test
+    fun `SelfKick followed by onDisconnected does NOT schedule a Transient retry`() {
+        val r = build()
+        r.connect(upstream)
+        capturedListeners[0].onConnectionFailed(
+            SelfKickedException(reason = "duplicate", banned = false, byActorSession = 0),
+        )
+        capturedListeners[0].onDisconnected("read loop exit")
+        assertFalse(
+            "Post-Fatal onDisconnected must not sneak a Transient retry past shouldRetry",
+            executor.hasPendingSchedule(),
+        )
+        assertEquals("no fresh factory invocation after fatal", 1, factoryInvocations.size)
+    }
+
     // ============================================================
     // UsernameInUse on primary — transient with same name
     // ============================================================
