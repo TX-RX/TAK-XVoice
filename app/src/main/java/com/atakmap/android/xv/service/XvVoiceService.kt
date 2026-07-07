@@ -809,8 +809,11 @@ class XvVoiceService : Service() {
                 fanOut { it.onTxTerminator(slot) }
             }
 
-            override fun onPttStateChanged(transmitting: Boolean) {
-                fanOut { it.onPttStateChanged(transmitting) }
+            override fun onPttStateChanged(
+                transmitting: Boolean,
+                slot: Int,
+            ) {
+                fanOut { it.onPttStateChanged(transmitting, slot) }
                 // Audio activity → keep the call-idle watchdog at bay.
                 // Fires for both TX-on and TX-off; both are legitimate
                 // signs the call is in active use.

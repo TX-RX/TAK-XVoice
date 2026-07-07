@@ -575,14 +575,24 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
 
-                override fun onPttStateChanged(transmitting: Boolean) {
+                override fun onPttStateChanged(
+                    transmitting: Boolean,
+                    slot: Int,
+                ) {
                     if (transmitting) {
                         beginMumbleVoiceBurst()
                         // Lock in the UI's "transmitting" state on whichever
-                        // slot the operator just pressed. AIDL doesn't pass
-                        // the slot (single-bool API), so we use the slot
-                        // tracked at startTx-time — see lastRequestedTxSlot.
-                        txActiveSlot = lastRequestedTxSlot
+                        // slot the service reports going hot. The service
+                        // passes the slot directly through the AIDL callback
+                        // so BT-speakermic / BLE-button PTTs (which never
+                        // route through the plugin's Controller.startTx and
+                        // therefore never populate lastRequestedTxSlot) still
+                        // light the correct on-screen indicator. Field-
+                        // observed 2026-07-07 on the umbrella branch: BT
+                        // speakermic TX left the "HOLD TO TX" label
+                        // showing instead of "● TRANSMITTING" because
+                        // lastRequestedTxSlot was stale at -1.
+                        txActiveSlot = slot
                     } else {
                         txActiveSlot = -1
                     }
