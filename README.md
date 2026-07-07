@@ -2,8 +2,78 @@
 
 An ATAK voice plugin focused on operational use cases that existing
 options don't cover well: correct Bluetooth audio routing, predictable
-auto-reconnect, a flexible model for external PTT hardware, and a
+auto-reconnect, a curated model for external PTT hardware, and a
 foundation for bridging server-mediated voice to mesh radios.
+
+## Status and intended use
+
+**TAK-XVoice is provided for non-mission-critical use only.** It is
+distributed under Apache 2.0 (see [LICENSE](LICENSE) and
+[NOTICE](NOTICE)) and comes with **no warranty of any kind, express or
+implied**, including no warranty of merchantability, fitness for a
+particular purpose, or non-infringement. Do not rely on this plugin as
+the sole means of communication for any life-safety, public-safety,
+military, or other mission-critical application. Operators assume all
+risk associated with its use.
+
+The plugin is under active development. Interfaces, defaults, and
+on-wire behavior can change between builds while the codebase
+stabilizes.
+
+## Why this exists
+
+TAK-XVoice began as a response to gaps in the existing VX voice plugin
+that made it difficult to run ATAK the way volunteer comms operators
+actually use their phones in the field:
+
+- **No broad external-PTT support.** VX did not integrate cleanly with
+  the range of Bluetooth speakermics and BLE PTT pucks that operators
+  had already invested in. XV registers external buttons per-MAC
+  address and ships with vetted defaults for a small, curated set of
+  hardware (see below).
+- **Audio routing that fought the rest of the phone.** With VX in the
+  loop, keeping music, navigation prompts, and ATAK alerts flowing to
+  their normal outputs while driving between event checkpoints was
+  awkward at best. XV treats the BT speakermic as XV-exclusive comms
+  gear and only engages HFP/SCO while the mic is actually open, so
+  A2DP media and ATAK's own audio keep working the way the operator
+  expects.
+- **A place to add functionality without forking the world.** XV is a
+  clean surface to iterate on features like configurable talk-permit
+  tones, an LMR-style emergency button, direct calling, and the mesh /
+  multicast work described below.
+
+The near-term focus is **mobile-connectivity reliability** — Wi-Fi ↔
+cell handoff, fast reconnect, Bluetooth stability across audio-plant
+edge cases, and correct behavior on locked/sleeping phones. Once that
+baseline is solid, the roadmap moves toward **multicast and
+decentralized voice**: server-optional operation, mesh-radio
+interoperability via standard RTP framing, and per-frame AEAD with
+distributed key election so a channel can keep running when the server
+is gone.
+
+## Hardware philosophy — curated, not exhaustive
+
+The goal is **not** to claim support for every Bluetooth PTT device on
+the market. Each device that ships as "supported" is deliberately
+curated — sourced, integrated, and validated against real event
+traffic — so operators can trust that what's listed actually works
+under load. New hardware is added on that basis, not on a spec-sheet
+claim. If a device isn't listed as supported, it isn't yet.
+
+## Primary mission
+
+The initial deployment target is **volunteer communications teams
+supporting public-service events** — parades, bike rallies, triathlons,
+marathons, 5Ks, and similar community events where a small comms crew
+covers a large geographic footprint over a few hours and needs
+lightweight, phone-first voice that plays nicely with the operator's
+music, GPS, and ATAK situational picture.
+
+One volunteer organization put TAK-XVoice into production just a
+couple of weeks after the first working build, and it has been running
+in event traffic since. Work continues on maintenance, stabilization,
+and feature polish.
 
 ## What's different
 
@@ -19,16 +89,16 @@ foundation for bridging server-mediated voice to mesh radios.
    ATAK restart.
 
 3. **External button registration.** XV registers BT speakermic buttons
-   per-MAC, including SPP-based hardware (AINA APTT V1, similar Pryme /
-   Sheepdog speakermics) and BLE GATT devices (AINA APTT V2, Pryme
-   BT-PTT-Z, and other generic BLE PTT pucks via a learn-mode wizard).
+   per-MAC for the curated device list — SPP-based hardware (AINA APTT
+   V1 and similar Pryme speakermics) and BLE GATT devices (AINA APTT V2,
+   Pryme BT-PTT-Z).
 
 XV also adds:
 
-- **Per-device defaults with overrides** — each speakermic ships pre-
-  mapped (PTT → Channel 1, secondary → Channel 2, emergency button,
-  prev/next channel) so a fresh pairing "just works." Operators edit
-  the defaults; overrides persist by BT address.
+- **Per-device defaults with overrides** — each supported speakermic
+  ships pre-mapped (PTT → Channel 1, secondary → Channel 2, emergency
+  button, prev/next channel) so a fresh pairing "just works." Operators
+  edit the defaults; overrides persist by BT address.
 - **LMR-style emergency button** — short press fires the emergency
   configured in ATAK's Alert Tool; long press (1 s) cancels.
 - **Configurable Talk Permit Tones** (ASTRO 25 / Nextel / DMR / MOTOTRBO
@@ -40,8 +110,36 @@ XV also adds:
 - **Direct calling** — Notification.CallStyle ring + full-screen call
   surface, VX-compatible private-call signaling.
 - **Mesh-voice-bridge foundation** — per-frame AEAD (ChaCha20-Poly1305),
-  TAK-cert-wrapped channel keys, distributed key election. RTP framing
-  (RFC 3550 + 7587) for OpenMANET / Doodle Labs Mesh Rider interop.
+  TAK-cert-wrapped channel keys, distributed key election. Standard
+  RTP framing (RFC 3550 + 7587) for mesh-radio interop.
+
+## Roadmap
+
+- **Now:** mobile-connectivity reliability — Wi-Fi/cell handoff, fast
+  reconnect, BT stability across audio-plant edge cases, background
+  behavior on locked phones.
+- **Next:** multicast channel operation, offline / server-optional
+  calling, mesh-radio RTP bridge.
+- **Later:** decentralized channel key management (already scaffolded
+  via distributed key election and AEAD), and additional curated
+  hardware as devices are validated in the field.
+
+## Reporting issues
+
+If you find a defect or see an opportunity for improvement, please
+open a GitHub issue on this repository so it can be discussed and
+tracked. Please **do not** paste operator-identifying information into
+issues — no real Bluetooth MAC addresses, TAK server URLs, callsigns
+of live operators, unit or organization names, or GPS coordinates
+tied to a real deployment. Redacted / example values (`AA:BB:CC:DD:EE:FF`,
+`tak.example`, `Alpha` / `Bravo`) are fine and preferred.
+
+## Acknowledgments
+
+Special thanks to **Bernie, K5BP**, for jumping in head-first —
+helping build this out, hammering on it in the field, and pushing it
+to where it is today. This project would not be in the shape it is
+without his time and testing.
 
 ## Build
 
@@ -69,13 +167,24 @@ portal.
 
 ## Hardware tested
 
+Test devices:
+
 - Pixel 9 Pro (primary test device)
 - Motorola legacy Android (AINA APTT V1 SPP rig)
 - Samsung Galaxy Tab (XV + existing voice-plugin coexistence)
 
-Speakermics: AINA APTT V1 (BR/EDR SPP), AINA APTT V2 (BLE GATT), Pryme
-BT-PTT-Z (HM-10 UART), generic BLE HID pucks.
+Curated / validated speakermics:
+
+- AINA APTT V1 (BR/EDR SPP)
+- AINA APTT V2 (BLE GATT)
+- Pryme BT-PTT-Z (HM-10 UART)
+
+This list only includes devices that have been integrated end-to-end
+and validated against event traffic. Additional hardware is added the
+same way — one device at a time, once it's been tested.
 
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Distributed **as-is, without warranty**. See the "Status and intended
+use" section above.
