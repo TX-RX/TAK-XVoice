@@ -146,7 +146,67 @@ class XvVoiceService : Service() {
         } catch (t: Throwable) {
             Log.w(TAG, "registerReceiver(activeCallReceiver) threw", t)
         }
+
+        // Field bug 2026-07-08: operator holds an AINA V2 mid-TX, then
+        // turns Bluetooth OFF on the phone. The individual reader's
+        // BLE `onConnectionStateChange(STATE_DISCONNECTED)` MAY arrive
+        // late (or on some OEM stacks not at all) when the OS is
+        // tearing the BT stack down wholesale — so the reader-level
+        // release path in [VoicePlant] can miss the edge. Register a
+        // plugin-lifetime `BluetoothAdapter.ACTION_STATE_CHANGED`
+        // listener as belt-and-suspenders. On `STATE_TURNING_OFF` (fires
+        // slightly before `STATE_OFF`, giving us a window before the
+        // GATT / RFCOMM handles have all torn themselves down), cascade
+        // a forgetSource across every BT-sourced PttSource so any
+        // in-flight burst can terminate cleanly and the operator has to
+        // re-key on a working transport (screen PTT / phone mic) to
+        // speak again. Idempotent when nothing is held.
+        val btAdapterFilter =
+            android.content.IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED)
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                btAdapterStateReceiver,
+                btAdapterFilter,
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "registerReceiver(btAdapterStateReceiver) threw", t)
+        }
     }
+
+    // Fires on `BluetoothAdapter.ACTION_STATE_CHANGED`. On
+    // `STATE_TURNING_OFF` we cascade a PTT release across all BT-sourced
+    // inputs — see the registration site in onCreate for the field bug
+    // this closes.
+    private val btAdapterStateReceiver =
+        object : android.content.BroadcastReceiver() {
+            override fun onReceive(
+                c: Context,
+                intent: Intent,
+            ) {
+                if (intent.action != android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) return
+                val state =
+                    intent.getIntExtra(
+                        android.bluetooth.BluetoothAdapter.EXTRA_STATE,
+                        android.bluetooth.BluetoothAdapter.ERROR,
+                    )
+                if (state != android.bluetooth.BluetoothAdapter.STATE_TURNING_OFF &&
+                    state != android.bluetooth.BluetoothAdapter.STATE_OFF
+                ) {
+                    return
+                }
+                Log.w(
+                    TAG,
+                    "BluetoothAdapter state=$state — cascading BT-sourced PTT release",
+                )
+                try {
+                    plant?.releaseAllBtSourcedPtt()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "releaseAllBtSourcedPtt threw", t)
+                }
+            }
+        }
 
     private val activeCallReceiver =
         object : android.content.BroadcastReceiver() {
@@ -379,6 +439,13 @@ class XvVoiceService : Service() {
             // C2 fix: prior code only unregistered incomingDecisionReceiver;
             // activeCallReceiver leaked, fired IntentReceiverLeaked WARN
             // every service teardown and crashed on strict OEM builds.
+        }
+        try {
+            unregisterReceiver(btAdapterStateReceiver)
+        } catch (_: Throwable) {
+            // Same rationale as activeCallReceiver above — always try,
+            // swallow "not registered" so an early-crash teardown path
+            // doesn't add its own noise.
         }
         com.atakmap.android.xv.telecom.ActiveCallRegistry.serviceContext = null
         // Make sure the CallStyle ring + active-call notifications
