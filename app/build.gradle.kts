@@ -1,5 +1,6 @@
 import com.google.protobuf.gradle.id
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -194,9 +195,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
@@ -221,6 +219,16 @@ android {
     }
 }
 
+// Kotlin 2.4 removed the `kotlinOptions { jvmTarget = "17" }` DSL that lived
+// inside `android {}`. Configure the JVM target via the top-level `kotlin`
+// extension's `compilerOptions`, which is the supported path from KGP 2.0
+// onward and is stable through 2.4.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
 dependencies {
     if (!devKitMode) {
         compileOnly(files("libs/main.jar"))
@@ -233,11 +241,14 @@ dependencies {
         testCompileOnly(files("libs/main.jar"))
     }
 
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
+    // core-ktx is intentionally held at 1.13.1: the Dependabot bump to 1.19.0
+    // demands compileSdk 37 + AGP 9.1.0, which is well outside the scope of a
+    // chore(deps) group. Revisit alongside a coordinated AGP/compileSdk bump.
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.appcompat:appcompat:1.7.1")
 
     // Pure-Java Opus codec. Slow vs native opus but no NDK setup; fine
     // for Phase 1 RX validation. Replace with native build later.
@@ -256,10 +267,10 @@ dependencies {
     implementation("com.google.protobuf:protobuf-javalite:4.35.1")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("io.mockk:mockk:1.13.11")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
-    testImplementation("androidx.test:core:1.6.1")
-    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("io.mockk:mockk:1.14.11")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    testImplementation("androidx.test:core:1.7.0")
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }
 
 ktlint {
