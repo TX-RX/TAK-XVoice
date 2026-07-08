@@ -1122,18 +1122,45 @@ class VoicePlant(
             } else {
                 kind
             }
-        val onConn: (Boolean) -> Unit = { up ->
-            Log.i(TAG, "AINA connection up=$up")
+        // Per-reader onConn so the disconnect edge can tag the correct
+        // [PttSource] when releasing a stuck PTT-down. Field bug
+        // 2026-07-08: operator keyed AINA V2, turned BT off mid-TX,
+        // burst never terminated because the reader's onConnectionState(
+        // false) only flipped the UI dot — the button-down state in
+        // PttDispatcher was left in place, so the OR-gate never saw an
+        // empty held set and TxController.stop() was never called.
+        // Passing the reader's own source into a synthetic forgetSource
+        // on the down-edge of connection state ends the burst cleanly
+        // (encoder flushes end-frame, TxController returns to IDLE),
+        // and the operator has to re-key on a working transport (screen
+        // PTT / phone mic) to speak again. We deliberately do NOT try
+        // to reroute the in-flight burst to a different transport —
+        // that produces audible mid-word swaps peers hate.
+        val onConn: (source: PttSource, up: Boolean) -> Unit = { source, up ->
+            Log.i(TAG, "AINA connection up=$up source=$source")
             callbacks.onAinaConnectionChanged(up)
+            if (!up) {
+                releaseStuckPttOnTransportDrop(source)
+            }
         }
         when (resolvedKind) {
             "v1", "spp" -> {
-                val r = AinaSppReader(context, primaryAinaEvent(PttSource.AINA_V1), onConn)
+                val r =
+                    AinaSppReader(
+                        context,
+                        primaryAinaEvent(PttSource.AINA_V1),
+                        { up -> onConn(PttSource.AINA_V1, up) },
+                    )
                 ainaSpp = r
                 r.connect(device)
             }
             "v2", "ble" -> {
-                val r = AinaBleReader(context, primaryAinaEvent(PttSource.AINA_V2), onConn)
+                val r =
+                    AinaBleReader(
+                        context,
+                        primaryAinaEvent(PttSource.AINA_V2),
+                        { up -> onConn(PttSource.AINA_V2, up) },
+                    )
                 ainaBle = r
                 r.connect(device)
             }
@@ -1145,7 +1172,12 @@ class VoicePlant(
                 // characteristic (service 00420000-8f59-…, sourced from
                 // VX 2.1.0). Mirrors AinaBleReader's connect / retry
                 // strategy. Fires VS1 only.
-                val r = PrymeBleReader(context, primaryAinaEvent(PttSource.PRYME_BLE), onConn)
+                val r =
+                    PrymeBleReader(
+                        context,
+                        primaryAinaEvent(PttSource.PRYME_BLE),
+                        { up -> onConn(PttSource.PRYME_BLE, up) },
+                    )
                 prymeBle = r
                 r.connect(device)
             }
@@ -1211,24 +1243,47 @@ class VoicePlant(
             } else {
                 kind
             }
-        val onConn: (Boolean) -> Unit = { up ->
-            Log.i(TAG, "Secondary AINA connection up=$up")
+        // Mirror the primary path's per-source disconnect handling —
+        // when the secondary transport drops mid-TX, forget the held
+        // button so the burst can terminate. See the field-bug note in
+        // [connectAina] above; the same failure mode applies to a
+        // handlebar Pryme puck as to a helmet AINA.
+        val onConn: (source: PttSource, up: Boolean) -> Unit = { source, up ->
+            Log.i(TAG, "Secondary AINA connection up=$up source=$source")
             // Secondary doesn't drive the AINA-connected dot in the UI
             // (that's the primary's indicator). Logged only.
+            if (!up) {
+                releaseStuckPttOnTransportDrop(source)
+            }
         }
         when (resolvedKind) {
             "v1", "spp" -> {
-                val r = AinaSppReader(context, secondaryAinaEvent(PttSource.AINA_V1), onConn)
+                val r =
+                    AinaSppReader(
+                        context,
+                        secondaryAinaEvent(PttSource.AINA_V1),
+                        { up -> onConn(PttSource.AINA_V1, up) },
+                    )
                 ainaSecondarySpp = r
                 r.connect(device)
             }
             "v2", "ble" -> {
-                val r = AinaBleReader(context, secondaryAinaEvent(PttSource.AINA_V2), onConn)
+                val r =
+                    AinaBleReader(
+                        context,
+                        secondaryAinaEvent(PttSource.AINA_V2),
+                        { up -> onConn(PttSource.AINA_V2, up) },
+                    )
                 ainaSecondaryBle = r
                 r.connect(device)
             }
             "ble-hid", "hid" -> {
-                val r = PrymeBleReader(context, secondaryAinaEvent(PttSource.PRYME_BLE), onConn)
+                val r =
+                    PrymeBleReader(
+                        context,
+                        secondaryAinaEvent(PttSource.PRYME_BLE),
+                        { up -> onConn(PttSource.PRYME_BLE, up) },
+                    )
                 prymeSecondaryBle = r
                 r.connect(device)
             }
@@ -1271,12 +1326,85 @@ class VoicePlant(
         // BT preference. Operator's explicit override (if any) still wins.
         router.preferredBtMacHint = null
         connectedAinaMac = null
+        // Mirror [disconnectAinaSecondary]: if the operator (or a wholesale
+        // BT-adapter-off cascade) is tearing us down mid-burst, drop any
+        // held button state from the primary source so the OR-gate can
+        // see an empty set and TxController.stop() runs. Idempotent
+        // inside PttDispatcher; safe when nothing was held.
+        try {
+            pttDispatcher.forgetSource(PttSource.AINA_V1)
+            pttDispatcher.forgetSource(PttSource.AINA_V2)
+            pttDispatcher.forgetSource(PttSource.PRYME_BLE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetSource on primary disconnect threw", t)
+        }
         // Notify the plugin so the UI dot can clear and the listener
         // chain (incl. any future reconnect attempts) sees the drop.
         try {
             callbacks.onAinaConnectionChanged(false)
         } catch (t: Throwable) {
             Log.w(TAG, "onAinaConnectionChanged(false) on disconnect threw", t)
+        }
+    }
+
+    /**
+     * Reader-level release path: called from a reader's connection
+     * callback when the transport dies (BLE GATT STATE_DISCONNECTED,
+     * SPP RFCOMM socket closed / IOException) and the reader is NOT
+     * doing an intentional disconnect. If [source] had a live PTT-down
+     * on the dispatcher, this drops it — which through the OR-gate
+     * fires TxController.stop() and lands a clean end-of-burst marker
+     * on the wire.
+     *
+     * Fire-and-forget: this returns immediately so the reader's
+     * teardown / reconnect scheduling isn't blocked. All the heavy
+     * work inside PttDispatcher.forgetSource is a non-blocking
+     * check-and-clear plus a single txController.stop() dispatch.
+     *
+     * Field bug 2026-07-08: AINA V2 held, BT toggled off mid-TX. The
+     * reader's onConnectionStateChange(STATE_DISCONNECTED) fired but
+     * the button-down state stayed pinned in PttDispatcher.heldButtons
+     * — the OR-gate never saw an empty set, TxController stayed in
+     * TRANSMITTING, and the transmit burst never ended. This helper
+     * closes that gap.
+     */
+    private fun releaseStuckPttOnTransportDrop(source: PttSource) {
+        try {
+            Log.w(
+                TAG,
+                "PTT source $source died mid-transmission — forcing release of slot 0",
+            )
+            pttDispatcher.forgetSource(source)
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetSource on reader disconnect threw", t)
+        }
+    }
+
+    /**
+     * Plugin-level cascade for `BluetoothAdapter.STATE_TURNING_OFF` —
+     * called from [com.atakmap.android.xv.plugin.XvMapComponent]'s
+     * adapter-state receiver. In principle each active reader will
+     * observe its own transport dying and fire the reader-level
+     * release; in practice the OS can tear the BT stack down as a
+     * whole before the readers get their individual GATT / RFCOMM
+     * disconnect edges, so we cascade here as a belt-and-suspenders
+     * safety net.
+     *
+     * Idempotent: forgetSource is a no-op when no PTT-down is
+     * outstanding for that source. Never blocks — the receiver
+     * fires on the main thread and this method returns immediately.
+     */
+    fun releaseAllBtSourcedPtt() {
+        try {
+            Log.w(
+                TAG,
+                "BluetoothAdapter STATE_TURNING_OFF — cascading PTT release across all BT sources",
+            )
+            pttDispatcher.forgetSource(PttSource.AINA_V1)
+            pttDispatcher.forgetSource(PttSource.AINA_V2)
+            pttDispatcher.forgetSource(PttSource.PRYME_BLE)
+        } catch (t: Throwable) {
+            Log.w(TAG, "releaseAllBtSourcedPtt threw", t)
         }
     }
 
