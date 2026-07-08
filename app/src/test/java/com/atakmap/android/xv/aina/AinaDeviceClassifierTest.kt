@@ -167,6 +167,75 @@ class AinaDeviceClassifierTest {
         )
     }
 
+    // ============================================================
+    // rankForPicker — startup-UX device ordering
+    // (feat/bt-device-startup-ux)
+    // ============================================================
+
+    private fun info(
+        name: String,
+        proto: AinaDeviceInfo.ButtonProtocol,
+        available: Boolean,
+    ): AinaDeviceInfo =
+        AinaDeviceInfo(
+            mac = "AA:BB:CC:DD:EE:${name.hashCode().and(0xFF).toString(16).padStart(2, '0')}",
+            name = name,
+            buttonProtocol = proto,
+            available = available,
+        )
+
+    @Test
+    fun `rankForPicker puts available devices ahead of unavailable regardless of protocol`() {
+        // The field bug being fixed: startup UX auto-selected a device
+        // that was bonded but powered off, even though a live SPP AINA
+        // was in the picker. Ranking must promote AVAILABLE ahead of
+        // protocol precedence.
+        val unavailableSpp = info("APTT-off", AinaDeviceInfo.ButtonProtocol.SPP, available = false)
+        val availableBleHid = info("Pryme-live", AinaDeviceInfo.ButtonProtocol.BLE_HID, available = true)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(unavailableSpp, availableBleHid))
+        assertEquals(
+            "available BLE-HID must beat unavailable SPP so autoConnectAina picks a live device",
+            "Pryme-live",
+            ranked.first().name,
+        )
+        assertEquals("APTT-off", ranked.last().name)
+    }
+
+    @Test
+    fun `rankForPicker preserves protocol order within the available tier`() {
+        // SPP > BLE > BLE_HID within the same availability tier —
+        // the pre-change ordering, unchanged.
+        val ble = info("V2-live", AinaDeviceInfo.ButtonProtocol.BLE, available = true)
+        val spp = info("V1-live", AinaDeviceInfo.ButtonProtocol.SPP, available = true)
+        val bleHid = info("Puck-live", AinaDeviceInfo.ButtonProtocol.BLE_HID, available = true)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(ble, bleHid, spp))
+        assertEquals(
+            listOf("V1-live", "V2-live", "Puck-live"),
+            ranked.map { it.name },
+        )
+    }
+
+    @Test
+    fun `rankForPicker preserves protocol order within the unavailable tier`() {
+        // Unavailable devices still sort by protocol beneath the
+        // available block — an operator scanning the greyed rows sees
+        // a familiar order.
+        val ble = info("V2-off", AinaDeviceInfo.ButtonProtocol.BLE, available = false)
+        val spp = info("V1-off", AinaDeviceInfo.ButtonProtocol.SPP, available = false)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(ble, spp))
+        assertEquals(listOf("V1-off", "V2-off"), ranked.map { it.name })
+    }
+
+    @Test
+    fun `rankForPicker breaks ties by lowercase name`() {
+        // Same protocol, same availability — name is the tiebreaker so
+        // the picker order is stable across refreshes.
+        val a = info("bravo", AinaDeviceInfo.ButtonProtocol.SPP, available = true)
+        val b = info("Alpha", AinaDeviceInfo.ButtonProtocol.SPP, available = true)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(a, b))
+        assertEquals(listOf("Alpha", "bravo"), ranked.map { it.name })
+    }
+
     @Test
     fun `device that throws on name access is treated as nameless`() {
         // Some OEM stacks throw SecurityException on getName() if

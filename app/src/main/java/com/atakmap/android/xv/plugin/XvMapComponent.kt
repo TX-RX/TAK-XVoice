@@ -2272,31 +2272,90 @@ class XvMapComponent : AbstractMapComponent() {
         // since classify() is keyed off it for the HFP_ONLY decision.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             val ctx = heldPluginContext ?: return@postDelayed
+            // Startup-picker inputs. We compute the picker list up
+            // front so both branches (restore-saved and auto-pick-
+            // first-available) can consult live reachability rather
+            // than blindly reconnecting to a MAC that's bonded but
+            // powered off. This is the fix for the 2026-07-08 field
+            // report: "on startup XV was connecting to a device that
+            // wasn't even available."
+            val candidates = listBondedAinaDevices()
             val savedMac = settings.persistedAinaMac()
             if (savedMac != null) {
-                // Explicit operator pick wins — always restore it.
-                connectSavedAinaPrimary(ctx, savedMac)
-                return@postDelayed
-            }
-            if (!settings.persistedAutoConnectBtEnabled()) {
+                // Explicit operator pick wins IF that device is
+                // currently reachable. Falling through to auto-pick
+                // when the saved MAC is bonded-but-off lets the
+                // operator's session actually route to whatever puck
+                // they turned on, instead of stalling on a stale
+                // preference. The saved MAC is deliberately NOT
+                // cleared — when the operator's preferred device
+                // powers back on, the picker refresh + next launch
+                // will restore it as first-class.
+                val saved = candidates.firstOrNull { it.mac.equals(savedMac, ignoreCase = true) }
+                if (saved != null && saved.available) {
+                    Log.i(
+                        TAG,
+                        "autoConnectAina: saved selection $savedMac is reachable — restoring",
+                    )
+                    connectSavedAinaPrimary(ctx, savedMac)
+                    return@postDelayed
+                }
+                if (saved != null && !saved.available) {
+                    Log.i(
+                        TAG,
+                        "autoConnectAina: saved selection $savedMac bonded but not currently reachable — " +
+                            "considering first-available fallback (saved pref preserved)",
+                    )
+                } else {
+                    Log.i(
+                        TAG,
+                        "autoConnectAina: saved MAC $savedMac not in picker list — " +
+                            "considering first-available fallback",
+                    )
+                }
+                // Fall through to auto-pick below, but only if the
+                // operator hasn't disabled auto-connect. That toggle
+                // is the "I'll pick manually" opt-out for operators
+                // running multiple speakermics for testing — respect
+                // it even when the saved device is off.
+                if (!settings.persistedAutoConnectBtEnabled()) {
+                    Log.i(
+                        TAG,
+                        "autoConnectAina: auto-connect disabled — leaving saved pref in place, no connect",
+                    )
+                    return@postDelayed
+                }
+            } else if (!settings.persistedAutoConnectBtEnabled()) {
                 Log.i(TAG, "autoConnectAina: no saved selection and auto-connect disabled — skipping")
                 return@postDelayed
             }
-            // Auto-pick: scan bonded devices for the first compatible
-            // speakermic / BLE PTT button. listBondedAinaDevices already
-            // filters by AinaDeviceClassifier.isPlausibleSpeakermic AND
-            // sorts SPP → BLE → BLE_HID so a speakermic always beats a
-            // button-only puck for the primary slot. Picking the first
-            // entry is a "smart default" — operator can override by
-            // picking a different device in Settings → Preferences,
-            // and that pick then persists.
-            val candidates = listBondedAinaDevices()
+            // Auto-pick: prefer the first AVAILABLE compatible device
+            // in the picker list. listBondedAinaDevices already sorts
+            // available-first, then by protocol (SPP → BLE → BLE_HID)
+            // so a live speakermic always beats a stale one AND a
+            // speakermic always beats a button-only puck for the
+            // primary slot. If no device is marked available we
+            // deliberately do NOT connect — auto-connecting to a
+            // device that isn't live just to satisfy an old MAC hint
+            // is the exact bug we're fixing.
             if (candidates.isEmpty()) {
                 Log.i(TAG, "autoConnectAina: no compatible bonded device found — nothing to auto-pick")
                 return@postDelayed
             }
-            val picked = candidates.first()
-            Log.i(TAG, "autoConnectAina: auto-picked compatible device → ${picked.name} ${picked.mac} (${picked.buttonProtocol})")
+            val picked = candidates.firstOrNull { it.available }
+            if (picked == null) {
+                Log.i(
+                    TAG,
+                    "autoConnectAina: ${candidates.size} bonded candidate(s) found but none currently reachable — " +
+                        "waiting for one to come up",
+                )
+                return@postDelayed
+            }
+            Log.i(
+                TAG,
+                "autoConnectAina: auto-picked first-available device → ${picked.name} ${picked.mac} " +
+                    "(${picked.buttonProtocol})",
+            )
             // Persist so it sticks across launches AND so the picker UI
             // shows the auto-picked device as the current selection.
             // Operator can change the pick later; "(none)" in the
@@ -2338,6 +2397,43 @@ class XvMapComponent : AbstractMapComponent() {
     // Settings → Preferences: AINA picker + TX/RX persistence
     // ============================================================
 
+    // Snapshot of MACs currently reachable as communication-audio
+    // endpoints. Intersecting the bonded-device set against this on the
+    // picker gives operators an at-a-glance "which of my paired devices
+    // is actually live right now?" — the field bug we're fixing had the
+    // picker showing four bonded speakermics with no visual difference
+    // between the one that was powered on and the three that had been
+    // off for weeks.
+    //
+    // Uses [AudioManager.getAvailableCommunicationDevices] on API 31+
+    // because bond state alone isn't enough — a bonded HFP device may
+    // still not be routable to setCommunicationDevice until its profile
+    // is connected in the audio policy. On pre-S (or when AudioManager
+    // throws) we return null and the caller marks everything as
+    // "available=true" so the picker degrades gracefully to the
+    // pre-change behavior.
+    //
+    // MACs are upper-cased so the caller's lookup is case-insensitive.
+    private fun reachableCommunicationMacsSnapshot(): Set<String>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        val ctx = heldMapView?.context ?: heldPluginContext ?: return null
+        val am =
+            try {
+                ctx.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+            } catch (t: Throwable) {
+                Log.w(TAG, "reachableCommunicationMacsSnapshot: AUDIO_SERVICE threw", t)
+                null
+            } ?: return null
+        return try {
+            am.availableCommunicationDevices
+                .mapNotNull { it.address?.takeIf { addr -> addr.isNotBlank() }?.uppercase() }
+                .toSet()
+        } catch (t: Throwable) {
+            Log.w(TAG, "reachableCommunicationMacsSnapshot: availableCommunicationDevices threw", t)
+            null
+        }
+    }
+
     @SuppressWarnings("MissingPermission")
     private fun listBondedAinaDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return emptyList()
@@ -2348,6 +2444,10 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.w(TAG, "listBondedAinaDevices: bondedDevices threw", t)
                 return emptyList()
             }
+        // Live-reachability snapshot (null when we can't ask — pre-S
+        // or missing service). null → treat every candidate as
+        // "available" so we degrade to the legacy picker rendering.
+        val reachableMacs = reachableCommunicationMacsSnapshot()
         // Show every bonded device that's plausibly a speakermic — i.e.
         // anything with HFP / SCO / SPP / known BLE PTT service in its
         // SDP cache, OR anything whose BT major class is AUDIO_VIDEO.
@@ -2421,10 +2521,26 @@ class XvMapComponent : AbstractMapComponent() {
             candidates
                 .filter { it.third }
                 .map { (dev, proto, _) ->
+                    // BLE-HID buttons never appear in the audio-policy
+                    // communication-device list (they're HID over GATT,
+                    // not a routable audio endpoint), so we can't ask
+                    // AudioManager whether they're reachable. Mark them
+                    // as "available=true" so the picker doesn't dim
+                    // every BLE PTT puck the operator has ever paired.
+                    // For SPP / BLE / AUDIO_ONLY the audio-policy check
+                    // is authoritative; when we couldn't take a snapshot
+                    // (reachableMacs == null) fall back to "available".
+                    val isAvailable =
+                        when {
+                            reachableMacs == null -> true
+                            proto == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> true
+                            else -> reachableMacs.contains(dev.address.uppercase())
+                        }
                     com.atakmap.android.xv.aina.AinaDeviceInfo(
                         mac = dev.address,
                         name = dev.name ?: dev.address,
                         buttonProtocol = proto,
+                        available = isAvailable,
                     )
                 }
         // Merge manually-added BLE PTT devices (PTT-Z01, Pryme
@@ -2435,6 +2551,11 @@ class XvMapComponent : AbstractMapComponent() {
         // precedence for the name (operator-visible label from the
         // scan-and-pick dialog) but we defer to a bonded entry if
         // both exist to preserve any live classifier result.
+        //
+        // Known BLE PTT are always marked available — they connect via
+        // BluetoothAdapter.getRemoteDevice on demand, never appear in
+        // AudioManager's comm-device list, and their reachability isn't
+        // reliably observable without a full GATT connect.
         val bondedMacs = bondedResults.map { it.mac.uppercase() }.toSet()
         val knownBlePtt =
             settings.knownBlePttDevices().mapNotNull { (mac, name) ->
@@ -2443,14 +2564,23 @@ class XvMapComponent : AbstractMapComponent() {
                     mac = mac,
                     name = name ?: mac,
                     buttonProtocol = com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID,
+                    available = true,
                 )
             }
-        return (bondedResults + knownBlePtt).sortedWith(
-            compareBy(
-                { com.atakmap.android.xv.aina.AinaDeviceClassifier.protocolOrder(it.buttonProtocol) },
-                { it.name.lowercase() },
-            ),
-        )
+        // Rank order:
+        //   1. Available devices (rendered normal + tappable) first, so
+        //      the operator's tap-target is whichever speakermic is
+        //      actually live.
+        //   2. Then by button protocol so we prefer SPP → BLE →
+        //      BLE_HID → audio-only within each availability tier
+        //      (unchanged from the pre-change ordering).
+        //   3. Then by name for a stable order across refreshes.
+        // Inspired by how call apps (Meet, WhatsApp) render device
+        // pickers: reachable devices bubble to the top, unreachable
+        // ones are still shown so the operator can see the pairing
+        // exists but they can't be tapped by mistake.
+        return com.atakmap.android.xv.aina.AinaDeviceClassifier
+            .rankForPicker(bondedResults + knownBlePtt)
     }
 
     // Speakermic detection + protocol classification extracted to

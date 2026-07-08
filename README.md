@@ -93,6 +93,16 @@ and feature polish.
    V1 and similar Pryme speakermics) and BLE GATT devices (AINA APTT V2,
    Pryme BT-PTT-Z).
 
+4. **Reachability-aware BT device picker.** On plugin load, XV restores
+   the last-connected speakermic when it's actually reachable and
+   otherwise auto-picks the first live device — a bonded-but-off puck
+   no longer wins over a powered speakermic. The Settings picker paints
+   unreachable rows dim and non-tappable so operators can see at a
+   glance which pairing is live. If a picked BT device stays
+   unreachable for 15 s during a session, XV falls back to the phone
+   speaker while preserving the operator's preferred MAC so audio
+   returns to BT as soon as the device reconnects.
+
 XV also adds:
 
 - **Per-device defaults with overrides** — each supported speakermic

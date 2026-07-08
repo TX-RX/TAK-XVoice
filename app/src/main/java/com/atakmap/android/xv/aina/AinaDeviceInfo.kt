@@ -13,6 +13,19 @@ data class AinaDeviceInfo(
     val mac: String,
     val name: String,
     val buttonProtocol: ButtonProtocol,
+    // Live-reachability hint used by the settings picker. `true` when
+    // the device is currently reachable as a communication-audio
+    // endpoint (i.e. present in AudioManager.getAvailableCommunicationDevices
+    // on API 31+) OR when we can't yet tell (pre-S, missing permission,
+    // BLE-only PTT with no audio profile). `false` when the device is
+    // bonded / known but not currently reachable — the picker paints
+    // these rows dim + disabled so the operator sees at a glance which
+    // devices are live vs. stale.
+    //
+    // Defaults to true so unit tests and older callers that construct
+    // AinaDeviceInfo directly don't need to be updated — the picker
+    // renders "available" the same way it always did.
+    val available: Boolean = true,
 ) {
     enum class ButtonProtocol(
         val display: String,
