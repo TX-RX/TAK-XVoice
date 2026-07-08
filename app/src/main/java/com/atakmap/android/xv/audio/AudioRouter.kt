@@ -64,11 +64,13 @@ class AudioRouter(
         object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
                 logDevices("added", addedDevices)
+                reevaluateBtHintAvailability()
                 notifyChange()
             }
 
             override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
                 logDevices("removed", removedDevices)
+                reevaluateBtHintAvailability()
                 notifyChange()
             }
         }
@@ -90,6 +92,11 @@ class AudioRouter(
     fun stop() {
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
         unregisterBecomingNoisyReceiver()
+        // Cancel any armed speaker-fallback runnable so it doesn't
+        // fire after we've torn down (listeners.clear below would
+        // make the fan-out a no-op, but the log noise and the flag
+        // state would still linger for the next start()).
+        clearSpeakerFallback("router stopped")
         listeners.clear()
     }
 
@@ -201,9 +208,147 @@ class AudioRouter(
             field = value
             if (old != value) {
                 Log.i(TAG, "preferredBtMacHint: $old -> $value")
+                // Hint changed — reset the speaker-fallback timer.
+                // Setting the hint to a new device gives the device a
+                // fresh grace window to appear before we fall back;
+                // clearing the hint (voluntary disconnect) always
+                // exits fallback mode.
+                clearSpeakerFallback("hint changed to $value")
+                reevaluateBtHintAvailability()
                 notifyChangeFromOperator()
             }
         }
+
+    // ============================================================
+    // Fallback-to-speaker lifecycle (feat/bt-device-startup-ux)
+    // ============================================================
+    //
+    // Field 2026-07-08: operators reported that when a picked BT
+    // speakermic disconnects mid-session (battery, out of range, puck
+    // gets bumped off) the plugin sits mute — nothing routes audio to
+    // the phone speaker as a graceful fallback. The user's preferred
+    // MAC is preserved (correct — they still want that puck when it
+    // comes back), but silence is not a useful state during a live
+    // session.
+    //
+    // This block adds a grace-period timer: while a BT hint is set
+    // AND that MAC is NOT present in the audio-device output list,
+    // start a countdown. If the countdown elapses without the device
+    // reappearing, flip [speakerFallbackActive] and re-notify listeners
+    // — [preferredDevice] then routes to the internal speaker while
+    // keeping the hint (and the operator's persisted AINA MAC) intact.
+    // When the device reconnects, we clear the fallback and audio
+    // routes back to BT on the next fan-out.
+    //
+    // Constant is public so tests / operator docs can reference the
+    // grace window we chose.
+    @Volatile
+    private var speakerFallbackActive: Boolean = false
+
+    @Volatile
+    private var pendingSpeakerFallback: Runnable? = null
+
+    /**
+     * True while the AudioRouter has fallen back to the built-in
+     * speaker because the operator's preferred BT device stayed
+     * unavailable for [BT_UNAVAILABLE_SPEAKER_FALLBACK_MS]. Cleared
+     * automatically when the device reconnects.
+     */
+    fun isSpeakerFallbackActive(): Boolean = speakerFallbackActive
+
+    /**
+     * Arms or disarms the speaker-fallback timer based on whether the
+     * currently-set BT hint is present in the AudioManager output list.
+     * Called from the AudioDeviceCallback edges and from the setter
+     * for [preferredBtMacHint]. Cheap — one enumeration of outputs.
+     */
+    private fun reevaluateBtHintAvailability() {
+        val hint = preferredBtMacHint ?: run {
+            // No BT hint set — no notion of "our preferred device is
+            // missing." Cancel any pending fallback + reset the
+            // active flag so we don't linger in fallback mode
+            // indefinitely after the operator picks "(none)".
+            clearSpeakerFallback("hint is null")
+            return
+        }
+        val outputs =
+            try {
+                audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            } catch (t: Throwable) {
+                Log.w(TAG, "reevaluateBtHintAvailability: getDevices threw", t)
+                return
+            }
+        val present = outputs.any { it.isBluetooth() && it.address == hint }
+        if (present) {
+            // The device just came back (or was already there and this
+            // is a spurious re-eval). Cancel any armed fallback timer
+            // and, if we were in fallback mode, clear it — [notifyChange]
+            // called by the AudioDeviceCallback will fan out and let
+            // AudioPlayback rebuild against the BT device.
+            clearSpeakerFallback("hint $hint is reachable")
+        } else if (pendingSpeakerFallback == null && !speakerFallbackActive) {
+            // Device is absent and we haven't already committed to
+            // fallback. Arm the timer.
+            armSpeakerFallback(hint)
+        }
+    }
+
+    private fun armSpeakerFallback(hint: String) {
+        Log.i(
+            TAG,
+            "arming speaker-fallback timer — hint=$hint absent, will fire in " +
+                "${BT_UNAVAILABLE_SPEAKER_FALLBACK_MS / 1000}s if not restored",
+        )
+        val runnable =
+            Runnable {
+                pendingSpeakerFallback = null
+                if (speakerFallbackActive) return@Runnable
+                val currentHint = preferredBtMacHint
+                if (currentHint == null) {
+                    Log.i(TAG, "speaker-fallback fired but hint cleared — skipping")
+                    return@Runnable
+                }
+                val stillMissing =
+                    try {
+                        audioManager
+                            .getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                            .none { it.isBluetooth() && it.address == currentHint }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "speaker-fallback re-check threw", t)
+                        false
+                    }
+                if (!stillMissing) {
+                    Log.i(TAG, "speaker-fallback fired but hint $currentHint reappeared — skipping")
+                    return@Runnable
+                }
+                Log.w(
+                    TAG,
+                    "speaker-fallback firing — hint=$currentHint has been unreachable " +
+                        "for ${BT_UNAVAILABLE_SPEAKER_FALLBACK_MS / 1000}s; falling back to " +
+                        "phone speaker (operator MAC preserved for re-connect)",
+                )
+                speakerFallbackActive = true
+                // Fan out so AudioPlayback / VoicePlant re-pick the
+                // route immediately — [preferredDevice] now returns
+                // the internal speaker regardless of the hint.
+                notifyChangeFromOperator()
+            }
+        pendingSpeakerFallback = runnable
+        mainHandler.postDelayed(runnable, BT_UNAVAILABLE_SPEAKER_FALLBACK_MS)
+    }
+
+    private fun clearSpeakerFallback(reason: String) {
+        val hadPending = pendingSpeakerFallback != null
+        pendingSpeakerFallback?.let { mainHandler.removeCallbacks(it) }
+        pendingSpeakerFallback = null
+        if (speakerFallbackActive) {
+            Log.i(TAG, "clearing speaker-fallback — reason=$reason")
+            speakerFallbackActive = false
+            notifyChangeFromOperator()
+        } else if (hadPending) {
+            Log.i(TAG, "cancelling pending speaker-fallback — reason=$reason")
+        }
+    }
 
     // Optional override: a BT MAC address. When set AND that device is
     // currently connected, [preferredDevice] returns it instead of
@@ -257,6 +402,21 @@ class AudioRouter(
     // phone) — Android will pick.
     fun preferredDevice(): AudioDeviceInfo? {
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+
+        // -1) Speaker fallback (feat/bt-device-startup-ux). When the
+        //     operator's preferred BT device has been unreachable for
+        //     [BT_UNAVAILABLE_SPEAKER_FALLBACK_MS] we deliberately
+        //     skip the BT / wired chain and route to the phone
+        //     speaker. Cleared automatically when the device
+        //     reconnects (see [reevaluateBtHintAvailability]).
+        if (speakerFallbackActive) {
+            val speaker = outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            if (speaker != null) {
+                Log.i(TAG, "preferred: ${describe(speaker)} (speaker fallback active)")
+                return speaker
+            }
+            Log.w(TAG, "speaker fallback active but no BUILTIN_SPEAKER output present — dropping through")
+        }
 
         // 0) Explicit BT override — operator picked a specific BT
         //    audio device (e.g. car BT, headphones) that should win
@@ -442,6 +602,27 @@ class AudioRouter(
 
     companion object {
         private const val TAG = "XvAudioRouter"
+
+        /**
+         * How long the operator's preferred BT device (the AINA /
+         * speakermic that matches [preferredBtMacHint]) is allowed to
+         * stay unreachable in the audio-device output list before
+         * [preferredDevice] falls back to the built-in phone speaker.
+         *
+         * 15s is a balance of two field constraints:
+         *   - Short enough that a live session doesn't sit mute after
+         *     an accidental disconnect (battery, out of range, puck
+         *     bumped off).
+         *   - Long enough to ride out a routine ~5s BT profile-reset
+         *     (SCO teardown / re-establish that happens on some
+         *     handsets around A2DP mode changes) without a spurious
+         *     speaker chirp mid-transmission.
+         *
+         * The operator's persisted MAC is NOT cleared while fallback
+         * is active — as soon as the device reappears in the output
+         * list we exit fallback and route back to BT.
+         */
+        const val BT_UNAVAILABLE_SPEAKER_FALLBACK_MS: Long = 15_000L
 
         /**
          * Pure type + address carrier for the audio-device selector

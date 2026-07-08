@@ -1513,19 +1513,89 @@ class XvDropDownReceiver(
         spinner.setSelection(pos)
     }
 
+    // Builds an ArrayAdapter shared by the primary + secondary AINA
+    // pickers. Row 0 is the "no external button" sentinel; subsequent
+    // rows correspond 1:1 with `devices` (so callers convert
+    // spinner-pos to a device via pos-1). Unavailable rows carry a
+    // trailing " · unavailable" suffix in the label AND are painted
+    // dim; `isEnabled(pos)` returns false for them so a tap in the
+    // dropdown popup does nothing.
+    //
+    // Design note (why an ArrayAdapter subclass over a "(unavailable)"
+    // suffix alone): text-suffix-only picks lose in accessibility (a
+    // screen reader has no way to know the row is disabled) AND in
+    // touch response (an operator can still tap the row and trigger
+    // a connect to a device that we already know is unreachable).
+    // The custom adapter is ~20 lines of code but gives us both the
+    // color + tap-guard properties the leading call-picker UIs use.
+    private fun buildAinaPickerAdapter(devices: List<AinaDeviceInfo>): ArrayAdapter<String> {
+        // Row 0 sentinel is always tappable/enabled.
+        val entries =
+            mutableListOf<PickerRow>().apply {
+                add(PickerRow(label = AINA_NONE_LABEL, available = true))
+                for (d in devices) {
+                    val suffix = if (d.available) "" else "  ·  unavailable"
+                    add(PickerRow(label = d.displayLabel() + suffix, available = d.available))
+                }
+            }
+        return object : ArrayAdapter<String>(
+            pluginContext,
+            R.layout.xv_spinner_item,
+            entries.map { it.label },
+        ) {
+            override fun isEnabled(position: Int): Boolean =
+                entries.getOrNull(position)?.available ?: true
+
+            override fun getDropDownView(
+                position: Int,
+                convertView: View?,
+                parent: android.view.ViewGroup,
+            ): View {
+                val view = super.getDropDownView(position, convertView, parent)
+                val row = entries.getOrNull(position)
+                if (view is TextView) {
+                    if (row?.available == false) {
+                        // Half-alpha to visually indicate "still shown,
+                        // but not tappable." Follows the AOSP
+                        // material picker convention for disabled
+                        // items.
+                        view.alpha = 0.4f
+                    } else {
+                        view.alpha = 1.0f
+                    }
+                }
+                return view
+            }
+        }
+    }
+
+    private data class PickerRow(
+        val label: String,
+        val available: Boolean,
+    )
+
     // Replaces the old Connect / Disconnect buttons. Lists every bonded
     // device whose name matches an AINA pattern, annotated with V1 (SPP)
     // or V2 (BLE). Selecting one connects to it via the Controller's
     // setSelectedAina(); selecting "(none)" disconnects. The selection
     // persists across launches via SharedPreferences (XvMapComponent).
+    //
+    // Availability rendering: rows for devices that AudioManager doesn't
+    // currently list as reachable (bonded but powered off / out of
+    // range) are painted dim and marked non-selectable in the dropdown
+    // popup — same approach modern call-picker UIs (Meet, WhatsApp
+    // Calls, the AOSP call chooser) take. The label carries a trailing
+    // " · unavailable" suffix so operators reading a screenshot still
+    // see the state without needing the color cue. This is snapshot-in-
+    // time only: the availability info is baked into the adapter when
+    // the picker opens; a mid-view BT connect won't re-color the row
+    // until the operator re-opens Settings (see AinaPickerAvailabilityListener
+    // wiring in [showSettings] which triggers a rebuild on ACL edges).
     private fun wireAinaPicker(v: View) {
         val spinner = v.findViewById<Spinner>(R.id.xv_spinner_aina)
         val statusLabel = v.findViewById<TextView>(R.id.xv_label_aina_status)
         val devices = controller.availableAinaDevices()
-        val labels = mutableListOf(AINA_NONE_LABEL)
-        labels.addAll(devices.map { it.displayLabel() })
-        spinner.adapter =
-            ArrayAdapter(pluginContext, R.layout.xv_spinner_item, labels)
+        spinner.adapter = buildAinaPickerAdapter(devices)
         val selectedMac = controller.selectedAinaMac()
         val selectedIdx =
             if (selectedMac == null) {
@@ -1588,10 +1658,7 @@ class XvDropDownReceiver(
         val spinner = v.findViewById<Spinner>(R.id.xv_spinner_aina_secondary) ?: return
         val statusLabel = v.findViewById<TextView>(R.id.xv_label_aina_secondary_status)
         val devices = controller.availableSecondaryAinaDevices()
-        val labels = mutableListOf(AINA_NONE_LABEL)
-        labels.addAll(devices.map { it.displayLabel() })
-        spinner.adapter =
-            ArrayAdapter(pluginContext, R.layout.xv_spinner_item, labels)
+        spinner.adapter = buildAinaPickerAdapter(devices)
         val selectedMac = controller.selectedSecondaryAinaMac()
         val selectedIdx =
             if (selectedMac == null) {

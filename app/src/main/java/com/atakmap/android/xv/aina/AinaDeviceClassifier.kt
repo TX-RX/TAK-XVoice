@@ -121,6 +121,24 @@ object AinaDeviceClassifier {
             AinaDeviceInfo.ButtonProtocol.UNKNOWN -> 4
         }
 
+    // Composite picker sort used by the settings dropdown. Pulled out
+    // as a pure function so unit tests can pin the ordering without
+    // needing a live BluetoothAdapter — the field UX contract is:
+    //   1. Currently-reachable devices first (visually normal, tappable).
+    //   2. Then by protocol per [protocolOrder].
+    //   3. Then by lowercase name for a stable order across refreshes.
+    // Inspired by how modern call-picker UIs (Meet, WhatsApp Calls, the
+    // AOSP device-chooser dialog) rank reachable devices ahead of the
+    // stale-but-remembered set.
+    fun rankForPicker(devices: List<AinaDeviceInfo>): List<AinaDeviceInfo> =
+        devices.sortedWith(
+            compareBy(
+                { if (it.available) 0 else 1 },
+                { protocolOrder(it.buttonProtocol) },
+                { it.name.lowercase() },
+            ),
+        )
+
     private fun safeName(device: BluetoothDevice): String? =
         try {
             device.name
