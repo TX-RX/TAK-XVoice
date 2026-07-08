@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
@@ -314,7 +315,7 @@ class AudioControllerImpl(
     private fun suspendInternal() {
         preSuspendState = currentState
         when (currentState) {
-            AudioState.RX -> releaseRxFocus()
+            AudioState.RX -> releaseRxFocusImmediate()
             AudioState.TX -> releaseTxAndScoAndMode()
             AudioState.RX_TX -> {
                 releaseTxAndScoAndMode()
@@ -323,6 +324,26 @@ class AudioControllerImpl(
             else -> {}
         }
         transitionTo(AudioState.SUSPENDED)
+    }
+
+    // System-suspend variant of [releaseRxFocus]. The regular teardown
+    // path schedules the phone-mode restore SCO_COOL_DOWN_MS in the
+    // future so a rapid re-engage lands warm; but on focus-loss we
+    // just handed the audio session to whatever the system granted
+    // focus to — most commonly Telephony placing MODE_IN_CALL for an
+    // incoming phone call. A deferred restore that fires while the
+    // phone call is mid-audio blows away MODE_IN_CALL (setting it back
+    // to MODE_NORMAL) and clobbers STREAM_VOICE_CALL's volume mid-
+    // call — the operator sees "volume buttons regressed / call
+    // audio suddenly quiet or mis-routed" a few seconds into the
+    // phone call. Match TX's suspend behavior: cancel any pending
+    // deferred restore and apply the pre-engage state immediately so
+    // whatever the system does next starts from a clean baseline.
+    private fun releaseRxFocusImmediate() {
+        rxFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        rxFocusRequest = null
+        phoneModeHandler.removeCallbacks(phoneModeReleaseRunnable)
+        applyPhoneModeRestore()
     }
 
     // Bring STREAM_VOICE_CALL up to a usable level on engage. On
@@ -521,6 +542,21 @@ class AudioControllerImpl(
                     .build(),
             ).setOnAudioFocusChangeListener(focusListener)
             .build()
+
+    // Test seams. Real focus-loss dispatch is a system callback delivered
+    // through the AudioFocusRequest's registered listener — Robolectric's
+    // AudioManager shadow does not deliver those callbacks synchronously
+    // through the request round-trip we make in [buildRxFocusRequest] /
+    // [buildTxFocusRequest], so the unit test needs a direct hook to
+    // exercise the suspend path. Kept package-private via
+    // [VisibleForTesting] so production code cannot accidentally reach
+    // through and short-circuit the focus-loss contract.
+
+    /** Test hook: dispatch a synthetic focus-loss event to [focusListener]. */
+    @VisibleForTesting(otherwise = VisibleForTesting.NONE)
+    internal fun simulateFocusLossForTest() {
+        focusListener.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+    }
 
     companion object {
         private const val TAG = "XvAudio"
