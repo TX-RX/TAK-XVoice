@@ -39,6 +39,19 @@ class AudioCapture(
     // marker for field-debug; future plumbing can route to a Toast via
     // the AIDL listener. Audit H5.
     private val onCaptureError: (reason: String) -> Unit = {},
+    // Fires with the OS-assigned AudioRecord session id after
+    // startRecording() succeeds, and again with null when capture stops
+    // or fails after allocation. VoicePlant stores the current value so
+    // AudioPlayback can attach its AudioTrack to the same session via
+    // AudioTrack.Builder.setSessionId(id) — that shared session id is
+    // what gives Android's AcousticEchoCanceler (created against the
+    // capture session in [configureAudioEffects]) a real downlink
+    // reference signal to subtract from the mic input. Without shared
+    // session ids, AEC sees only the mic path and can't suppress a
+    // peer's voice echoing back through the operator's speakermic.
+    // Default no-op keeps the constructor usable in tests / historical
+    // callsites that don't route through VoicePlant.
+    private val onSessionIdChanged: (Int?) -> Unit = {},
 ) {
     private val channelMask =
         if (channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
@@ -131,6 +144,20 @@ class AudioCapture(
         }
         thread =
             Thread({ runReadLoop() }, "xv-mic-capture").also { it.start() }
+        // Bubble the OS-assigned capture session id up to the plant so
+        // AudioPlayback can bind its AudioTrack to the same session
+        // (setSessionId on AudioTrack). This is what closes the loop for
+        // AEC: the AcousticEchoCanceler created against this session id
+        // (see [configureAudioEffects]) then has a real downlink reference
+        // signal to subtract from the mic input. Session ids are not
+        // sensitive per CLAUDE.md — log unredacted for field debug.
+        val sid = r.audioSessionId
+        Log.i(TAG, "capture session id=$sid — linked for AEC")
+        try {
+            onSessionIdChanged(sid)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onSessionIdChanged(start) threw", t)
+        }
         // The actually-routed input device may differ from the requested
         // preferredDevice — the OS picks routing per its policy. Log the
         // routed device so silent-mic bugs are diagnosable: if we asked
@@ -223,6 +250,14 @@ class AudioCapture(
             }
         }
         record = null
+        // Clear the plant's cached session id so a subsequent RX before
+        // the next TX doesn't try to attach an AudioTrack to a released
+        // AudioRecord session. Idempotent — plant just holds null.
+        try {
+            onSessionIdChanged(null)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onSessionIdChanged(stop) threw", t)
+        }
         Log.i(TAG, "AudioRecord stopped")
     }
 
