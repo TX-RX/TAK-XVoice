@@ -1,0 +1,142 @@
+# Semgrep static analysis for TAK-XVoice.
+#
+# This workflow replaces the CodeQL job that was removed in PR #18.
+# The short version: CodeQL's Kotlin extractor can't process code
+# that doesn't type-resolve, and every XV source file imports ATAK
+# CIV SDK types that live in `app/libs/main.jar` — which is
+# gitignored, not redistributable, and intentionally not available
+# in public CI (see ci.yml's header for the full rationale). Two
+# attempts to work around that (`build-mode: manual` with a stubbed
+# SDK jar, then `build-mode: none` on codeql-action v4) both failed
+# the same way, so the workflow was deleted.
+#
+# Semgrep works where CodeQL didn't because it's a source-only,
+# pattern-based scanner. It parses the Kotlin AST but does not
+# require the transitive symbol graph to resolve. Unresolved
+# `com.atakmap.*` imports are fine — the rule engine still fires
+# on the syntactic patterns it's looking for. The trade-off is
+# real: we lose the typed data-flow analysis CodeQL would have
+# given us, and we accept that Semgrep will surface some false
+# positives on Kotlin/Android idioms. See the "advisory only"
+# note on the analyze step below for how that trade-off is
+# handled.
+#
+# Rule packs pulled from the semgrep.dev registry:
+#   - p/kotlin         — language-specific patterns (nullability,
+#                        coroutine misuse, unsafe casts, etc.).
+#   - p/security-audit — general-purpose security ruleset spanning
+#                        crypto misuse, injection sinks, insecure
+#                        deserialization, hardcoded secrets, etc.
+#   - p/android        — Android-specific security patterns
+#                        (exported components, insecure intents,
+#                        WebView misuse, external storage, etc.).
+#
+# All three packs are pinned by registry alias; Semgrep resolves
+# them at scan time. If a pack is retired upstream, the scan will
+# fail loudly on that step rather than silently drop coverage.
+
+name: Semgrep
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Cancel superseded runs of the same branch/PR to save minutes.
+concurrency:
+  group: semgrep-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Semgrep scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Minimum permissions:
+    #   - contents: read — needed by actions/checkout.
+    #   - security-events: write — needed by
+    #     github/codeql-action/upload-sarif so findings land in the
+    #     repo's Code Scanning tab and inline PR annotations.
+    permissions:
+      contents: read
+      security-events: write
+
+    # Pin the official Semgrep image. The `semgrep-action` wrapper
+    # (returntocorp/semgrep-action / semgrep/semgrep-action) was
+    # archived in April 2024; the current recommendation is to run
+    # the `semgrep` CLI directly out of the `semgrep/semgrep`
+    # container image. `:latest` follows upstream releases without
+    # us needing to babysit version bumps — Dependabot's
+    # github-actions ecosystem covers action-uses pins, not
+    # container-image tags, so `:latest` is the pragmatic choice
+    # here. Revisit if we ever want to pin for reproducibility.
+    container:
+      image: semgrep/semgrep:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run Semgrep (advisory only)
+        # `--config` flags stack; each pack is fetched from the
+        # registry. `--sarif` emits a SARIF 2.1.0 report that the
+        # upload step below consumes. `--metrics=off` suppresses
+        # anonymous telemetry — belt-and-suspenders on the
+        # sensitive-content policy in CLAUDE.md; we don't want a
+        # scanner phoning home file paths from an operator-adjacent
+        # codebase, even if the payload is nominally scrubbed.
+        #
+        # `continue-on-error: true` is deliberate. Findings are
+        # ADVISORY ONLY — they surface as PR annotations and in the
+        # Code Scanning tab, but they do NOT red-CI the workflow.
+        # Rationale: CodeQL's history in this repo was that every
+        # PR was red for reasons unrelated to the change under
+        # review, which trained everyone to ignore the check. A
+        # pattern-based Kotlin scanner will produce false positives
+        # on Android idioms (broad receiver registrations, intent
+        # filters, WebView setup that's fine in context, etc.), so
+        # we keep the signal without the fatigue: the workflow
+        # goes green, findings show up as review annotations, and
+        # a human decides what's worth acting on. If we later
+        # curate a ruleset tight enough to be fail-worthy, flip
+        # `continue-on-error` off in the same PR that lands the
+        # curated ruleset.
+        continue-on-error: true
+        env:
+          SEMGREP_SEND_METRICS: 'off'
+        run: |
+          semgrep scan \
+            --config=p/kotlin \
+            --config=p/security-audit \
+            --config=p/android \
+            --sarif \
+            --output=semgrep.sarif \
+            --metrics=off \
+            --error \
+            app/src
+
+      - name: Upload SARIF to GitHub Code Scanning
+        # `if: always()` so we still upload partial results if the
+        # scan step fails partway through — a partial finding set
+        # is more useful for review than none.
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Upload SARIF artifact
+        # Belt-and-suspenders: keep a copy of the raw SARIF as a
+        # workflow artifact so reviewers can pull it down without
+        # needing Code Scanning access. 7-day retention matches
+        # the ktlint-report artifact in ci.yml.
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          retention-days: 7
