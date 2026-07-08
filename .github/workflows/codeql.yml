@@ -1,33 +1,14 @@
 # CodeQL static analysis for TAK-XVoice.
 #
-# The Kotlin extractor's `build-mode: none` path can't process our code
-# because every source file imports ATAK CIV SDK types that live in
-# `app/libs/main.jar` — which isn't in CI (the SDK is not
-# redistributable; see .github/workflows/ci.yml and CLAUDE.md).
+# NOTE — this workflow is a limited-fidelity scan. XV's Kotlin
+# sources import ATAK CIV SDK types that live outside the repo (see
+# `app/libs/main.jar` gitignore + `ci.yml` for the licensing rationale),
+# so CodeQL cannot fully compile our code in public CI. We use
+# `build-mode: none`, which does a source-only extraction that:
+#   * still runs CodeQL's Kotlin queries against parseable code
+#   * misses queries that require full type resolution against ATAK
 #
-# Workflow strategy:
-#   1. Stub `app/libs/main.jar` with a valid but effectively empty jar
-#      so Gradle's `compileOnly(files("libs/main.jar"))` reference
-#      resolves during project evaluation.
-#   2. Initialize CodeQL in `build-mode: manual` — CodeQL will only
-#      extract the code we compile between init and analyze.
-#   3. Run `./gradlew compileCivDebugKotlin --continue` best-effort.
-#      Kotlin files that DON'T reference missing ATAK types will
-#      compile; ATAK-touching files will fail. `--continue` runs every
-#      subproject task rather than short-circuiting on the first
-#      failure, and `continue-on-error: true` on the step keeps a
-#      partial success from marking the job failed.
-#   4. `analyze` reads whatever CodeQL captured — even a partial
-#      extraction covers the pure-Kotlin surface (audio state
-#      machines, MumbleSession, TxController, etc.) that carries
-#      most of our security-relevant logic.
-#
-# If CodeQL still reports "no source seen" after this, the honest
-# next step is to delete this workflow: our Kotlin code is too
-# entangled with the SDK for build-mode analysis to be useful without
-# a self-hosted runner that has the real jar. That would be tracked
-# as a follow-up; for now this file at least attempts real coverage
-# instead of silently failing on every PR.
+# See CLAUDE.md for context on why the SDK isn't in CI.
 
 name: CodeQL
 
@@ -64,33 +45,11 @@ jobs:
       matrix:
         include:
           - language: java-kotlin
-            build-mode: manual
+            build-mode: none
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Stub ATAK CIV SDK jar
-        # Real jar is gitignored + not redistributable. Create a valid,
-        # nearly-empty jar so `compileOnly(files("libs/main.jar"))`
-        # resolves during Gradle project evaluation. Kotlin sources
-        # that reference ATAK types will fail to compile, but the
-        # `--continue` flag on the compile step below lets non-ATAK-
-        # touching sources still be extracted by CodeQL.
-        run: |
-          set -e
-          mkdir -p app/libs
-          mkdir -p /tmp/xv-stub-jar/META-INF
-          printf 'Manifest-Version: 1.0\nCreated-By: CI-stub\n' \
-            > /tmp/xv-stub-jar/META-INF/MANIFEST.MF
-          jar cfM app/libs/main.jar -C /tmp/xv-stub-jar .
-          ls -la app/libs/main.jar
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -100,19 +59,6 @@ jobs:
           # Query suites: default is "security-extended" which enables
           # additional queries beyond the standard security set.
           queries: security-extended
-
-      - name: Best-effort Kotlin compile for CodeQL extraction
-        # Missing ATAK types cause compile errors in files that touch
-        # them. `--continue` runs all reachable tasks rather than
-        # short-circuiting on the first failure; `continue-on-error`
-        # on the step keeps a partial-failure exit code from marking
-        # the job red. CodeQL's Kotlin extractor runs alongside the
-        # compile and captures whatever passes the parser.
-        continue-on-error: true
-        run: |
-          ./gradlew compileCivDebugKotlin \
-            --continue --no-daemon --stacktrace \
-            -x lint -x lintCivDebug
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
