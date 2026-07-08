@@ -253,7 +253,7 @@ dependencies {
 
     // Mumble wire protocol uses protobuf. Lite runtime keeps APK small;
     // we don't need reflection-based features.
-    implementation("com.google.protobuf:protobuf-javalite:3.25.5")
+    implementation("com.google.protobuf:protobuf-javalite:4.35.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("io.mockk:mockk:1.13.11")
@@ -285,7 +285,7 @@ afterEvaluate {
 
 protobuf {
     protoc {
-        artifact = "com.google.protobuf:protoc:3.25.5"
+        artifact = "com.google.protobuf:protoc:4.35.1"
     }
     generateProtoTasks {
         all().forEach { task ->
