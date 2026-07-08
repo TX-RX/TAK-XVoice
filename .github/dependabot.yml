@@ -2,7 +2,7 @@
 #
 # Two ecosystems are tracked:
 #   - github-actions: the workflow definitions in .github/workflows,
-#     so ktlint / CodeQL / setup-java action bumps come in as PRs.
+#     so ktlint / setup-java action bumps come in as PRs.
 #   - gradle: the Kotlin / AndroidX / Concentus / Robolectric etc.
 #     dependencies declared in app/build.gradle.kts and elsewhere.
 #
