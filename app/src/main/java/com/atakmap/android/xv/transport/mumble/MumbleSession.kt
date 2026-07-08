@@ -714,7 +714,16 @@ class MumbleSession(
 
             val sock =
                 MumbleAuth.connectTls(host, port, takServerHost).apply {
-                    soTimeout = 30_000
+                    // SO_TIMEOUT tightened from 30 s to 20 s after the
+                    // 2026-06 handoff hardening: the read side now
+                    // surfaces dead links via SO_TIMEOUT in ~20 s
+                    // instead of ~30 s, halving the worst-case freeze
+                    // when the stale-link watchdog isn't first to fire
+                    // (e.g. the server happens to send one byte right
+                    // at the swap moment, pushing lastServerActivityMs
+                    // forward and resetting the STALE_LINK timer just
+                    // before the link actually dies).
+                    soTimeout = SOCKET_SO_TIMEOUT_MS
                     startHandshake()
                 }
             // Critical race guard: if disconnect() was called while we
@@ -1005,6 +1014,35 @@ class MumbleSession(
         payload: ByteArray,
     ) = dispatch(type, payload)
 
+    /**
+     * Test seam: force the watchdog's "last server byte at" timestamp.
+     * Used by MumbleSessionStaleLinkTest to drive a fake clock without
+     * standing up a real socket or read thread.
+     */
+    @VisibleForTesting
+    internal fun setLastServerActivityForTest(epochMs: Long) {
+        lastServerActivityMs = epochMs
+    }
+
+    /**
+     * Test seam: ask the watchdog if the link is currently considered
+     * stale, given an injected "now" wall-clock. Mirrors the exact
+     * condition in [startPing]'s heartbeat loop so a regression in
+     * either the constant or the comparison surface here too.
+     *
+     * Returns true iff a non-zero [lastServerActivityMs] has been seen
+     * AND the gap to [nowMs] has exceeded [STALE_LINK_TIMEOUT_MS]. The
+     * production loop uses the same guard (`lastServerActivityMs > 0`)
+     * so a freshly-opened session that hasn't reached readLoop yet is
+     * not falsely declared stale.
+     */
+    @VisibleForTesting
+    internal fun isLinkStaleForTest(nowMs: Long): Boolean {
+        val last = lastServerActivityMs
+        if (last <= 0L) return false
+        return (nowMs - last) > STALE_LINK_TIMEOUT_MS
+    }
+
     private fun dispatch(
         type: Int,
         payload: ByteArray,
@@ -1201,18 +1239,52 @@ class MumbleSession(
         // per query, scales with channel count).
         private const val PERMISSION_REFRESH_INTERVAL_MS = 30_000L
 
-        // Ping cadence. Matches Mumble client convention (15 s) and
-        // gives the watchdog a sub-30 s recovery window for silent link
-        // death without overspending uplink bytes on chatty pings.
-        private const val PING_INTERVAL_MS: Long = 15_000L
+        // Ping cadence. Tightened from 15 s -> 8 s in the 2026-06
+        // handoff hardening pass. The Mumble client convention is
+        // 15 s, but we're not a desktop client — we're a hand-held on
+        // a cellular/wifi seam where silent link death is the common
+        // failure mode, not server-side load. 8 s lets the watchdog
+        // catch a wedged socket inside ~20 s of the actual disconnect
+        // (one missed ping + one grace ping = 16 s, vs the prior
+        // ~50 s). Uplink cost is ~3 extra small pings per minute per
+        // session — negligible.
+        private const val PING_INTERVAL_MS: Long = 8_000L
 
         // Watchdog ceiling. If the read side hasn't seen ANY byte from
         // the server for this long, close the socket so reconnect kicks
-        // in. Sized at ~2× ping interval + grace: one missed ping +
-        // round-trip slack covers a transient cell handoff that resumes
-        // before our next ping; beyond this, the link is effectively
-        // dead. Compares favorably against the 30 s socket SO_TIMEOUT
-        // which only fires after the read attempt itself times out.
-        private const val STALE_LINK_TIMEOUT_MS: Long = 35_000L
+        // in. Tightened from 35 s -> 18 s in the 2026-06 handoff
+        // hardening pass; sized at ~2× ping interval + grace (8 + 8 +
+        // 2). One missed ping + round-trip slack still covers a
+        // transient cell handoff that resumes mid-flight, but a true
+        // dead link is detected in ~18 s instead of ~50 s. Compares
+        // favorably against the 20 s socket SO_TIMEOUT (which only
+        // fires after the read attempt itself times out, so worst-case
+        // detection is bounded by min(STALE_LINK, SO_TIMEOUT + last
+        // successful read window)).
+        private const val STALE_LINK_TIMEOUT_MS: Long = 18_000L
+
+        /** Test accessor for the watchdog ceiling — gives the unit
+         *  suite a single source of truth, so dropping the constant
+         *  later (or raising it) does not silently invalidate the
+         *  stale-link test's threshold math. */
+        @VisibleForTesting
+        internal fun staleLinkTimeoutMsForTest(): Long = STALE_LINK_TIMEOUT_MS
+
+        /** Test accessor for the ping cadence — paired with
+         *  [staleLinkTimeoutMsForTest] so the test can prove the
+         *  watchdog still fires inside ~2× ping cadence + grace. */
+        @VisibleForTesting
+        internal fun pingIntervalMsForTest(): Long = PING_INTERVAL_MS
+
+        /** Test accessor for the SSL socket SO_TIMEOUT applied in
+         *  [runConnection]. Lets the test suite assert the tightened
+         *  20 s value without parsing the source. */
+        @VisibleForTesting
+        internal fun socketSoTimeoutMsForTest(): Int = SOCKET_SO_TIMEOUT_MS
+
+        // Socket read timeout. Tightened from 30 s -> 20 s in the
+        // 2026-06 handoff hardening pass so the read side surfaces
+        // dead links inside ~20 s instead of ~30 s.
+        private const val SOCKET_SO_TIMEOUT_MS: Int = 20_000
     }
 }

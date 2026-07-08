@@ -80,6 +80,18 @@ interface IXvVoice {
     void disconnectAina();
     boolean isAinaConnected();
 
+    // SECONDARY PTT input — an additional bonded BT speakermic or
+    // BLE PTT button that drives slot 0 in parallel with the primary.
+    // PttDispatcher's OR-gate keeps concurrent presses from cutting
+    // each other off so a motorcyclist with an AINA helmet
+    // speakermic + a handlebar Pryme puck can hold either button
+    // without one tearing the other's TX down. Secondary is hard-
+    // locked to slot 0; PTTS / PTTE / MFB on the secondary device
+    // are ignored.
+    void connectAinaSecondary(String mac, String name, String kind);
+    void disconnectAinaSecondary();
+    boolean isAinaSecondaryConnected();
+
     // Mumble session signal. The plugin still owns the Mumble TCP
     // socket (because cert lookup needs ATAK runtime), but tells the
     // service when there's a live session so the service knows

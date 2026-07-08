@@ -1574,6 +1574,25 @@ class XvVoiceService : Service() {
                 return plant().isAinaConnected()
             }
 
+            override fun connectAinaSecondary(
+                mac: String?,
+                name: String?,
+                kind: String?,
+            ) {
+                assertAuthorizedCaller()
+                plant().connectAinaSecondary(mac, name, kind)
+            }
+
+            override fun disconnectAinaSecondary() {
+                assertAuthorizedCaller()
+                plant().disconnectAinaSecondary()
+            }
+
+            override fun isAinaSecondaryConnected(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isAinaSecondaryConnected()
+            }
+
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
                 assertAuthorizedCaller()
                 plant().setMumbleSessionLive(connectedAndInChannel)
