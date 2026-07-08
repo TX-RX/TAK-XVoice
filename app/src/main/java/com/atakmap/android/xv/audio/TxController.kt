@@ -178,6 +178,17 @@ class TxController(
     @Volatile
     private var primingFramesObserved: Int = 0
 
+    // Whether PRIMING was entered while SCO was CONNECTED. Captured at
+    // startPriming() so the gate values are stable through the whole
+    // priming window — the SCO chipset noise floor (~5-15 for the
+    // first 300-1000 ms of a cold start) sits above the non-SCO
+    // MIC_PRIMING_RMS_THRESHOLD, which produced the 2026-07-08 field
+    // repro where onPcmFrame declared "mic ready" on chipset warmup
+    // hiss and shipped ~500 ms of near-silent frames before real
+    // audio reached the encoder. Route-aware gates below fix that.
+    @Volatile
+    private var primingUseScoGates: Boolean = false
+
     // Wall-clock when state transitioned to TPT. The TPT-overlap ring
     // buffer's "skip the loud first N ms" filter uses this to decide
     // whether to drop or retain each incoming PCM frame. Reset on every
@@ -395,6 +406,16 @@ class TxController(
         state = State.PRIMING
         primingStartMs = System.currentTimeMillis()
         primingFramesObserved = 0
+        // Route-aware gate selection. On BT SCO the chipset takes
+        // 300-1000 ms of cold-start warmup during which frames arrive
+        // late and/or with only noise-floor amplitude. Non-SCO routes
+        // (built-in mic, wired headset) stabilize within one frame
+        // period. Capture the route decision once so the timeout
+        // callback and onPcmFrame use consistent thresholds even if
+        // SCO state changes mid-priming.
+        primingUseScoGates = scoLink.state == ScoLink.State.CONNECTED
+        val timeoutMs =
+            if (primingUseScoGates) MIC_PRIMING_TIMEOUT_MS_SCO else MIC_PRIMING_TIMEOUT_MS
         if (capture == null) {
             val cap =
                 audioCaptureFactory { pcm ->
@@ -402,12 +423,16 @@ class TxController(
                 }
             capture = cap
             cap.start()
-            Log.i(TAG, "PRIMING: mic capture started — waiting for first non-silent frame")
+            Log.i(
+                TAG,
+                "PRIMING: mic capture started — waiting for first non-silent frame " +
+                    "(route=${if (primingUseScoGates) "sco" else "non-sco"}, timeout=${timeoutMs}ms)",
+            )
         } else {
             Log.i(TAG, "PRIMING: mic capture already alive — waiting for non-silent frame")
         }
         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
-        cooldownHandler.postDelayed(primingTimeoutRunnable, MIC_PRIMING_TIMEOUT_MS)
+        cooldownHandler.postDelayed(primingTimeoutRunnable, timeoutMs)
     }
 
     // No-op stub. Earlier this used incoming RX frames to pre-warm
@@ -909,24 +934,29 @@ class TxController(
             // is delivering frames at all, the mic is up and TPT can
             // play; the worst that can happen is the first few ms of
             // speech encode as silence, which is unnoticeable.
+            val rmsThreshold =
+                if (primingUseScoGates) MIC_PRIMING_RMS_THRESHOLD_SCO else MIC_PRIMING_RMS_THRESHOLD
+            val minFrames =
+                if (primingUseScoGates) MIC_PRIMING_MIN_FRAMES_ALIVE_SCO else MIC_PRIMING_MIN_FRAMES_ALIVE
             val micAlive =
-                rms >= MIC_PRIMING_RMS_THRESHOLD ||
-                    primingFramesObserved >= MIC_PRIMING_MIN_FRAMES_ALIVE
+                rms >= rmsThreshold ||
+                    primingFramesObserved >= minFrames
             if (micAlive) {
                 synchronized(this@TxController) {
                     if (state == State.PRIMING) {
                         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
                         val elapsed = System.currentTimeMillis() - primingStartMs
                         val reason =
-                            if (rms >= MIC_PRIMING_RMS_THRESHOLD) {
+                            if (rms >= rmsThreshold) {
                                 "speech-detected"
                             } else {
                                 "frames-confirm-alive"
                             }
+                        val route = if (primingUseScoGates) "sco" else "non-sco"
                         Log.i(
                             TAG,
                             "PRIMING: mic ready after ${elapsed}ms ($reason: rms=$rms, " +
-                                "$primingFramesObserved frames observed) — playing TPT",
+                                "$primingFramesObserved frames observed, route=$route) — playing TPT",
                         )
                         startTpt()
                     }
@@ -1416,6 +1446,64 @@ class TxController(
         // Field result: on-screen PTT goes from "press → ~2s latency"
         // to "press → ~150ms latency" on Surface Duo built-in mic.
         private const val MIC_PRIMING_TIMEOUT_MS = 500L
+
+        // ---------- BT SCO cold-start PRIMING gates ----------
+        //
+        // The non-SCO PRIMING values above assume the mic delivers its
+        // first frame within one frame period and produces stable
+        // amplitude within a handful of frames. BT SCO chipsets do
+        // neither on cold start:
+        //
+        //   * First frame can arrive 300-1000 ms after AudioRecord
+        //     start, well past the 500 ms non-SCO timeout — which
+        //     produces the "PRIMING: 0 frames seen — bonking (mic
+        //     dead)" abort even though the chipset was about to
+        //     deliver.
+        //   * The first ~30 frames after delivery starts are chipset
+        //     ramp-up noise: rms 5-15, well above the non-SCO
+        //     MIC_PRIMING_RMS_THRESHOLD of 5, so the RMS gate fires
+        //     "mic ready" on hiss instead of speech. TPT plays, TX
+        //     starts, and the encoder gets ~500 ms of near-silent
+        //     Opus frames before the operator's voice reaches the
+        //     wire — peer hears silence, then mid-syllable.
+        //
+        // These SCO-only gates raise the RMS threshold above the
+        // chipset's noise floor, require ~300 ms of stable frame
+        // delivery before declaring ready via the frame-count path,
+        // and extend the timeout so the chipset has room to warm up
+        // before we call it dead. Selected at startPriming() based on
+        // scoLink.state and pinned into primingUseScoGates so mid-
+        // priming SCO state changes don't split-brain the gate logic.
+        //
+        // Values calibrated from field capture 2026-07-08 (AINA V2
+        // APTT316782 + Pixel 9 Pro), where a cold-SCO PTT produced:
+        //   - AudioRecord alloc → first frame: ~863 ms
+        //   - Frames #1-30 rms range: 1-13 (chipset ramp)
+        //   - Frame #60 (~570 ms in): rms 1070 (first real speech)
+        //   - Frame #90 (~870 ms in): rms 13 (mic settled, silent)
+
+        // Noise floor of a cold BT SCO chipset commonly reaches
+        // ~10-15 within the first 100 ms of delivery. 200 sits well
+        // above that but well below normal speech onset (rms 300+
+        // per syllable, 1000+ per vowel), so it only fires on
+        // actual speech.
+        private const val MIC_PRIMING_RMS_THRESHOLD_SCO = 200
+
+        // Wait for ~300 ms of continuous frame delivery before
+        // declaring the chipset ready via the frame-count path. 30
+        // frames * 10 ms/frame = 300 ms. Field-observed chipset
+        // settle time is 300-500 ms; below 300 ms the encoder is
+        // still fed ramp-up noise, above 500 ms operators start
+        // perceiving TPT latency.
+        private const val MIC_PRIMING_MIN_FRAMES_ALIVE_SCO = 30
+
+        // Field-observed cold-SCO first-frame latency was 863 ms,
+        // and the previous 500 ms timeout aborted TX with "mic
+        // dead" while the chipset was mid-warmup. 1500 ms gives
+        // real cold starts room to deliver frames without producing
+        // a false-dead abort, while still bounding the wait for a
+        // truly wedged chipset.
+        private const val MIC_PRIMING_TIMEOUT_MS_SCO = 1500L
 
         // Minimum wall-clock between a stop() and the next accepted
         // start() on the COLD path (SCO not yet CONNECTED). Inside
