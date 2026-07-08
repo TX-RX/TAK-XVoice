@@ -80,6 +80,19 @@ class AudioPlayback(
     // produce 2-3 BONKs in a row before PRIMING finally observes
     // non-silent samples. Active=true on enter, false on exit.
     private val onScoHotChanged: (active: Boolean) -> Unit = {},
+    // Returns the OS-assigned AudioRecord session id currently in use
+    // by AudioCapture, or null when no capture is active. When non-null,
+    // AudioTrack.Builder.setSessionId(id) is called so the RX playback
+    // path shares a session with the mic path — that shared session id
+    // gives Android's AcousticEchoCanceler (attached to the capture
+    // session in AudioCapture.configureAudioEffects) a real downlink
+    // reference signal to subtract from the mic input. Without shared
+    // session ids, AEC has no visibility into what's coming out of the
+    // speaker and can't suppress a peer's voice echoing back through
+    // the operator's speakermic. Limitation: the very first RX before
+    // any TX still races (no capture session exists yet); the field
+    // bug is warm back-and-forth, which this covers.
+    private val captureSessionIdProvider: () -> Int? = { null },
 ) : AudioRouter.RouteListener {
     private val channelMask =
         if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
@@ -579,15 +592,37 @@ class AudioPlayback(
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(channelMask)
                 .build()
+        // If AudioCapture has an active session, bind the AudioTrack to
+        // the same session id so Android's AcousticEchoCanceler (attached
+        // to the capture session in AudioCapture.configureAudioEffects)
+        // has a real downlink reference signal to subtract from the mic
+        // input. First RX before any TX still races (captureSessionId
+        // == null); on any RX burst that follows a PTT press, AEC is
+        // now looking at the same session pair. Session ids are not
+        // sensitive per CLAUDE.md — log unredacted for field debug.
+        val captureSessionId =
+            try {
+                captureSessionIdProvider()
+            } catch (t: Throwable) {
+                Log.w(TAG, "captureSessionIdProvider threw", t)
+                null
+            }
         val newTrack =
             try {
-                AudioTrack
-                    .Builder()
-                    .setAudioAttributes(attrs)
-                    .setAudioFormat(format)
-                    .setBufferSizeInBytes(minBufferBytes)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
+                val b =
+                    AudioTrack
+                        .Builder()
+                        .setAudioAttributes(attrs)
+                        .setAudioFormat(format)
+                        .setBufferSizeInBytes(minBufferBytes)
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                if (captureSessionId != null && captureSessionId != 0) {
+                    b.setSessionId(captureSessionId)
+                    Log.i(TAG, "AudioTrack using capture session id=$captureSessionId for AEC linkage")
+                } else {
+                    Log.i(TAG, "AudioTrack built with fresh session (no capture session yet — first RX or post-stop)")
+                }
+                b.build()
             } catch (t: Throwable) {
                 Log.e(TAG, "AudioTrack build failed (useSco=$useSco)", t)
                 return
