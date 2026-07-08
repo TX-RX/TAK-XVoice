@@ -167,6 +167,31 @@ class VoicePlant(
             preferredDeviceForTones = { router.preferredDevice() },
         ).also { it.primeMediaPath() }
 
+    // Session id of the currently-live AudioCapture, or null when no
+    // capture is running. Published by AudioCapture.start() (via the
+    // onSessionIdChanged callback wired below) and cleared by
+    // AudioCapture.stop(). AudioPlayback consults it when building a
+    // fresh AudioTrack so RX playback shares a session with the mic
+    // path — Android's AcousticEchoCanceler (attached to the capture
+    // session in AudioCapture.configureAudioEffects) then has a real
+    // downlink reference signal to subtract from the mic input, which
+    // is what stops the operator's peer from hearing themselves
+    // through the operator's own speakermic on a warm back-and-forth.
+    // Volatile: TX thread writes (AudioCapture.start/stop runs on the
+    // caller thread; TxController drives the lifecycle from its own
+    // executor), RX thread reads (playPcm delivery landing on the
+    // Mumble decoder thread).
+    @Volatile private var currentCaptureSessionId: Int? = null
+
+    /** Called by AudioCapture on start()/stop() so AudioPlayback can
+     *  bind its AudioTrack to the same audio session. Public API is
+     *  package-scoped-by-convention — external callers should never
+     *  touch this. */
+    internal fun setCurrentCaptureSessionId(id: Int?) {
+        currentCaptureSessionId = id
+        Log.i(TAG, "currentCaptureSessionId → $id")
+    }
+
     private val audioPlayback: AudioPlayback =
         AudioPlayback(
             controller = audioController,
@@ -185,6 +210,13 @@ class VoicePlant(
             // cost. Especially helps slow combos (Duo+V1) where the
             // mic returns silence for 1-3 s after a cold SCO setup.
             onScoHotChanged = { active -> txController.preWarmMic(active) },
+            // AEC session linkage. When a capture is live, AudioTrack
+            // is built against the same session id so the AEC effect
+            // (attached to the capture session in AudioCapture) has a
+            // real reference signal. First RX before any TX still
+            // races — this covers the warm back-and-forth case which
+            // is the field bug.
+            captureSessionIdProvider = { currentCaptureSessionId },
         ).also { router.start(it) }
 
     private val statusTones = StatusTones(tptPlayer = tptPlayer, enabled = { statusTonesEnabled })
@@ -224,6 +256,11 @@ class VoicePlant(
                     context = context,
                     onFrame = onFrame,
                     onCaptureError = { reason -> callbacks.onCaptureError(reason) },
+                    // Publish the OS-assigned capture session id up so
+                    // AudioPlayback can share it with its AudioTrack. See
+                    // [currentCaptureSessionId] docstring for the AEC
+                    // rationale.
+                    onSessionIdChanged = { id -> setCurrentCaptureSessionId(id) },
                 )
             },
             opusEncoderFactory = { ConcentusOpusEncoder() as OpusEncoder },
