@@ -15,7 +15,7 @@ import com.atakmap.android.emergency.tool.EmergencyType
 // SharedPreferences key documented as the Alert Tool's storage) and it
 // returned the stale "911 Alert" while the user's actual selection was "In
 // Contact" — the pref doesn't reflect live UI state. Verified 2026-05-05 on
-// SDK ATAK 5.6.0.17.
+// SDK ATAK 5.6.0.17. Reverified on 2026-07-08 against 5.6.0.21 — same pref behavior.
 //
 // Marshals to the main looper: EmergencyManager.initiateRepeat triggers
 // EmergencyTool.emergencyStateChanged → Switch.setChecked → ValueAnimator

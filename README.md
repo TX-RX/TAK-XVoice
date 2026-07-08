@@ -146,7 +146,7 @@ without his time and testing.
 Drop the ATAK CIV SDK jar in place (gitignored, not bundled):
 
 ```powershell
-Copy-Item C:\path\to\ATAK-CIV-5.6.0.17-SDK\main.jar `
+Copy-Item C:\path\to\ATAK-CIV-5.6.0.21-SDK\main.jar `
           app\libs\main.jar
 ```
 

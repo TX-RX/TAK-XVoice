@@ -22,9 +22,9 @@ buildscript {
     val takrepoUrl = prop("takrepo.url") ?: "https://localhost/"
     val takrepoUser = prop("takrepo.user") ?: "invalid"
     val takrepoPassword = prop("takrepo.password") ?: "invalid"
-    // Default to the 5.6.0.17 SDK the user has locally — XV targets ATAK 5.6.
+    // Default to the 5.6.0.21 SDK the user has locally — XV targets ATAK 5.6.
     val takdevPlugin = prop("takdev.plugin")
-        ?: "$rootDir/../ATAK-CIV-5.6.0.17-SDK/atak-gradle-takdev.jar"
+        ?: "$rootDir/../ATAK-CIV-5.6.0.21-SDK/atak-gradle-takdev.jar"
     val isDevKitMode = prop("takrepo.url") != null
     val takdevVersion = "3.+"
 

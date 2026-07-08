@@ -144,7 +144,7 @@ the initial commit.
 `app/libs/main.jar` is gitignored and is **not** vendored in this
 repository. The build resolves it from the local SDK distribution
 per `build.gradle.kts` — the default search path is
-`../ATAK-CIV-5.6.0.17-SDK/atak-gradle-takdev.jar` relative to the
+`../ATAK-CIV-5.6.0.21-SDK/atak-gradle-takdev.jar` relative to the
 repo root. If a Claude session reports a missing-jar error, the
 correct response is to point the operator at the SDK installation
 step, **not** to try to commit a copy of the jar into `app/libs/`.

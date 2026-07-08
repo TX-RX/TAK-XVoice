@@ -51,7 +51,7 @@ unit suite for the state machines the plugin ships.
 
 `app/libs/main.jar` is gitignored and not vendored. `build.gradle.kts`
 resolves it from the local SDK distribution — the default search path
-is `../ATAK-CIV-5.6.0.17-SDK/atak-gradle-takdev.jar` relative to the
+is `../ATAK-CIV-5.6.0.21-SDK/atak-gradle-takdev.jar` relative to the
 repo root. If your build reports a missing-jar error, point your
 setup at a locally-installed ATAK CIV SDK; do not attempt to commit a
 copy of the jar into `app/libs/`.

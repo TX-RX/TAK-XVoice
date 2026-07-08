@@ -37,7 +37,7 @@ extra["takrepoUrl"] = prop("takrepo.url") ?: "https://localhost/"
 extra["takrepoUser"] = prop("takrepo.user") ?: "invalid"
 extra["takrepoPassword"] = prop("takrepo.password") ?: "invalid"
 extra["takdevPlugin"] = prop("takdev.plugin")
-    ?: "$rootDir/../ATAK-CIV-5.6.0.17-SDK/atak-gradle-takdev.jar"
+    ?: "$rootDir/../ATAK-CIV-5.6.0.21-SDK/atak-gradle-takdev.jar"
 // TakDev injects <meta-data android:name="plugin-id"> into the merged
 // manifest only when this is set. Without it, ATAK CIV recognises the
 // package but refuses to surface a Load button.
