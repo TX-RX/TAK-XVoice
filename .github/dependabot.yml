@@ -2,7 +2,14 @@
 #
 # Two ecosystems are tracked:
 #   - github-actions: the workflow definitions in .github/workflows,
-#     so ktlint / setup-java action bumps come in as PRs.
+#     so ktlint / setup-java / Semgrep action-uses bumps (e.g.
+#     actions/checkout, github/codeql-action/upload-sarif,
+#     actions/upload-artifact) come in as PRs. NOTE: the
+#     `semgrep/semgrep` container image tag pinned in
+#     workflows/semgrep.yml is a Docker image reference, not an
+#     action-uses reference, so Dependabot's github-actions
+#     ecosystem does NOT cover container-image bumps — those
+#     follow upstream via `:latest`.
 #   - gradle: the Kotlin / AndroidX / Concentus / Robolectric etc.
 #     dependencies declared in app/build.gradle.kts and elsewhere.
 #
