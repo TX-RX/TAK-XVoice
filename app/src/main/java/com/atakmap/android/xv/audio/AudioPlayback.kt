@@ -741,8 +741,90 @@ class AudioPlayback(
             }
     }
 
+    // ============================================================
+    // RX ducking during local TX — close-proximity feedback fix.
+    //
+    // When two operators stand near each other, A's PTT transmits
+    // their voice, B's device plays it out its speakermic, and that
+    // playback bleeds into A's mic. A re-transmits it and the loop
+    // closes; if the round-trip acoustic gain is above 1 the system
+    // howls.
+    //
+    // Android's on-device AcousticEchoCanceler only sees THIS
+    // device's own AudioTrack as the reference signal — it cannot
+    // cancel audio arriving from a different device's speaker. The
+    // only native-Android mechanism that reliably breaks this path
+    // is to duck the LOCAL RX playback whenever the LOCAL operator
+    // is TX-active: any peer voice that bleeds into our mic lands
+    // ~15 dB below the noise-gate threshold, round-trip gain drops
+    // well below 1, howl doesn't sustain.
+    //
+    // Scope:
+    //  - Applies only during actual TX-transmitting state, not
+    //    during TPT playback (TPT is our own confirmation tone and
+    //    the operator needs to hear it at full amplitude).
+    //  - Per-track via AudioTrack.setVolume — does NOT touch OS
+    //    stream/comm volume. Non-invasive; leaves the OS audio
+    //    policy untouched and only ducks the currently-live track.
+    //  - Local-only fix: this helps when the local operator is
+    //    TX-active. It does NOT help when both operators are in
+    //    RX simultaneously (no PTT active) and one starts howling
+    //    from residual playback. Peer would need to duck too for
+    //    that case — a per-device local fix by design.
+    //
+    // Called by TxController.startTransmitting / stopInternal via
+    // VoicePlant so the duck is symmetric with the actual on-air
+    // TX window.
+    // ============================================================
+
+    /**
+     * Duck the currently-live RX AudioTrack (if any) while the
+     * local operator is transmitting. [active] = true engages the
+     * duck (multiplies live-track volume by [TX_DUCK_GAIN]);
+     * [active] = false restores unity gain.
+     *
+     * Idempotent and race-safe: if no track exists yet, or if the
+     * track was rebuilt between engage and release, the release
+     * call still applies gain=1.0 to whatever track is live —
+     * matching the AudioTrack "no leftover volume state" invariant.
+     */
+    fun setTxActive(active: Boolean) {
+        val t = track
+        val gain = if (active) TX_DUCK_GAIN else 1.0f
+        if (t != null) {
+            try {
+                t.setVolume(gain)
+            } catch (e: IllegalStateException) {
+                // Track was released between the volatile read and
+                // the setVolume call. Nothing to duck. Not an error.
+                Log.d(TAG, "setTxActive($active): track transitioning, no-op", e)
+                return
+            }
+        }
+        if (active) {
+            Log.i(TAG, "RX duck engaged for TX (gain=$TX_DUCK_GAIN)")
+        } else {
+            Log.i(TAG, "RX duck released")
+        }
+    }
+
     companion object {
         private const val TAG = "XvAudioPlayback"
+
+        // Linear gain applied to the live RX AudioTrack while the
+        // local operator is TX-transmitting. 0.18 ≈ −15 dB, chosen
+        // so peer voices remain barely audible (operator can still
+        // hear that traffic is coming in on the other end) but
+        // sits well below what the mic's noise gate + vendor DSP
+        // treat as "loud playback" — round-trip acoustic gain in
+        // the close-proximity two-device path drops well below 1
+        // and the howl loop can't sustain.
+        //
+        // Starting value; field-tune from operator smoke reports.
+        // If peers report they can't hear inbound traffic at all
+        // during their own TX, raise (less duck). If echo bleed
+        // through the mic still triggers cascading feedback, lower.
+        const val TX_DUCK_GAIN = 0.18f
 
         private val BT_OUTPUT_TYPES =
             setOf(

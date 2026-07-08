@@ -233,6 +233,16 @@ class VoicePlant(
             sendTerminator = { slot -> callbacks.onTxTerminator(slot) },
             onPttStateChanged = { transmitting, slot ->
                 callbacks.onPttStateChanged(transmitting, slot)
+                // TX-state edge → duck the RX playback so a peer's
+                // voice bleeding out of our speakermic doesn't feed
+                // back into our mic and create a close-proximity
+                // howl. Fires on the same TX-transmitting edge as
+                // Telecom-end below — no new callback surface — so
+                // duck engage/release is symmetric with the real
+                // on-air window (not TPT, not PRIMING, not
+                // ACQUIRING_SCO). See AudioPlayback.setTxActive
+                // and TX_DUCK_GAIN for the rationale.
+                audioPlayback.setTxActive(transmitting)
                 // TX-state edge → end Telecom call when transmitting
                 // turns false. Covers latched mode (where pttUp is a
                 // no-op but stopInternal still fires this callback on
