@@ -64,3 +64,37 @@ updates:
         update-types:
           - minor
           - patch
+    # Ignore rules for bumps that we can't accept without a
+    # coordinated upstream change from tak.gov's SDK team. XV's
+    # build depends on `atak-gradle-takdev.jar` shipped in the ATAK
+    # CIV SDK; that jar's Groovy classpath usage tied us to Gradle
+    # 8.x, and any AGP / Gradle / compileSdk major bump requires
+    # tak.gov to ship a compatible takdev jar first. Verified
+    # 2026-07-08 against both the 5.6.0.17 and 5.7.0.3 SDKs — both
+    # fail at `processCivDebugMainManifest` with `groovy/util/XmlParser`
+    # under Gradle 9. Rather than let Dependabot keep re-opening
+    # these unmergeable PRs every week and burning CI + reviewer
+    # attention, we ignore them here. When tak.gov publishes an SDK
+    # with a Gradle-9-compatible takdev jar, drop the matching
+    # ignore block and let the coordinated bump land as one PR.
+    ignore:
+      # Gradle wrapper — takdev references removed-in-Gradle-9
+      # Groovy classpath. Re-enable when the SDK's takdev jar is
+      # rebuilt against Gradle 9.
+      - dependency-name: gradle
+        update-types:
+          - version-update:semver-major
+      # Android Gradle Plugin — AGP 9.x requires Gradle 9.4+ and
+      # registers a Kotlin extension that collides with the applied
+      # `org.jetbrains.kotlin.android` plugin. Bundled dependency
+      # on both the Gradle bump and a takdev jar refresh from
+      # tak.gov, plus a Kotlin plugin-order rework.
+      - dependency-name: com.android.application
+        update-types:
+          - version-update:semver-major
+      # androidx.core:core-ktx 1.19+ requires compileSdk 37 and
+      # AGP 9.1+. Bundled with the AGP bump above.
+      - dependency-name: androidx.core:core-ktx
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
