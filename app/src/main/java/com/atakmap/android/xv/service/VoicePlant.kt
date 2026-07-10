@@ -53,6 +53,51 @@ import com.atakmap.android.xv.audio.TxController
 class VoicePlant(
     private val context: Context,
     private val callbacks: Callbacks,
+    // Cellular-call state probe for the pttDown gate. Injected so unit
+    // tests can drive OFFHOOK / RINGING / IDLE without touching a real
+    // TelephonyManager. Defaults to reading the system TelephonyManager
+    // via getCallState() — the plain call-state API works without
+    // READ_PHONE_STATE from API 26 (our minSdk) upward, so we do not
+    // widen the app's permission surface for this gate. On any
+    // SecurityException the probe returns CALL_STATE_IDLE (fail-open)
+    // — a locked-out PTT with no explanation is a worse failure than
+    // the auto-hold bug this gate exists to fix.
+    private val cellularCallStateProvider: () -> Int = {
+        try {
+            val tm =
+                context.getSystemService(Context.TELEPHONY_SERVICE)
+                    as? android.telephony.TelephonyManager
+            // Suppress: getCallState() is deprecated in favor of
+            // getCallStateForSubscription() (API 31+), which requires
+            // READ_PHONE_STATE. We deliberately use the plain non-
+            // permission API here — the fidget-during-call bug only
+            // needs the default subscription's aggregate state, and
+            // widening our permission surface for a fidget-guard is
+            // not justified.
+            @Suppress("DEPRECATION")
+            tm?.callState ?: android.telephony.TelephonyManager.CALL_STATE_IDLE
+        } catch (se: SecurityException) {
+            android.util.Log.w(
+                TAG,
+                "cellularCallStateProvider: SecurityException — treating as IDLE",
+                se,
+            )
+            android.telephony.TelephonyManager.CALL_STATE_IDLE
+        } catch (t: Throwable) {
+            android.util.Log.w(
+                TAG,
+                "cellularCallStateProvider: unexpected throw — treating as IDLE",
+                t,
+            )
+            android.telephony.TelephonyManager.CALL_STATE_IDLE
+        }
+    },
+    // Monotonic clock for the cellular-block toast throttle. Injected
+    // for the unit test so its "advance time" step does not require
+    // real elapsed wall-clock. Defaults to SystemClock.elapsedRealtime
+    // — insensitive to wall-clock jumps (NTP sync during a burst),
+    // unlike currentTimeMillis.
+    private val nowMsProvider: () -> Long = { android.os.SystemClock.elapsedRealtime() },
 ) {
     interface Callbacks {
         fun onTxOpus(
@@ -107,6 +152,13 @@ class VoicePlant(
         // plugin so it can Toast the operator instead of leaving them
         // staring at a dead PTT.
         fun onCaptureError(reason: String)
+
+        // PTT press was suppressed because the cellular telephony stack
+        // reports an active or ringing call. Plugin surfaces [reason]
+        // as a Toast so the operator learns why nothing transmitted;
+        // the plant already throttles this event so mashing PTT during
+        // a call does not spam the UI.
+        fun onPttBlockedByCellularCall(reason: String)
     }
 
     private val audioManager =
@@ -617,6 +669,13 @@ class VoicePlant(
     // normal radio operation becomes the answer button during a ring.
     @Volatile private var callRinging: Boolean = false
 
+    // Timestamp (elapsedRealtime ms) of the most recent
+    // "cellular call active — hang up before XV PTT" toast fire.
+    // 0 = never fired. Used by the pttDown cellular-call gate to
+    // throttle the toast so mashing PTT during an active phone call
+    // does not spam the operator's screen. Bump on every fire.
+    @Volatile private var lastCellCallToastAtMs: Long = 0L
+
     /** Used by XvVoiceService to gate external PTT events during the
      *  call lifecycle. The internal mic-engage uses
      *  [pttDownForPrivateCall]; the matching release is split across
@@ -686,6 +745,39 @@ class VoicePlant(
                 callbacks.onCallButtonTapped()
             } catch (t: Throwable) {
                 Log.w(TAG, "callButton dispatch from pttDown threw", t)
+            }
+            return
+        }
+        // Cellular-call gate. XV places a self-managed Telecom call
+        // on every pttDown to claim MODE_IN_COMMUNICATION + audio
+        // focus; Android's Telecom framework auto-holds any active
+        // third-party call whenever a second self-managed call is
+        // placed. Operators fidgeting with a BT speakermic during
+        // an active cellular call have accidentally keyed PTT and
+        // dropped their phone call onto hold mid-conversation. Block
+        // the TX (Option A) instead of preempting the cellular call
+        // for what is almost certainly an unintentional press. See
+        // PttCellularGate for the pure decision function and the
+        // toast throttle. This gate must run BEFORE the Telecom call
+        // placement below — the whole point is to avoid placing that
+        // call while the cellular stack is busy.
+        val cellState = cellularCallStateProvider()
+        val gate = shouldGateForCellularCall(cellState)
+        if (gate != PttGate.ALLOW) {
+            Log.i(TAG, "PTT blocked — cellular call state=$cellState (gate=$gate)")
+            val now = nowMsProvider()
+            if (shouldToastCellularBlock(nowMs = now, lastToastAtMs = lastCellCallToastAtMs)) {
+                lastCellCallToastAtMs = now
+                try {
+                    callbacks.onPttBlockedByCellularCall(CELLULAR_BLOCK_TOAST_MSG)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "onPttBlockedByCellularCall dispatch threw", t)
+                }
+            } else {
+                Log.i(
+                    TAG,
+                    "cellular-block toast throttled (last=${now - lastCellCallToastAtMs}ms ago)",
+                )
             }
             return
         }
@@ -1594,5 +1686,11 @@ class VoicePlant(
 
     companion object {
         private const val TAG = "XvVoicePlant"
+
+        // Operator-facing message for the cellular-call PTT gate. Kept
+        // short and imperative — a Toast has ~2-3 seconds of attention
+        // and needs to say what to do, not just what happened.
+        internal const val CELLULAR_BLOCK_TOAST_MSG =
+            "Cellular call active — hang up before XV PTT"
     }
 }

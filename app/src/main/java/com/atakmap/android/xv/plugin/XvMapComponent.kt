@@ -748,6 +748,28 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
 
+                override fun onPttBlockedByCellularCall(reason: String?) {
+                    // Service side suppressed a PTT press because the
+                    // cellular telephony stack reports an active or
+                    // ringing call. Without this Toast the operator
+                    // sees no visible feedback for the press and
+                    // reasonably assumes XV is broken. Service already
+                    // throttles the fire so we do not stack toasts on
+                    // rapid button mashes.
+                    val msg = reason ?: "Cellular call active — hang up before XV PTT"
+                    Log.i(TAG, "onPttBlockedByCellularCall: $msg")
+                    val target = MapView.getMapView() ?: return
+                    try {
+                        target.post {
+                            android.widget.Toast
+                                .makeText(target.context, msg, android.widget.Toast.LENGTH_LONG)
+                                .show()
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "cellular-block toast threw", t)
+                    }
+                }
+
                 override fun onPrivateCallEnded() {
                     cancelPendingAnswerTimeout("call ended")
                     cancelPendingRingback("call ended")
