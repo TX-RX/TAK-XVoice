@@ -105,6 +105,19 @@ interface IXvVoice {
     void setSamsungActiveKeyEnabled(boolean enabled);
     boolean isSamsungActiveKeyRunning();
 
+    // Foreground-KeyEvent fallback for the Samsung Active Key. Some
+    // firmware (verified on Tab Active5 / SM-X308U 2026-07-10) does
+    // NOT emit `HARD_KEY_REPORT` and only routes the key as a
+    // `KeyEvent` to the foreground activity. XvMapComponent hooks the
+    // MapView's OnKeyListener, filters `KEYCODE == 1015`, and forwards
+    // the down/up edge across this AIDL so the service's PttDispatcher
+    // sees a `PttSource.SAMSUNG_ACTIVE_KEY`-tagged edge (same source
+    // tag the broadcast path uses — the dispatcher's OR-gate collapses
+    // duplicates when both paths happen to fire on the same press).
+    // No-op on non-Samsung devices (plugin gates the call on
+    // `SamsungActiveKey.isSupported`).
+    void notifySamsungActiveKeyEdge(boolean isDown);
+
     // Mumble session signal. The plugin still owns the Mumble TCP
     // socket (because cert lookup needs ATAK runtime), but tells the
     // service when there's a live session so the service knows

@@ -2,6 +2,7 @@ package com.atakmap.android.xv.util
 
 import android.content.Context
 import android.os.Build
+import android.view.KeyEvent
 
 /**
  * Capability detection for the programmable Active Key found on Samsung
@@ -170,6 +171,74 @@ object SamsungActiveKey {
         return features.any { feat ->
             feat.equals("com.samsung.hardware.active_key", ignoreCase = true) ||
                 feat.equals("com.samsung.feature.active_key", ignoreCase = true)
+        }
+    }
+
+    /**
+     * Classification returned by [handleKeyEvent] for a single Android
+     * [KeyEvent] observed while XV / ATAK is in the foreground. Used by
+     * the foreground-KeyEvent fallback path
+     * ([com.atakmap.android.xv.ptt.SamsungActiveKeyForegroundReader]) so
+     * the transport layer maps to the same [com.atakmap.android.xv.audio.PttSource]
+     * edges that the broadcast path fires — while keeping the decision
+     * itself pure and unit-testable (no Android runtime, no
+     * Robolectric).
+     *
+     * The fallback exists because on-device validation 2026-07-10
+     * against a Samsung Galaxy Tab Active5 (SM-X308U) confirmed that
+     * shipping firmware does **not** emit the `HARD_KEY_REPORT`
+     * broadcast — the operator's Settings → Advanced features → Active
+     * Key surface only offers "launch app" style intents, which
+     * produce one intent on press and no release signal (unusable as a
+     * PTT source). The plain `KeyEvent` path, in contrast, produces
+     * both `ACTION_DOWN` (with `repeatCount == 0`) and `ACTION_UP` —
+     * which is exactly what PTT needs.
+     *
+     * The trade-off: a `KeyEvent` routed by
+     * `PhoneWindowManager.interceptKeyTq` -> `InputDispatcher` is
+     * delivered to the top activity only, so this path works only
+     * while ATAK is in the foreground. That's the same limitation
+     * every non-system, non-IME hardware-button PTT app has; the
+     * broadcast path (which does work backgrounded on qualifying
+     * firmware) is still the ideal and stays in place.
+     */
+    enum class FallbackAction {
+        /** Fire a PTT down edge tagged [com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY]. */
+        PTT_DOWN,
+
+        /** Fire a PTT up edge tagged [com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY]. */
+        PTT_UP,
+
+        /** Not an Active Key event we care about — pass through to the next handler. */
+        IGNORE,
+    }
+
+    /**
+     * Pure classification of a single Android [KeyEvent] tuple for the
+     * foreground-KeyEvent fallback path. Returns [FallbackAction.PTT_DOWN]
+     * on the initial press of `KEYCODE == 1015` (the Samsung Active
+     * Key), [FallbackAction.PTT_UP] on release, and [FallbackAction.IGNORE]
+     * for everything else — including auto-repeat down events
+     * (`repeatCount > 0`), volume / navigation keys, and unusual
+     * actions like [KeyEvent.ACTION_MULTIPLE].
+     *
+     * Auto-repeat is dropped so a physically held key doesn't spam the
+     * dispatcher with duplicate down edges after the first — this is
+     * belt-and-suspenders (the dispatcher's OR-gate would ignore the
+     * duplicates anyway, since `PttSource.SAMSUNG_ACTIVE_KEY` is
+     * already held), but it also keeps log output readable.
+     */
+    fun handleKeyEvent(
+        keyCode: Int,
+        action: Int,
+        repeatCount: Int,
+    ): FallbackAction {
+        if (keyCode != KEY_CODE_PTT) return FallbackAction.IGNORE
+        return when (action) {
+            KeyEvent.ACTION_DOWN ->
+                if (repeatCount == 0) FallbackAction.PTT_DOWN else FallbackAction.IGNORE
+            KeyEvent.ACTION_UP -> FallbackAction.PTT_UP
+            else -> FallbackAction.IGNORE
         }
     }
 }
