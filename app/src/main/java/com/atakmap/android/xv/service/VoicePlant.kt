@@ -30,6 +30,7 @@ import com.atakmap.android.xv.audio.StatusTones
 import com.atakmap.android.xv.audio.TptPlayer
 import com.atakmap.android.xv.audio.TptTone
 import com.atakmap.android.xv.audio.TxController
+import com.atakmap.android.xv.ptt.SamsungActiveKeyReader
 
 // All of XV's audio + AINA + PTT-state subsystem, instantiated in our
 // APK's UID where FOREGROUND_SERVICE_TYPE_MICROPHONE actually grants
@@ -351,6 +352,15 @@ class VoicePlant(
     @Volatile private var ainaSecondaryBle: AinaBleReader? = null
 
     @Volatile private var prymeSecondaryBle: PrymeBleReader? = null
+
+    // Samsung ruggedized-device programmable Active Key reader
+    // (Tab Active5, XCover6 Pro / 7, Tab Active4 Pro, Tab Active3).
+    // Independent of AINA / External Button — runs in parallel and
+    // keys slot 0 via [PttSource.SAMSUNG_ACTIVE_KEY]. Present only on
+    // hardware that emits `HARD_KEY_REPORT`; on any other device this
+    // stays null because [XvVoiceService] never calls
+    // [startSamsungActiveKey]. See [com.atakmap.android.xv.util.SamsungActiveKey].
+    @Volatile private var samsungActiveKey: SamsungActiveKeyReader? = null
 
     // MAC of the currently-connected AINA (or null when none). Used by
     // the BOND_STATE_CHANGED receiver to detect "the operator just
@@ -1352,6 +1362,63 @@ class VoicePlant(
     fun isAinaSecondaryConnected(): Boolean =
         ainaSecondaryBle != null || ainaSecondarySpp != null || prymeSecondaryBle != null
 
+    /**
+     * Start the Samsung ruggedized-device Active Key reader. Registers
+     * a broadcast receiver for `HARD_KEY_REPORT` and routes press /
+     * release edges through [pttDown] / [pttUp] with
+     * [PttSource.SAMSUNG_ACTIVE_KEY]. Idempotent — repeated calls are
+     * no-ops if the reader is already running.
+     *
+     * The plugin gates the call on
+     * [com.atakmap.android.xv.util.SamsungActiveKey.isSupported] +
+     * the operator's persisted toggle, so this method itself does not
+     * re-verify hardware capability — starting on a non-Samsung device
+     * is harmless (the broadcast just never fires).
+     */
+    fun startSamsungActiveKey() {
+        if (samsungActiveKey != null) {
+            Log.i(TAG, "startSamsungActiveKey: already running — ignoring")
+            return
+        }
+        val reader =
+            SamsungActiveKeyReader(context) { isDown, source ->
+                if (isDown) {
+                    pttDown(slot = 0, source = source)
+                } else {
+                    pttUp(slot = 0, source = source)
+                }
+            }
+        if (reader.start()) {
+            samsungActiveKey = reader
+        } else {
+            Log.w(TAG, "startSamsungActiveKey: reader.start() failed — leaving disabled")
+        }
+    }
+
+    /**
+     * Stop the Samsung Active Key reader (if running) and drop any
+     * pending held-source bookkeeping from the dispatcher so a
+     * mid-press "toggle-off" doesn't leave the OR-gate thinking the
+     * button is still down. Idempotent.
+     */
+    fun stopSamsungActiveKey() {
+        val reader = samsungActiveKey ?: return
+        try {
+            reader.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSamsungActiveKey: reader.stop() threw", t)
+        }
+        samsungActiveKey = null
+        try {
+            pttDispatcher.forgetSource(PttSource.SAMSUNG_ACTIVE_KEY)
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetSource(SAMSUNG_ACTIVE_KEY) threw", t)
+        }
+    }
+
+    /** True while the Samsung Active Key reader is registered. */
+    fun isSamsungActiveKeyRunning(): Boolean = samsungActiveKey?.isRunning() == true
+
     fun disconnectAina() {
         ainaBle?.disconnect()
         ainaBle = null
@@ -1548,6 +1615,10 @@ class VoicePlant(
         }
         try {
             disconnectAinaSecondary()
+        } catch (_: Throwable) {
+        }
+        try {
+            stopSamsungActiveKey()
         } catch (_: Throwable) {
         }
         try {

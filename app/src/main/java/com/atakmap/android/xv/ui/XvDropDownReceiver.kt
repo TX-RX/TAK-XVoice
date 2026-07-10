@@ -242,6 +242,21 @@ class XvDropDownReceiver(
 
         fun setAutoConnectBtEnabled(enabled: Boolean) {}
 
+        // ---- Samsung ruggedized-device Active Key ----
+        // True only when the current device is a Samsung Tab Active5
+        // / XCover6 Pro / XCover7 / Tab Active4 Pro / Tab Active3 that
+        // carries the programmable Active Key. Consulted at Settings-
+        // row inflation time — the row is hidden (`View.GONE`) on
+        // every device where this returns false so operators on non-
+        // Samsung hardware never see the toggle at all. Default false
+        // so a lazy Controller impl on a non-Samsung dev host still
+        // hides the row.
+        fun samsungActiveKeySupported(): Boolean = false
+
+        fun samsungActiveKeyEnabled(): Boolean = false
+
+        fun setSamsungActiveKeyEnabled(enabled: Boolean) {}
+
         // ---- TX / RX preferences (Settings → TX/RX) ----
         // Latched (full-duplex) call mode. While on, channel stays
         // open in both directions. Off = standard half-duplex PTT.
@@ -1443,6 +1458,7 @@ class XvDropDownReceiver(
         wireSecondaryAinaPicker(v)
         wireBlePttScanButton(v)
         wireAutoConnectBtSwitch(v)
+        wireSamsungActiveKeySwitch(v)
         wireBtAudioOverridePicker(v)
     }
 
@@ -1850,6 +1866,33 @@ class XvDropDownReceiver(
         sw.isChecked = controller.autoConnectBtEnabled()
         sw.setOnCheckedChangeListener { _, isChecked ->
             controller.setAutoConnectBtEnabled(isChecked)
+        }
+    }
+
+    // Samsung ruggedized-device Active Key toggle. The whole row is
+    // hidden entirely on any device that doesn't have the key —
+    // per operator direction 2026-07-10 we do NOT show a greyed-out
+    // row on non-Samsung hardware; the option simply does not appear.
+    // On Samsung Tab Active5 / XCover6 Pro / etc. the row is shown,
+    // reflects the persisted toggle, and updates the service on flip.
+    private fun wireSamsungActiveKeySwitch(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_samsung_active_key) ?: return
+        val help = v.findViewById<View>(R.id.xv_label_samsung_active_key_help)
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_samsung_active_key) ?: return
+        val supported = controller.samsungActiveKeySupported()
+        if (!supported) {
+            row.visibility = View.GONE
+            help?.visibility = View.GONE
+            return
+        }
+        row.visibility = View.VISIBLE
+        help?.visibility = View.VISIBLE
+        // Detach any previous listener before pushing state so restoring
+        // the persisted value doesn't spuriously call setSamsungActiveKeyEnabled.
+        sw.setOnCheckedChangeListener(null)
+        sw.isChecked = controller.samsungActiveKeyEnabled()
+        sw.setOnCheckedChangeListener { _, isChecked ->
+            controller.setSamsungActiveKeyEnabled(isChecked)
         }
     }
 

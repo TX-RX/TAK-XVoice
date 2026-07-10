@@ -1046,6 +1046,15 @@ class XvMapComponent : AbstractMapComponent() {
         // primary). No-op when no secondary is persisted.
         autoConnectAinaSecondary()
 
+        // Samsung ruggedized-device Active Key. Zero-cost on any
+        // non-Samsung device: `SamsungActiveKey.isSupported()` returns
+        // false, this method exits before touching the service, and
+        // the corresponding Settings row stays hidden. On Samsung
+        // Tab Active5 / XCover6 Pro / etc. + operator opt-in, the
+        // service registers the `HARD_KEY_REPORT` broadcast receiver
+        // and the side key keys slot 0 through the normal dispatcher.
+        autoStartSamsungActiveKeyIfEnabled()
+
         // Trigger runtime permission prompts for our own UID. The
         // MapComponent runs in ATAK's process; checkSelfPermission here
         // would query ATAK's grants, masking the fact that XV's own UID
@@ -2081,6 +2090,37 @@ class XvMapComponent : AbstractMapComponent() {
                 settings.persistAutoConnectBtEnabled(enabled)
             }
 
+            override fun samsungActiveKeySupported(): Boolean {
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return false
+                return com.atakmap.android.xv.util.SamsungActiveKey.isSupported(ctx)
+            }
+
+            override fun samsungActiveKeyEnabled(): Boolean =
+                settings.persistedSamsungActiveKeyEnabled()
+
+            override fun setSamsungActiveKeyEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setSamsungActiveKeyEnabled($enabled)")
+                settings.persistSamsungActiveKeyEnabled(enabled)
+                // Only push the service call on hardware that actually
+                // has the key. Redundant defence — the row shouldn't
+                // be visible on non-Samsung devices — but cheap and
+                // keeps the operator's persisted pref honest if a
+                // future firmware change (or an operator flipping a
+                // debug feature) somehow surfaced the toggle.
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return
+                if (!com.atakmap.android.xv.util.SamsungActiveKey.isSupported(ctx)) {
+                    Log.w(
+                        TAG,
+                        "setSamsungActiveKeyEnabled($enabled) — device does not have the Active Key; " +
+                            "persisting pref but skipping service call",
+                    )
+                    return
+                }
+                voiceClient?.setPersistent("samsungActiveKey") {
+                    it.setSamsungActiveKeyEnabled(enabled)
+                }
+            }
+
             override fun latchedMode(): Boolean = settings.persistedLatchedMode()
 
             override fun setLatchedMode(enabled: Boolean) {
@@ -2255,6 +2295,32 @@ class XvMapComponent : AbstractMapComponent() {
             "strict" -> VxCompat.STRICT
             else -> null
         }
+
+    // Start the service-side Samsung Active Key listener iff both
+    // the capability check AND the persisted operator toggle agree.
+    // Gate ordering (capability first) matters: on non-Samsung
+    // hardware we never even ask the service to start the reader, so
+    // there is zero runtime cost — no broadcast receiver, no wasted
+    // Binder round-trip.
+    //
+    // A separate isSupported() short-circuit here in the plugin
+    // (versus letting the service reject the call) also means the
+    // Samsung Active Key toggle in Settings can be authoritatively
+    // gated on the same helper — no divergence between "will we act
+    // on it" and "will we show the toggle".
+    private fun autoStartSamsungActiveKeyIfEnabled() {
+        val ctx = heldMapView?.context ?: return
+        if (!com.atakmap.android.xv.util.SamsungActiveKey.isSupported(ctx)) {
+            Log.i(TAG, "autoStartSamsungActiveKey: device does not have the Active Key — skipping")
+            return
+        }
+        if (!settings.persistedSamsungActiveKeyEnabled()) {
+            Log.i(TAG, "autoStartSamsungActiveKey: operator toggle OFF — skipping")
+            return
+        }
+        Log.i(TAG, "autoStartSamsungActiveKey: enabling Samsung Active Key PTT")
+        voiceClient?.setPersistent("samsungActiveKey") { it.setSamsungActiveKeyEnabled(true) }
+    }
 
     private fun autoConnectMumble() {
         // Slight delay so the rest of plugin init (cert lookup, presence

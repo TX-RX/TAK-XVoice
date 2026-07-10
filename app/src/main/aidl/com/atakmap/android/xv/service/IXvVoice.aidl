@@ -92,6 +92,19 @@ interface IXvVoice {
     void disconnectAinaSecondary();
     boolean isAinaSecondaryConnected();
 
+    // Samsung ruggedized-device Active Key PTT source. When enabled
+    // AND the device is a Samsung Tab Active5 / XCover6 Pro / etc.
+    // that actually has the key, the service registers a broadcast
+    // receiver for `HARD_KEY_REPORT` and translates press / release
+    // into slot-0 PTT edges via `PttSource.SAMSUNG_ACTIVE_KEY`. On
+    // any non-Samsung device the plugin never enables this — it's a
+    // zero-cost feature (no receiver registered, no behaviour
+    // change). Independent of AINA / External Button; uses the
+    // dispatcher's multi-source OR-gate so concurrent presses across
+    // sources don't cut each other off.
+    void setSamsungActiveKeyEnabled(boolean enabled);
+    boolean isSamsungActiveKeyRunning();
+
     // Mumble session signal. The plugin still owns the Mumble TCP
     // socket (because cert lookup needs ATAK runtime), but tells the
     // service when there's a live session so the service knows

@@ -1660,6 +1660,20 @@ class XvVoiceService : Service() {
                 return plant().isAinaSecondaryConnected()
             }
 
+            override fun setSamsungActiveKeyEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSamsungActiveKey()
+                } else {
+                    plant().stopSamsungActiveKey()
+                }
+            }
+
+            override fun isSamsungActiveKeyRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSamsungActiveKeyRunning()
+            }
+
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
                 assertAuthorizedCaller()
                 plant().setMumbleSessionLive(connectedAndInChannel)
