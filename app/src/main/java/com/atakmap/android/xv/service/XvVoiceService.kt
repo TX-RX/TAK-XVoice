@@ -1636,6 +1636,11 @@ class XvVoiceService : Service() {
                 plant().disconnectAina()
             }
 
+            override fun disconnectAinaReaderOnly() {
+                assertAuthorizedCaller()
+                plant().disconnectAinaReaderOnly()
+            }
+
             override fun isAinaConnected(): Boolean {
                 assertAuthorizedCaller()
                 return plant().isAinaConnected()
@@ -1763,7 +1768,14 @@ class XvVoiceService : Service() {
         // except that one hook (their outgoing-call mic stays hot
         // from the moment of dial — same behavior as before, no
         // breakage).
-        private const val AIDL_API_VERSION = 3
+        // v3 → v4: added disconnectAinaReaderOnly() — needed by the
+        // primary AINA button-kind change path so the operator can
+        // flip button-protocol on an already-connected speakermic
+        // without churning the audio route. Stale plugins built
+        // against v3 fall back to full disconnectAina + reconnect on
+        // kind changes (audio route hint clears momentarily) — no
+        // functional breakage.
+        private const val AIDL_API_VERSION = 4
 
         // Channel ids for the incoming-ring + active-call CallStyle
         // notifications live in NotificationChannels.kt. The service's

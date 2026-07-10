@@ -1353,16 +1353,40 @@ class VoicePlant(
         ainaSecondaryBle != null || ainaSecondarySpp != null || prymeSecondaryBle != null
 
     fun disconnectAina() {
+        disconnectAinaReaderOnly()
+        // Drop the BT routing hint — no AINA selected means no implicit
+        // BT preference. Operator's explicit override (if any) still wins.
+        router.preferredBtMacHint = null
+        connectedAinaMac = null
+        // Notify the plugin so the UI dot can clear and the listener
+        // chain (incl. any future reconnect attempts) sees the drop.
+        try {
+            callbacks.onAinaConnectionChanged(false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onAinaConnectionChanged(false) on disconnect threw", t)
+        }
+    }
+
+    /**
+     * Drop the primary AINA button reader ONLY. Leaves
+     * [router.preferredBtMacHint] and [connectedAinaMac] intact so
+     * the BT audio route the operator is on stays put. Used when the
+     * operator flips the button-input protocol on the currently-
+     * connected primary AINA to "no buttons / on-screen only" —
+     * they still want the speakermic's HFP audio.
+     *
+     * Also used as the shared teardown step by [disconnectAina] and
+     * the respawn-reader path (see [connectAina]) so all three call
+     * sites drop the same reader fields and clear the same held-PTT
+     * sources.
+     */
+    fun disconnectAinaReaderOnly() {
         ainaBle?.disconnect()
         ainaBle = null
         ainaSpp?.disconnect()
         ainaSpp = null
         prymeBle?.disconnect()
         prymeBle = null
-        // Drop the BT routing hint — no AINA selected means no implicit
-        // BT preference. Operator's explicit override (if any) still wins.
-        router.preferredBtMacHint = null
-        connectedAinaMac = null
         // Mirror [disconnectAinaSecondary]: if the operator (or a wholesale
         // BT-adapter-off cascade) is tearing us down mid-burst, drop any
         // held button state from the primary source so the OR-gate can
@@ -1373,14 +1397,7 @@ class VoicePlant(
             pttDispatcher.forgetSource(PttSource.AINA_V2)
             pttDispatcher.forgetSource(PttSource.PRYME_BLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "forgetSource on primary disconnect threw", t)
-        }
-        // Notify the plugin so the UI dot can clear and the listener
-        // chain (incl. any future reconnect attempts) sees the drop.
-        try {
-            callbacks.onAinaConnectionChanged(false)
-        } catch (t: Throwable) {
-            Log.w(TAG, "onAinaConnectionChanged(false) on disconnect threw", t)
+            Log.w(TAG, "forgetSource on primary reader teardown threw", t)
         }
     }
 
