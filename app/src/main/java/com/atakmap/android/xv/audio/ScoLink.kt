@@ -25,6 +25,18 @@ import java.util.concurrent.CopyOnWriteArraySet
 // 26 so the legacy path still has to compile.
 class ScoLink(
     private val context: Context,
+    // BT MAC of the operator's "Audio device" override — the explicit
+    // pick from the Settings audio-device dropdown. When non-null AND
+    // that device appears in [AudioManager.availableCommunicationDevices]
+    // (i.e. it exposes HFP as a comm device), it wins absolutely over
+    // [preferredBtMac]. Design intent: "if I set an Audio device, that's
+    // where audio should go — regardless of which speakermic has the
+    // button." When the override MAC is present but the device isn't a
+    // valid comm device (A2DP-only headphones, out-of-range, etc.),
+    // ScoLink logs a warning and falls back to [preferredBtMac].
+    // Resolved on each acquire so the picker takes effect without
+    // re-creating the link.
+    private val outputOverrideMac: () -> String? = { null },
     // BT MAC of the operator's preferred speakermic (typically AINA),
     // resolved on each acquire so changing the AINA picker takes effect
     // without re-creating the link. Returns null if no preference is
@@ -103,18 +115,27 @@ class ScoLink(
                 // XV's voice on whichever BT device connected last —
                 // typically the car stereo when the operator gets in
                 // the car with both paired.
+                //
+                // Watch BOTH candidates: the audio-device override MAC
+                // (wins when set + HFP-capable) and the AINA hint MAC.
+                // Either reappearing is a reason to re-pin so we land
+                // on whichever wins the current-precedence.
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
                 if (state != State.CONNECTED) return
-                val wantedMac = preferredBtMac() ?: return
+                val override = outputOverrideMac()
+                val hint = preferredBtMac()
+                if (override == null && hint == null) return
                 val matched =
-                    addedDevices.any {
-                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
-                            macOf(it).equals(wantedMac, ignoreCase = true)
+                    addedDevices.any { dev ->
+                        if (dev.type != AudioDeviceInfo.TYPE_BLUETOOTH_SCO) return@any false
+                        val mac = macOf(dev)
+                        (override != null && mac.equals(override, ignoreCase = true)) ||
+                            (hint != null && mac.equals(hint, ignoreCase = true))
                     }
                 if (matched) {
                     Log.i(
                         TAG,
-                        "AudioDeviceCallback: preferred BT $wantedMac just appeared — re-pinning comm device",
+                        "AudioDeviceCallback: preferred BT (override or hint) just appeared — re-pinning comm device",
                     )
                     reassertCommDeviceIfNeeded()
                 }
@@ -122,17 +143,40 @@ class ScoLink(
         }
 
     /**
-     * Pick the best available BT comm-device candidate, preferring the
-     * operator's pinned MAC over the OS's most-recently-connected
-     * default. Used by [startCommDevice] and
-     * [reassertCommDeviceIfNeeded] so both cold-start and warm-path
-     * routing honor the AINA pin. Production wrapper around the pure
-     * companion [pickBtCommDeviceFromCandidates] — see that for the
-     * full selection contract.
+     * Pick the best available BT comm-device candidate, honoring the
+     * "Audio device" override first and the AINA hint second. Used by
+     * [startCommDevice] and [reassertCommDeviceIfNeeded] so both
+     * cold-start and warm-path routing route to the operator's chosen
+     * device. Production wrapper around the pure companion
+     * [pickBtCommDeviceFromCandidates] — see that for the full
+     * selection contract.
+     *
+     * When the override MAC is set but the device isn't a valid comm
+     * device in the current candidate list (typical for A2DP-only
+     * headphones — they don't advertise HFP and never appear in
+     * [AudioManager.availableCommunicationDevices]), we log a warning
+     * with the redacted MAC and fall through to the AINA hint / speaker,
+     * per the "override is best-effort" design.
      */
     private fun pickBtCommDevice(candidates: List<AudioDeviceInfo>): AudioDeviceInfo? {
         val mapped = candidates.map { Candidate(it.type, macOf(it), it) }
-        return pickBtCommDeviceFromCandidates(mapped, preferredBtMac())?.audioDevice as AudioDeviceInfo?
+        val override = outputOverrideMac()
+        val hint = preferredBtMac()
+        val result = pickBtCommDeviceWithOverride(mapped, override, hint)
+        if (result.overrideMissed && override != null) {
+            // Override MAC was set but the device isn't a valid comm
+            // device (typical for A2DP-only headphones — they don't
+            // advertise HFP and never appear in
+            // [AudioManager.availableCommunicationDevices]). Log a
+            // warning with the REDACTED MAC per the sensitive-content
+            // rules and let the fallback (hint / speaker) stand.
+            Log.w(
+                TAG,
+                "outputBtOverrideMac ${com.atakmap.android.xv.aina.redactMac(override)} not available " +
+                    "as comm device — falling back to preferredBtMacHint / speaker",
+            )
+        }
+        return result.pick?.audioDevice as AudioDeviceInfo?
     }
 
     /**
@@ -237,9 +281,27 @@ class ScoLink(
             } catch (_: Throwable) {
                 null
             }
-        val wantedMac = preferredBtMac()
+        // Compute the effective desired MAC using the same precedence
+        // pickBtCommDevice() applies at cold-start: override wins when
+        // it's set AND currently a comm device, otherwise fall back to
+        // the hint. Reading availableCommunicationDevices here — even
+        // when we might skip the re-assert below — is cheap and avoids
+        // divergence between the "should we re-assert" check and the
+        // actual pick.
+        val overrideMac = outputOverrideMac()
+        val hintMac = preferredBtMac()
+        val candidatesForDesired =
+            try {
+                audioManager.availableCommunicationDevices
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        val overrideIsValidCommDev =
+            overrideMac != null &&
+                candidatesForDesired.any { macOf(it).equals(overrideMac, ignoreCase = true) }
+        val wantedMac = if (overrideIsValidCommDev) overrideMac else hintMac
         // Re-assert if EITHER the current comm device isn't BT, OR it
-        // IS BT but doesn't match our pinned MAC. The second case is
+        // IS BT but doesn't match our effective MAC. The second case is
         // the in-car bug: AINA was active, then car stereo connected
         // and Android switched the comm device to the car. Without
         // the MAC check we'd see "current is BT_SCO" and skip the
@@ -406,8 +468,13 @@ class ScoLink(
                 Log.w(TAG, "availableCommunicationDevices failed", t)
                 emptyList()
             }
-        val wantedMac = preferredBtMac()
-        Log.i(TAG, "available comm devices: ${candidates.size} (preferredMac=${wantedMac ?: "<none>"})")
+        val overrideMac = outputOverrideMac()
+        val hintMac = preferredBtMac()
+        Log.i(
+            TAG,
+            "available comm devices: ${candidates.size} " +
+                "(override=${overrideMac ?: "<none>"} hint=${hintMac ?: "<none>"})",
+        )
         for (d in candidates) {
             Log.i(TAG, "  candidate type=${d.type} name='${d.productName}' mac='${macOf(d)}'")
         }
@@ -525,6 +592,73 @@ class ScoLink(
 
     companion object {
         private const val TAG = "XvSco"
+
+        /**
+         * Outcome of the two-input selector [pickBtCommDeviceWithOverride].
+         * [overrideMissed] is true when the caller passed an [overrideMac]
+         * that didn't match any BT candidate — the production wrapper
+         * uses this signal to emit the fall-back warning log.
+         */
+        internal data class Selection(
+            val pick: Candidate?,
+            val overrideMissed: Boolean,
+        )
+
+        /**
+         * Two-input pure selector layered over
+         * [pickBtCommDeviceFromCandidates]. Precedence:
+         *
+         *   1. [overrideMac] wins absolutely when set AND matches a BT
+         *      candidate (SCO preferred over A2DP for the same MAC).
+         *   2. [overrideMac] set but not matched → fall through to the
+         *      single-arg selector on [hintMac], and flag the miss so
+         *      the caller can log a warning.
+         *   3. [overrideMac] null/blank → single-arg selector on
+         *      [hintMac] (legacy behavior).
+         *
+         * Split out from [pickBtCommDevice] so tests can pin every
+         * precedence branch without standing up AudioManager. See the
+         * class-level docstring for the "Audio device" precedence
+         * design intent.
+         */
+        @androidx.annotation.VisibleForTesting
+        internal fun pickBtCommDeviceWithOverride(
+            candidates: List<Candidate>,
+            overrideMac: String?,
+            hintMac: String?,
+        ): Selection {
+            if (overrideMac.isNullOrBlank()) {
+                return Selection(
+                    pick = pickBtCommDeviceFromCandidates(candidates, hintMac),
+                    overrideMissed = false,
+                )
+            }
+            // Override set — try to match it first. Use the same
+            // SCO-over-A2DP-for-same-MAC ordering as the single-arg
+            // selector so an override that happens to match a device
+            // exposing both profiles picks the SCO variant.
+            val overrideScoMatch =
+                candidates.firstOrNull {
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
+                        it.mac.equals(overrideMac, ignoreCase = true)
+                }
+            if (overrideScoMatch != null) {
+                return Selection(pick = overrideScoMatch, overrideMissed = false)
+            }
+            val overrideA2dpMatch =
+                candidates.firstOrNull {
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP &&
+                        it.mac.equals(overrideMac, ignoreCase = true)
+                }
+            if (overrideA2dpMatch != null) {
+                return Selection(pick = overrideA2dpMatch, overrideMissed = false)
+            }
+            // Override missed — fall back to the hint and flag it.
+            return Selection(
+                pick = pickBtCommDeviceFromCandidates(candidates, hintMac),
+                overrideMissed = true,
+            )
+        }
 
         /**
          * Pure-function selector — picks the best comm-device candidate
