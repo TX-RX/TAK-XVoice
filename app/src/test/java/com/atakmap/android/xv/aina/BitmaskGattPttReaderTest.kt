@@ -7,9 +7,12 @@ import org.junit.Test
 
 /**
  * Coverage for [BitmaskGattPttReader.diffEdges] (the base's edge-
- * triggered press/release derivation) and [PrymeBleReader]'s mask
- * decoder. Exercised as pure functions so no Android context / GATT
- * stack is needed.
+ * triggered press/release derivation), [PrymeBleReader]'s mask
+ * decoder, and [BitmaskGattPttReader.classifyDisconnect] (the pure
+ * decision function that decides whether an incoming
+ * `STATE_DISCONNECTED` callback should propagate or be suppressed).
+ * Exercised as pure functions so no Android context / GATT stack is
+ * needed.
  */
 class BitmaskGattPttReaderTest {
     // ============================================================
@@ -88,5 +91,67 @@ class BitmaskGattPttReaderTest {
                 PrymeBleReader.decodePrymeMask(m),
             )
         }
+    }
+
+    // ============================================================
+    // classifyDisconnect — decision table for STATE_DISCONNECTED
+    // ============================================================
+    //
+    // Field bug 2026-07-10: Pryme BT-PTT reconnect emitted two
+    // `up=false` callbacks in the same millisecond — one from the
+    // synchronous [disconnect] path, one from the OS's async
+    // STATE_DISCONNECTED echo. classifyDisconnect encodes the
+    // suppression policy that dedupes them.
+
+    @Test
+    fun `classifyDisconnect suppresses when reader is disposed`() {
+        // disposed beats every other reason — the owner has moved on
+        // and the reader must never fire back into stale state, even
+        // if this is technically a real link drop.
+        assertEquals(
+            BitmaskGattPttReader.DisconnectAction.SUPPRESS_DISPOSED,
+            BitmaskGattPttReader.classifyDisconnect(
+                intentional = false,
+                disposed = true,
+            ),
+        )
+        assertEquals(
+            BitmaskGattPttReader.DisconnectAction.SUPPRESS_DISPOSED,
+            BitmaskGattPttReader.classifyDisconnect(
+                intentional = true,
+                disposed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `classifyDisconnect suppresses the async echo of an intentional teardown`() {
+        // disconnect() already fired onConnectionState(false)
+        // synchronously; the OS's STATE_DISCONNECTED echo lands
+        // here and MUST be swallowed so the plugin doesn't log
+        // the duplicate `External button connection up=false`.
+        assertEquals(
+            BitmaskGattPttReader.DisconnectAction.SUPPRESS_INTENTIONAL,
+            BitmaskGattPttReader.classifyDisconnect(
+                intentional = true,
+                disposed = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `classifyDisconnect notifies and reconnects on a real link drop`() {
+        // Neither the app nor a dispose caused this — it's a real
+        // BT link loss (out-of-range, device power-off, adapter
+        // toggle). Fire the callback so PttDispatcher can release
+        // any stuck slot, and schedule reconnect so an operator
+        // walking back into range doesn't have to fiddle with UI.
+        assertEquals(
+            BitmaskGattPttReader.DisconnectAction.NOTIFY_AND_RECONNECT,
+            BitmaskGattPttReader.classifyDisconnect(
+                intentional = false,
+                disposed = false,
+            ),
+        )
     }
 }

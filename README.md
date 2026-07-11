@@ -91,7 +91,11 @@ and feature polish.
 3. **External button registration.** XV registers BT speakermic buttons
    per-MAC for the curated device list — SPP-based hardware (AINA APTT
    V1 and similar Pryme speakermics) and BLE GATT devices (AINA APTT V2,
-   Pryme BT-PTT-Z).
+   Pryme BT-PTT-Z). On Samsung ruggedized hardware (Galaxy Tab Active5,
+   XCover6 Pro / 7, Tab Active4 Pro, Tab Active3) the programmable
+   side Active Key can be enabled as an additional PTT source alongside
+   any bonded speakermic — the toggle only appears on hardware that
+   actually has the key.
 
 4. **Reachability-aware BT device picker.** On plugin load, XV restores
    the last-connected speakermic when it's actually reachable and

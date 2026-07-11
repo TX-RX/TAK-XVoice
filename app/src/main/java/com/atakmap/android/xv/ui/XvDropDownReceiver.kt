@@ -186,24 +186,46 @@ class XvDropDownReceiver(
         // launches; auto-connect on plugin load uses this MAC if set.
         fun setSelectedAina(mac: String?)
 
-        // ---- Secondary PTT (Settings → Preferences) ----
-        // Optional second AINA / Pryme / BLE PTT input that keys
-        // slot 0 in parallel with the primary. Motorcyclist use case:
+        // Change the button-input protocol on the CURRENTLY-selected
+        // primary AINA. Nullable to represent "no buttons / on-screen
+        // only" — the operator keeps the speakermic's audio path but
+        // XV stops listening for button events on that device.
+        //
+        // Semantics:
+        //  - Always persists (via the per-MAC protocol override) so a
+        //    later disconnect / reconnect edge picks up the new value.
+        //  - If the primary AINA is currently connected AND the new
+        //    kind differs from the running reader, tears the current
+        //    reader down and (for a real reader kind) spins up a new
+        //    one under the new kind — so the operator doesn't have to
+        //    disconnect + reconnect to make the change take effect.
+        //  - Idempotent under rapid A → B → A toggles (same-kind
+        //    writes short-circuit; "no reader → no reader" transitions
+        //    don't churn).
+        //
+        // Intentionally does NOT touch the external-button reader
+        // path — that's a separate reader lifecycle.
+        fun setAinaButtonProtocol(kind: AinaDeviceInfo.ButtonProtocol?) {}
+
+        // ---- External button (Settings → Preferences) ----
+        // Optional BLE PTT puck (Pryme BT-PTT-Z, PTT-Z01, generic
+        // BLE-HID) whose button keys slot 0 in parallel with the
+        // primary speakermic. Button-only role. Motorcyclist use case:
         // helmet speakermic + handlebar puck both keying VS1 without
         // one cutting the other off. Independent of the primary so
         // either can be swapped without affecting the other.
-        fun availableSecondaryAinaDevices(): List<AinaDeviceInfo> = emptyList()
+        fun availableExternalButtonDevices(): List<AinaDeviceInfo> = emptyList()
 
-        fun selectedSecondaryAinaMac(): String? = null
+        fun selectedExternalButtonMac(): String? = null
 
-        fun secondaryAinaConnectionUp(): Boolean = false
+        fun externalButtonConnectionUp(): Boolean = false
 
-        fun setSelectedSecondaryAina(mac: String?) {}
+        fun setSelectedExternalButton(mac: String?) {}
 
         // Assign a scan-discovered BLE PTT button to the primary or
-        // secondary PTT slot. Both persist the MAC + kind="ble-hid" and
-        // hand off to the existing service-side connect path
-        // (IXvVoice.connectAina / connectAinaSecondary), which uses
+        // external-button PTT slot. Both persist the MAC + kind="ble-hid"
+        // and hand off to the existing service-side connect path
+        // (IXvVoice.connectAina / connectExternalButton), which uses
         // PrymeBleReader on top of the HM-10 transparent-UART service.
         // The device does NOT need to be bonded — BluetoothAdapter's
         // getRemoteDevice(mac) constructs a BluetoothDevice from the
@@ -212,9 +234,10 @@ class XvDropDownReceiver(
         // operator-actionable error string on failure.
         // Add a scan-discovered BLE PTT button to the known-devices
         // library. Does NOT assign it to a slot — the operator picks
-        // it from the primary or secondary picker afterwards, subject
-        // to the existing "primary MAC != secondary MAC" rule. Returns
-        // null on success or a short operator-actionable error.
+        // it from the primary or external-button picker afterwards,
+        // subject to the existing "primary MAC != external-button MAC"
+        // rule. Returns null on success or a short operator-actionable
+        // error.
         fun addBlePttDevice(
             mac: String,
             name: String?,
@@ -227,10 +250,10 @@ class XvDropDownReceiver(
         fun knownBlePttDevices(): List<AinaDeviceInfo> = emptyList()
 
         // Clear a persisted BLE PTT device by MAC. Also clears it from
-        // the primary / secondary slot if the operator had assigned it
-        // there. Returns null on success or an operator-actionable
-        // error string. No-op if the MAC isn't in the known-devices
-        // store.
+        // the primary / external-button slot if the operator had
+        // assigned it there. Returns null on success or an
+        // operator-actionable error string. No-op if the MAC isn't in
+        // the known-devices store.
         fun removeBlePttDevice(mac: String): String? = "not implemented"
 
         // ---- BT auto-connect toggle ----
@@ -241,6 +264,21 @@ class XvDropDownReceiver(
         fun autoConnectBtEnabled(): Boolean = true
 
         fun setAutoConnectBtEnabled(enabled: Boolean) {}
+
+        // ---- Samsung ruggedized-device Active Key ----
+        // True only when the current device is a Samsung Tab Active5
+        // / XCover6 Pro / XCover7 / Tab Active4 Pro / Tab Active3 that
+        // carries the programmable Active Key. Consulted at Settings-
+        // row inflation time — the row is hidden (`View.GONE`) on
+        // every device where this returns false so operators on non-
+        // Samsung hardware never see the toggle at all. Default false
+        // so a lazy Controller impl on a non-Samsung dev host still
+        // hides the row.
+        fun samsungActiveKeySupported(): Boolean = false
+
+        fun samsungActiveKeyEnabled(): Boolean = false
+
+        fun setSamsungActiveKeyEnabled(enabled: Boolean) {}
 
         // ---- Sonim ruggedized-device dedicated hardware buttons ----
         // True only when the current device is a Sonim ruggedized
@@ -1259,11 +1297,11 @@ class XvDropDownReceiver(
                 ) {
                     if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
                     refresh()
-                    // Repopulate the AINA + secondary AINA pickers so
+                    // Repopulate the AINA + external-button pickers so
                     // newly-visible (or newly-hidden) bonded devices
                     // show up without the operator having to close
                     // and reopen the Settings panel. wireAinaPicker /
-                    // wireSecondaryAinaPicker are idempotent — each
+                    // wireExternalButtonPicker are idempotent — each
                     // just resets adapter + selection + listener on
                     // the same spinner view. Field-observed 2026-07-07:
                     // after re-enabling Bluetooth from the banner tap,
@@ -1286,9 +1324,9 @@ class XvDropDownReceiver(
                             android.util.Log.w("XvSettings", "wireAinaPicker refresh after BT state change threw", t)
                         }
                         try {
-                            wireSecondaryAinaPicker(v)
+                            wireExternalButtonPicker(v)
                         } catch (t: Throwable) {
-                            android.util.Log.w("XvSettings", "wireSecondaryAinaPicker refresh after BT state change threw", t)
+                            android.util.Log.w("XvSettings", "wireExternalButtonPicker refresh after BT state change threw", t)
                         }
                     }
                 }
@@ -1333,7 +1371,7 @@ class XvDropDownReceiver(
         // List order MUST match the tab strip's visual order so
         // select(0) puts the first tab up. Operator-visible ordering
         // is Devices (prefs) | TX/RX | Server (calls) — Devices leads
-        // because it carries the AINA / secondary PTT / audio-device
+        // because it carries the AINA / external-button / audio-device
         // pickers operators touch every session. The XML id names
         // still say "prefs" for backward compatibility with the
         // findViewById calls above.
@@ -1459,9 +1497,10 @@ class XvDropDownReceiver(
         }
 
         wireAinaPicker(v)
-        wireSecondaryAinaPicker(v)
+        wireExternalButtonPicker(v)
         wireBlePttScanButton(v)
         wireAutoConnectBtSwitch(v)
+        wireSamsungActiveKeySwitch(v)
         wireSonimPttButtonSwitch(v)
         wireSonimEmergencyButtonSwitch(v)
         wireBtAudioOverridePicker(v)
@@ -1534,7 +1573,7 @@ class XvDropDownReceiver(
         spinner.setSelection(pos)
     }
 
-    // Builds an ArrayAdapter shared by the primary + secondary AINA
+    // Builds an ArrayAdapter shared by the primary + external-button
     // pickers. Row 0 is the "no external button" sentinel; subsequent
     // rows correspond 1:1 with `devices` (so callers convert
     // spinner-pos to a device via pos-1). Unavailable rows carry a
@@ -1671,16 +1710,16 @@ class XvDropDownReceiver(
             }
     }
 
-    // Secondary PTT picker. Same shape as wireAinaPicker but routes
-    // through setSelectedSecondaryAina. The Controller's
-    // availableSecondaryAinaDevices already filters out the primary
+    // External-button picker. Same shape as wireAinaPicker but routes
+    // through setSelectedExternalButton. The Controller's
+    // availableExternalButtonDevices already filters out the primary
     // so the operator can't double-pick.
-    private fun wireSecondaryAinaPicker(v: View) {
+    private fun wireExternalButtonPicker(v: View) {
         val spinner = v.findViewById<Spinner>(R.id.xv_spinner_aina_secondary) ?: return
         val statusLabel = v.findViewById<TextView>(R.id.xv_label_aina_secondary_status)
-        val devices = controller.availableSecondaryAinaDevices()
+        val devices = controller.availableExternalButtonDevices()
         spinner.adapter = buildAinaPickerAdapter(devices)
-        val selectedMac = controller.selectedSecondaryAinaMac()
+        val selectedMac = controller.selectedExternalButtonMac()
         val selectedIdx =
             if (selectedMac == null) {
                 0
@@ -1690,10 +1729,10 @@ class XvDropDownReceiver(
             }
         spinner.setSelection(selectedIdx)
         statusLabel?.text =
-            formatAinaStatus(devices, selectedMac, controller.secondaryAinaConnectionUp())
+            formatAinaStatus(devices, selectedMac, controller.externalButtonConnectionUp())
         // See wireAinaPicker for the same first-fire suppression rationale.
         // A spurious pos=0 fire from setAdapter/setSelection would write
-        // null back to persisted-secondary and disconnect the reader.
+        // null back to persisted-external-button and disconnect the reader.
         var suppressFirstFire = true
         spinner.onItemSelectedListener =
             object : android.widget.AdapterView.OnItemSelectedListener {
@@ -1713,11 +1752,11 @@ class XvDropDownReceiver(
                         } else {
                             devices.getOrNull(pos - 1)?.mac
                         }
-                    val current = controller.selectedSecondaryAinaMac()
+                    val current = controller.selectedExternalButtonMac()
                     if (pickedMac != current) {
-                        controller.setSelectedSecondaryAina(pickedMac)
+                        controller.setSelectedExternalButton(pickedMac)
                         statusLabel?.text =
-                            formatAinaStatus(devices, pickedMac, controller.secondaryAinaConnectionUp())
+                            formatAinaStatus(devices, pickedMac, controller.externalButtonConnectionUp())
                     }
                 }
 
@@ -1729,8 +1768,8 @@ class XvDropDownReceiver(
     // buttons (Pryme BT-PTT-Z, PTT-Z01, similar HM-10-based hardware
     // that won't pair via the phone's system Bluetooth settings),
     // shows results in a live-updating dialog, then asks the operator
-    // whether to assign the picked device to the primary or secondary
-    // PTT slot. Delegates the actual connect to the Controller.
+    // whether to assign the picked device to the primary or external-
+    // button PTT slot. Delegates the actual connect to the Controller.
     private fun wireBlePttScanButton(v: View) {
         val btn = v.findViewById<Button>(R.id.xv_btn_scan_ble_ptt) ?: return
         btn.setOnClickListener { showBlePttScanDialog(v) }
@@ -1769,11 +1808,11 @@ class XvDropDownReceiver(
                                 err ?: "Removed ${picked.name}",
                                 if (err == null) android.widget.Toast.LENGTH_SHORT else android.widget.Toast.LENGTH_LONG,
                             ).show()
-                        // Rebuild the primary + secondary pickers so
-                        // the removed device disappears immediately
+                        // Rebuild the primary + external-button pickers
+                        // so the removed device disappears immediately
                         // without waiting for a settings re-open.
                         wireAinaPicker(rootView)
-                        wireSecondaryAinaPicker(rootView)
+                        wireExternalButtonPicker(rootView)
                     }.setNegativeButton("Cancel", null)
                     .show()
             }.setNegativeButton("Cancel", null)
@@ -1851,7 +1890,7 @@ class XvDropDownReceiver(
         val displayName = picked.name?.takeIf { it.isNotBlank() } ?: picked.mac
         val err = controller.addBlePttDevice(picked.mac, picked.name)
         val msg =
-            err ?: "Added $displayName — now pick it from the Primary PTT or Secondary PTT dropdown."
+            err ?: "Added $displayName — now pick it from the Primary PTT or External button dropdown."
         android.widget.Toast
             .makeText(
                 pluginContext,
@@ -1862,7 +1901,7 @@ class XvDropDownReceiver(
             // Rebuild both pickers so the new device appears in the
             // dropdowns immediately without a settings re-open.
             wireAinaPicker(rootView)
-            wireSecondaryAinaPicker(rootView)
+            wireExternalButtonPicker(rootView)
         }
     }
 
@@ -1871,6 +1910,33 @@ class XvDropDownReceiver(
         sw.isChecked = controller.autoConnectBtEnabled()
         sw.setOnCheckedChangeListener { _, isChecked ->
             controller.setAutoConnectBtEnabled(isChecked)
+        }
+    }
+
+    // Samsung ruggedized-device Active Key toggle. The whole row is
+    // hidden entirely on any device that doesn't have the key —
+    // per operator direction 2026-07-10 we do NOT show a greyed-out
+    // row on non-Samsung hardware; the option simply does not appear.
+    // On Samsung Tab Active5 / XCover6 Pro / etc. the row is shown,
+    // reflects the persisted toggle, and updates the service on flip.
+    private fun wireSamsungActiveKeySwitch(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_samsung_active_key) ?: return
+        val help = v.findViewById<View>(R.id.xv_label_samsung_active_key_help)
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_samsung_active_key) ?: return
+        val supported = controller.samsungActiveKeySupported()
+        if (!supported) {
+            row.visibility = View.GONE
+            help?.visibility = View.GONE
+            return
+        }
+        row.visibility = View.VISIBLE
+        help?.visibility = View.VISIBLE
+        // Detach any previous listener before pushing state so restoring
+        // the persisted value doesn't spuriously call setSamsungActiveKeyEnabled.
+        sw.setOnCheckedChangeListener(null)
+        sw.isChecked = controller.samsungActiveKeyEnabled()
+        sw.setOnCheckedChangeListener { _, isChecked ->
+            controller.setSamsungActiveKeyEnabled(isChecked)
         }
     }
 

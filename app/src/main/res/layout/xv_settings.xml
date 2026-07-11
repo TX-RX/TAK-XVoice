@@ -36,7 +36,7 @@
 
     <!-- Tab strip: Devices | TX/RX | Server.
          Devices sits leftmost + is the default because the AINA
-         speakermic / secondary PTT / audio-device pickers are the
+         speakermic / external-button / audio-device pickers are the
          controls operators touch every session; TX/RX (hot-mic,
          timeouts, tone) is tuning; Server (TAK server picker, Mumble
          connect/disconnect) is one-time enrollment. Tab IDs were
@@ -415,11 +415,11 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="4dp"/>
 
-                <!-- Section header: Secondary PTT input -->
+                <!-- Section header: External button input -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="SECONDARY PTT"
+                    android:text="EXTERNAL BUTTON"
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:letterSpacing="0.15"
@@ -428,7 +428,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Optional second button (e.g. a Pryme handlebar puck for motorcyclists, or any compatible BLE PTT). Either button can key the primary channel without one cutting off the other."
+                    android:text="Optional BLE PTT puck (e.g. Pryme BT-PTT). Provides an extra push-to-talk button; must be button-only — speakermics belong in the Primary slot. Either button can key the primary channel without one cutting off the other."
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
@@ -458,9 +458,9 @@
                      transparent-UART service UUID (Pryme BT-PTT-Z,
                      PTT-Z01, similar HM-10 buttons) plus a name filter
                      for anything advertising "PTT". On tap, operator
-                     picks the device + which slot (primary or secondary)
-                     to assign it to; XV connects via unbonded GATT
-                     through PrymeBleReader. -->
+                     picks the device + which slot (primary or external
+                     button) to assign it to; XV connects via unbonded
+                     GATT through PrymeBleReader. -->
                 <Button
                     android:id="@+id/xv_btn_scan_ble_ptt"
                     android:layout_width="match_parent"
@@ -526,6 +526,51 @@
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="4dp"/>
+
+                <!-- Samsung ruggedized-device Active Key PTT toggle.
+                     Visible ONLY on Samsung Tab Active5 / XCover6 Pro
+                     / XCover7 / Tab Active4 Pro / Tab Active3 — the
+                     row is hidden (`View.GONE`) at inflate time on
+                     every other device via
+                     XvDropDownReceiver.wireSamsungActiveKeySwitch,
+                     which consults
+                     `SamsungActiveKey.isSupported(context)`. Non-
+                     Samsung operators never see this row. Default
+                     OFF; the operator opts in explicitly. -->
+                <LinearLayout
+                    android:id="@+id/xv_row_samsung_active_key"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Use Samsung Active Key as PTT"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_samsung_active_key"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/xv_label_samsung_active_key_help"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Use the programmable side button on your Samsung ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end. Turn OFF to restore the key's default Samsung behaviour."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone"/>
 
                 <!-- Sonim ruggedized-device dedicated PTT side button
                      toggle. Visible ONLY on Sonim XP10 / XP9900 and
