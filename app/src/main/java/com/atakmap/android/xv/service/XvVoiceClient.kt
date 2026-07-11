@@ -39,6 +39,22 @@ class XvVoiceClient(
     // sends ~20 setting writes); past that we drop oldest with a WARN.
     private val pendingActionsCap: Int = 256
 
+    // Plugin-side callbacks scheduled to run once the AIDL binder is
+    // ready. Distinct from [pendingActions] because these do NOT need
+    // the IXvVoice reference — they're plugin-only bookkeeping (e.g.
+    // starting an auto-connect flow that itself dispatches via
+    // ifBound). Draining runs on the ServiceConnection callback thread
+    // AFTER pendingActions have been replayed so any AIDL side effects
+    // they enqueue land after the persistent-settings replay. Each
+    // entry runs at most once; drained + cleared on bind. Callers that
+    // want repeat-on-rebind semantics use [setPersistent]. See
+    // [whenBound] for the entry point.
+    //
+    // Guarded by a synchronized block on itself so
+    // whenBound-inserts and onServiceConnected-drains can't race and
+    // leave a callback un-run or double-run.
+    private val onBindCallbacks: MutableList<Pair<String, () -> Unit>> = mutableListOf()
+
     // "Persistent" settings — last value the plugin pushed for a given
     // setting key. On binder reconnect after a service crash we replay
     // these so the new IXvVoice starts in the same state. Keyed by a
@@ -129,6 +145,26 @@ class XvVoiceClient(
                         a(v)
                     } catch (t: Throwable) {
                         Log.w(TAG, "pending action threw", t)
+                    }
+                }
+                // Drain plugin-side on-bind callbacks after all AIDL
+                // replay is done. These are typically startup flows
+                // that themselves dispatch through ifBound() — running
+                // them here guarantees the binder is live so those
+                // dispatches take the immediate-invoke path rather
+                // than re-queueing.
+                val callbacks =
+                    synchronized(onBindCallbacks) {
+                        val snapshot = onBindCallbacks.toList()
+                        onBindCallbacks.clear()
+                        snapshot
+                    }
+                for ((name, cb) in callbacks) {
+                    try {
+                        Log.i(TAG, "onServiceConnected: firing whenBound callback '$name'")
+                        cb()
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "whenBound callback '$name' threw", t)
                     }
                 }
             }
@@ -240,6 +276,59 @@ class XvVoiceClient(
                 listener = l
             } catch (t: Throwable) {
                 Log.w(TAG, "setListener: register threw", t)
+            }
+        }
+    }
+
+    /**
+     * True iff the AIDL binder is currently bound (i.e. IXvVoice
+     * calls can be dispatched immediately without queueing). Callers
+     * that want to key off "is the voice plant actually reachable
+     * right now" — e.g. auto-connect flows that don't want to spin
+     * up a queued action against a service that hasn't finished
+     * binding yet — read this. Distinct from "has the client been
+     * started" which is a plugin-side lifecycle question.
+     */
+    fun isBound(): Boolean = voice != null
+
+    /**
+     * Run [action] once, on the AIDL bind. If the binder is already
+     * bound, [action] runs synchronously on the caller's thread. If
+     * not, it's queued and runs from [ServiceConnection.onServiceConnected]
+     * after the persistent-settings replay + pending-action drain.
+     *
+     * [name] is used only for log tagging so a wedged bind path
+     * shows which callback failed to fire.
+     *
+     * Unlike [ifBound] this does NOT receive an [IXvVoice] argument —
+     * it's for plugin-side flows (auto-connect, restoration) that
+     * themselves route AIDL work through the client's ifBound / other
+     * methods. Callers that want repeat-on-rebind semantics use
+     * [setPersistent] instead.
+     */
+    fun whenBound(
+        name: String,
+        action: () -> Unit,
+    ) {
+        // Snapshot bound state under the same lock we use to guard
+        // the callback list so a bind edge racing us can't lose the
+        // callback (edge fires → clears list; we then insert; nothing
+        // drains it). Under the lock: if already bound, run inline;
+        // else enqueue. Either way the callback executes exactly once.
+        val runNow =
+            synchronized(onBindCallbacks) {
+                if (voice != null) {
+                    true
+                } else {
+                    onBindCallbacks.add(name to action)
+                    false
+                }
+            }
+        if (runNow) {
+            try {
+                action()
+            } catch (t: Throwable) {
+                Log.w(TAG, "whenBound '$name' inline invoke threw", t)
             }
         }
     }

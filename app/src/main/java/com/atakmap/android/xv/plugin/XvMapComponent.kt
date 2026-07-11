@@ -3251,90 +3251,215 @@ class XvMapComponent : AbstractMapComponent() {
         return if (macRegex.matches(normalized)) normalized else null
     }
 
+    // Guard against the AIDL-bound path and the fallback timer both
+    // firing autoConnectExternalButton (rare but possible if the bind
+    // races the 3s fallback). At-most-once semantics protect the
+    // service from a duplicate connectExternalButton call.
+    @Volatile
+    private var externalButtonAutoConnectFired: Boolean = false
+
     @SuppressWarnings("MissingPermission")
     private fun autoConnectExternalButton() {
-        // Slight delay to match autoConnectAina + give the BT adapter
-        // time to settle.
+        // Previously fired unconditionally on a 1400 ms postDelayed
+        // handler. Field-observed 2026-07-11 on Pixel 9 Pro: force-stop
+        // → cold relaunch left the External Button reader unspawned
+        // for ~10 s until the operator manually poked the picker.
+        // Root cause: the postDelayed runnable at 1400 ms could fire
+        // BEFORE the voice service AIDL bind completed, at which
+        // point voiceClient?.ifBound queued the connectExternalButton
+        // call for later — but the plugin-side state
+        // (lastExternalButtonMac / lastExternalButtonConnected) was
+        // set immediately, so subsequent picker reads showed the slot
+        // as "connected" while no reader existed. The connectExternalButton
+        // call did eventually run once the binder came up, so the
+        // reader would spawn a bit later — hence the 10 s recovery
+        // window.
+        //
+        // Fix: wire off the AIDL bind callback via
+        // [XvVoiceClient.whenBound]. When the binder is ready, run
+        // the auto-connect. If already bound (subsequent plugin
+        // reloads or hot restart against a still-running service),
+        // it runs synchronously. A belt-and-suspenders 3000 ms
+        // fallback runs the auto-connect anyway with a WARN log so a
+        // wedged bind doesn't leave the External Button slot dark
+        // forever. First-runner wins via [externalButtonAutoConnectFired].
+        //
+        // The primary AINA path ([autoConnectAina]) still uses its
+        // 1400 ms delay — that path relies on OS-brokered SPP
+        // auto-connect edges (BluetoothHeadset profile proxy) which
+        // are a different problem class, and rewiring it is out of
+        // scope for this fix (see PR body).
+        val client = voiceClient
+        if (client == null) {
+            Log.w(TAG, "autoConnectExternalButton: voiceClient is null at scheduling time — cannot arm auto-connect")
+            return
+        }
+        externalButtonAutoConnectFired = false
+        client.whenBound("autoConnectExternalButton") {
+            runAutoConnectExternalButton(source = "aidl-bound")
+        }
+        // Fallback so a wedged bind can't strand the External Button
+        // reader indefinitely. 3000 ms is well past the observed cold-
+        // launch bind latency on Pixel-class hardware (< 800 ms in
+        // captures) and past the old 1400 ms timer that the field
+        // still saw fire too early. If the bind DOES come in inside
+        // that window (the common path), whenBound will have run
+        // first and this handler no-ops.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            val savedMac = settings.persistedExternalButtonMac()
-            if (savedMac != null) {
-                connectSavedExternalButton(savedMac)
-                return@postDelayed
-            }
-            if (!settings.persistedAutoConnectBtEnabled()) {
-                Log.i(TAG, "autoConnectExternalButton: no saved selection and auto-connect disabled — skipping")
-                return@postDelayed
-            }
-            // Auto-pick an EXTERNAL BUTTON: prefer a BLE_HID puck
-            // (typical motorcyclist handlebar button) over an
-            // additional speakermic, since the operator's primary is
-            // the audio path and a second audio device on slot 0 would
-            // compete for SCO. Filter out the primary's MAC so we
-            // don't pick the same device twice.
-            val primaryMac = settings.persistedAinaMac()
-            val candidates =
-                listBondedAinaDevices()
-                    .filterNot {
-                        primaryMac != null && it.mac.equals(primaryMac, ignoreCase = true)
-                    }
-            if (candidates.isEmpty()) {
-                Log.i(TAG, "autoConnectExternalButton: no compatible external-button candidate — skipping")
-                return@postDelayed
-            }
-            val picked =
-                candidates.firstOrNull {
-                    it.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
-                } ?: run {
-                    // No BLE_HID puck bonded — don't auto-pick a second
-                    // speakermic. Audio routing only sensibly engages
-                    // one BT speakermic, so picking another would
-                    // create operator-surprise side effects. Operator
-                    // can still manually pick a second AINA in the
-                    // Settings → Preferences picker if they want it.
-                    Log.i(TAG, "autoConnectExternalButton: no BLE PTT button bonded — leaving external-button slot empty")
-                    return@postDelayed
+            if (externalButtonAutoConnectFired) return@postDelayed
+            Log.w(
+                TAG,
+                "autoConnectExternalButton: AIDL bind still not up 3000 ms after schedule — " +
+                    "running fallback auto-connect (belt-and-suspenders); pending actions will queue " +
+                    "against the client until the bind lands",
+            )
+            runAutoConnectExternalButton(source = "fallback-timer")
+        }, 3000)
+    }
+
+    // Actual auto-connect body. Guarded so only the first caller
+    // (whenBound-triggered OR the 3 s fallback) runs it. Every branch
+    // logs at INFO so a future field logcat shows exactly which path
+    // was taken.
+    @SuppressWarnings("MissingPermission")
+    private fun runAutoConnectExternalButton(source: String) {
+        if (externalButtonAutoConnectFired) {
+            Log.i(TAG, "autoConnectExternalButton[$source]: already fired — skipping duplicate")
+            return
+        }
+        externalButtonAutoConnectFired = true
+        Log.i(TAG, "autoConnectExternalButton[$source]: entry")
+        val savedMac = settings.persistedExternalButtonMac()
+        if (savedMac != null) {
+            Log.i(
+                TAG,
+                "autoConnectExternalButton[$source]: restoring saved MAC " +
+                    com.atakmap.android.xv.aina.redactMac(savedMac),
+            )
+            connectSavedExternalButton(savedMac)
+            Log.i(TAG, "autoConnectExternalButton[$source]: complete (restore path)")
+            return
+        }
+        if (!settings.persistedAutoConnectBtEnabled()) {
+            Log.i(TAG, "autoConnectExternalButton[$source]: no saved selection and auto-connect disabled — skipping")
+            return
+        }
+        // Auto-pick an EXTERNAL BUTTON: prefer a BLE_HID puck
+        // (typical motorcyclist handlebar button) over an
+        // additional speakermic, since the operator's primary is
+        // the audio path and a second audio device on slot 0 would
+        // compete for SCO. Filter out the primary's MAC so we
+        // don't pick the same device twice.
+        val primaryMac = settings.persistedAinaMac()
+        val candidates =
+            listBondedAinaDevices()
+                .filterNot {
+                    primaryMac != null && it.mac.equals(primaryMac, ignoreCase = true)
                 }
-            val kind =
-                when (picked.buttonProtocol) {
-                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
-                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
-                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
-                    else -> "auto"
-                }
-            Log.i(TAG, "autoConnectExternalButton: auto-picked → ${picked.name} ${picked.mac} kind=$kind")
-            settings.persistExternalButtonMac(picked.mac)
-            settings.persistExternalButtonKind(kind)
-            lastExternalButtonMac = picked.mac
-            voiceClient?.ifBound { it.connectExternalButton(picked.mac, null, kind) }
-            lastExternalButtonConnected = true
-        }, 1400)
+        if (candidates.isEmpty()) {
+            Log.i(TAG, "autoConnectExternalButton[$source]: no compatible external-button candidate — skipping")
+            return
+        }
+        val picked =
+            candidates.firstOrNull {
+                it.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
+            } ?: run {
+                // No BLE_HID puck bonded — don't auto-pick a second
+                // speakermic. Audio routing only sensibly engages
+                // one BT speakermic, so picking another would
+                // create operator-surprise side effects. Operator
+                // can still manually pick a second AINA in the
+                // Settings → Preferences picker if they want it.
+                Log.i(
+                    TAG,
+                    "autoConnectExternalButton[$source]: no BLE PTT button bonded — leaving external-button slot empty",
+                )
+                return
+            }
+        val kind =
+            when (picked.buttonProtocol) {
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
+                else -> "auto"
+            }
+        Log.i(
+            TAG,
+            "autoConnectExternalButton[$source]: auto-picked → ${picked.name} " +
+                "${com.atakmap.android.xv.aina.redactMac(picked.mac)} kind=$kind",
+        )
+        settings.persistExternalButtonMac(picked.mac)
+        settings.persistExternalButtonKind(kind)
+        lastExternalButtonMac = picked.mac
+        voiceClient?.ifBound { it.connectExternalButton(picked.mac, null, kind) }
+        lastExternalButtonConnected = true
+        Log.i(TAG, "autoConnectExternalButton[$source]: complete (auto-pick path)")
     }
 
     @SuppressWarnings("MissingPermission")
     private fun connectSavedExternalButton(savedMac: String) {
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
-        val bonded =
-            try {
-                adapter.bondedDevices ?: emptySet()
-            } catch (t: Throwable) {
-                Log.w(TAG, "connectSavedExternalButton: bondedDevices threw", t)
-                return
-            }
-        val device =
-            bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
-                ?: run {
-                    Log.w(TAG, "connectSavedExternalButton: saved MAC $savedMac no longer bonded")
-                    return
-                }
-        val primary = settings.persistedAinaMac()
-        if (primary != null && primary.equals(savedMac, ignoreCase = true)) {
-            Log.w(TAG, "connectSavedExternalButton: collides with primary — skipping")
+        val redactedSaved = com.atakmap.android.xv.aina.redactMac(savedMac)
+        val adapter = BluetoothAdapter.getDefaultAdapter()
+        if (adapter == null) {
+            Log.w(TAG, "connectSavedExternalButton: no BT adapter — cannot restore $redactedSaved")
             return
         }
-        val kind = settings.persistedExternalButtonKind() ?: "auto"
-        Log.i(TAG, "connectSavedExternalButton: ${device.name} ${device.address} kind=$kind")
-        lastExternalButtonMac = device.address
-        voiceClient?.ifBound { it.connectExternalButton(device.address, null, kind) }
+        // Known-BLE-PTT devices can be picked without a system bond
+        // (PTT-Z01 in particular refuses to bond at all). If the saved
+        // MAC is in that list, skip the bonded-devices lookup entirely
+        // and drive the connect straight into the ble-hid reader path.
+        // Without this, a cold launch with only a knownBlePtt-only puck
+        // saved would take the "no longer bonded" WARN branch below
+        // and never spawn the reader.
+        val isKnownBlePtt =
+            settings.knownBlePttDevices().any { (m, _) -> m.equals(savedMac, ignoreCase = true) }
+        val bondedDevice: BluetoothDevice? =
+            try {
+                val bonded = adapter.bondedDevices ?: emptySet()
+                bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
+            } catch (t: Throwable) {
+                Log.w(TAG, "connectSavedExternalButton: bondedDevices threw", t)
+                null
+            }
+        if (bondedDevice == null && !isKnownBlePtt) {
+            // Saved MAC has drifted: not in bond table and not in
+            // knownBlePtt. Log at WARN so field logcats surface the
+            // drift instead of silently dropping the reader attach.
+            // Deliberately don't clear the persisted MAC — the
+            // operator may be mid-repair (re-bonding the puck) and
+            // we don't want to forget for them. A follow-up UI hook
+            // could offer to clear it; not in this PR.
+            Log.w(
+                TAG,
+                "connectSavedExternalButton: saved MAC $redactedSaved no longer bonded and not in " +
+                    "knownBlePtt — reader will not spawn; persisted MAC left in place for operator repair",
+            )
+            return
+        }
+        val primary = settings.persistedAinaMac()
+        if (primary != null && primary.equals(savedMac, ignoreCase = true)) {
+            Log.w(TAG, "connectSavedExternalButton: $redactedSaved collides with primary — skipping")
+            return
+        }
+        // Live-resolve the kind on every connect. This closes the
+        // staleness surface identified 2026-07-11: previously the
+        // persisted kind was written once at pick time and never
+        // re-checked, so an operator who added the same MAC to
+        // knownBlePtt AFTER picking it wound up with a stale kind
+        // that misclassified the reader on next cold launch. Live
+        // resolve consults knownBlePtt first, then the SDP-based
+        // classifier, then the persisted hint — see
+        // [ExternalButtonKindResolver] for the precedence contract.
+        val kind = resolveConnectKind(savedMac)
+        val macForConnect = bondedDevice?.address ?: savedMac
+        val nameForConnect = bondedDevice?.name
+        Log.i(
+            TAG,
+            "connectSavedExternalButton: mac=$redactedSaved kind=$kind (knownBlePtt=$isKnownBlePtt, " +
+                "bonded=${bondedDevice != null})",
+        )
+        lastExternalButtonMac = macForConnect
+        voiceClient?.ifBound { it.connectExternalButton(macForConnect, nameForConnect, kind) }
         lastExternalButtonConnected = true
     }
 
@@ -3496,35 +3621,58 @@ class XvMapComponent : AbstractMapComponent() {
             else -> null
         }
 
-    // Resolve the reader "kind" string for a given MAC. Known BLE PTT
-    // devices (added via the settings Scan-for-BLE-PTT dialog) are
-    // always driven by the BLE-HID / HM-10 reader — the SDP-based
-    // classifier can't confirm this because HM-10 devices don't
-    // expose their vendor UUID over BR/EDR SDP (and PTT-Z01 doesn't
-    // bond at all), so we short-circuit before the classifier runs.
-    // Everything else falls through to the classifier: SPP → v1,
-    // BLE → v2, BLE_HID → ble-hid, unknown → auto.
+    // Resolve the reader "kind" string for a given MAC. Precedence:
+    //
+    //   1. If the MAC is in `knownBlePttDevices` (operator scanned it in
+    //      via "Scan for BLE PTT device"), always "ble-hid" — HM-10 /
+    //      PTT-Z pucks don't expose the BLE vendor UUID over BR/EDR SDP
+    //      so the classifier can miss it entirely.
+    //   2. Otherwise, whatever the SDP-based classifier says: SPP → v1,
+    //      BLE → v2, BLE_HID → ble-hid, unknown → falls through.
+    //   3. Otherwise, the last-persisted hint for this MAC (retained as
+    //      a "last resort" so a bonded device the classifier can no
+    //      longer see still spins up a reader instead of collapsing to
+    //      "auto" = no reader).
+    //   4. Otherwise "auto".
+    //
+    // Pure decision lives in [ExternalButtonKindResolver] so the
+    // precedence rules are unit-testable independent of the Bluetooth
+    // stack. This function is the live wrapper that runs the
+    // classifier + hint reads and hands the results to the resolver.
+    //
+    // Field bug 2026-07-11: operator added the same Pryme puck to
+    // knownBlePtt AFTER picking it as the External Button, and a
+    // stale persisted kind then survived the knownBlePtt add. Fix is
+    // in [connectSavedExternalButton] — call this method fresh at
+    // connect time instead of reading `persistedExternalButtonKind()`
+    // directly.
     private fun resolveConnectKind(mac: String): String {
-        if (settings.knownBlePttDevices().any { (m, _) -> m.equals(mac, ignoreCase = true) }) {
-            return "ble-hid"
-        }
-        return try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            val device = adapter?.getRemoteDevice(mac)
-            if (device == null) {
-                "auto"
-            } else {
-                when (com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(device)) {
-                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
-                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
-                    com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
-                    else -> "auto"
+        val isInKnownBlePtt =
+            settings.knownBlePttDevices().any { (m, _) -> m.equals(mac, ignoreCase = true) }
+        val classifierResult: String? =
+            try {
+                val adapter = BluetoothAdapter.getDefaultAdapter()
+                val device = adapter?.getRemoteDevice(mac)
+                if (device == null) {
+                    null
+                } else {
+                    when (com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(device)) {
+                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
+                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
+                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
+                        else -> null
+                    }
                 }
+            } catch (t: Throwable) {
+                Log.w(TAG, "could not classify $mac for kind, falling back to hint / auto", t)
+                null
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "could not classify $mac for kind, falling back to auto", t)
-            "auto"
-        }
+        val persistedHint = settings.persistedExternalButtonKind()
+        return com.atakmap.android.xv.aina.ExternalButtonKindResolver.resolve(
+            isInKnownBlePtt = isInKnownBlePtt,
+            classifierResult = classifierResult,
+            persistedHint = persistedHint,
+        )
     }
 
     private fun isAinaConnected(): Boolean = ainaBle != null || ainaSpp != null
