@@ -915,6 +915,10 @@ class XvVoiceService : Service() {
                 fanOut { it.onCaptureError(reason) }
             }
 
+            override fun onPttBlockedByCellularCall(reason: String) {
+                fanOut { it.onPttBlockedByCellularCall(reason) }
+            }
+
             override fun onPlaceTelecomCall(tag: String) {
                 placeTelecomCallInternal(tag)
             }

@@ -748,6 +748,28 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
 
+                override fun onPttBlockedByCellularCall(reason: String?) {
+                    // Service side suppressed a PTT press because the
+                    // cellular telephony stack reports an active or
+                    // ringing call. Without this Toast the operator
+                    // sees no visible feedback for the press and
+                    // reasonably assumes XV is broken. Service already
+                    // throttles the fire so we do not stack toasts on
+                    // rapid button mashes.
+                    val msg = reason ?: "Cellular call active — hang up before XV PTT"
+                    Log.i(TAG, "onPttBlockedByCellularCall: $msg")
+                    val target = MapView.getMapView() ?: return
+                    try {
+                        target.post {
+                            android.widget.Toast
+                                .makeText(target.context, msg, android.widget.Toast.LENGTH_LONG)
+                                .show()
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "cellular-block toast threw", t)
+                    }
+                }
+
                 override fun onPrivateCallEnded() {
                     cancelPendingAnswerTimeout("call ended")
                     cancelPendingRingback("call ended")
@@ -2330,25 +2352,26 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.i(TAG, "autoConnectAina: no saved selection and auto-connect disabled — skipping")
                 return@postDelayed
             }
-            // Auto-pick: prefer the first AVAILABLE compatible device
-            // in the picker list. listBondedAinaDevices already sorts
-            // available-first, then by protocol (SPP → BLE → BLE_HID)
-            // so a live speakermic always beats a stale one AND a
-            // speakermic always beats a button-only puck for the
-            // primary slot. If no device is marked available we
-            // deliberately do NOT connect — auto-connecting to a
-            // device that isn't live just to satisfy an old MAC hint
-            // is the exact bug we're fixing.
+            // Auto-pick: prefer the first AVAILABLE speakermic-class
+            // device (SPP / BLE / AUDIO_ONLY) in the picker list.
+            // BLE_HID pucks are button-only and are handled by
+            // autoConnectExternalButton — they must never win the
+            // primary slot even when they're the only "available"
+            // candidate. BLE_HID availability is unobservable so
+            // those rows are always marked available=true; without
+            // the filter, a bonded-but-off Pryme puck was winning
+            // firstOrNull { available } whenever the operator's AINA
+            // was powered down at plugin load (reported 2026-07-10).
             if (candidates.isEmpty()) {
                 Log.i(TAG, "autoConnectAina: no compatible bonded device found — nothing to auto-pick")
                 return@postDelayed
             }
-            val picked = candidates.firstOrNull { it.available }
+            val picked = com.atakmap.android.xv.aina.AinaDeviceClassifier.pickPrimary(candidates)
             if (picked == null) {
                 Log.i(
                     TAG,
-                    "autoConnectAina: ${candidates.size} bonded candidate(s) found but none currently reachable — " +
-                        "waiting for one to come up",
+                    "autoConnectAina: ${candidates.size} bonded candidate(s) but no available speakermic " +
+                        "(button-only pucks are ineligible for primary) — waiting for a speakermic to come up",
                 )
                 return@postDelayed
             }
