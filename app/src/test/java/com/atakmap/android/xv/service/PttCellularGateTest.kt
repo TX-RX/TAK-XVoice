@@ -2,6 +2,7 @@ package com.atakmap.android.xv.service
 
 import android.media.AudioManager
 import android.telephony.TelephonyManager
+import com.atakmap.android.xv.audio.PttSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -16,39 +17,167 @@ import org.junit.Test
 class PttCellularGateTest {
     // ============================================================
     // shouldGateForCellularCall — decision function
+    //
+    // Source-scoped policy (2026-07-10 revision): the gate ONLY
+    // applies to PttSource.ON_SCREEN. Every other source — every
+    // hardware button (AINA V1/V2, Pryme MFB, and any future
+    // BT-HID / gpio input) and the DEBUG intent path — bypasses
+    // the gate and returns ALLOW even during OFFHOOK / RINGING.
+    // The screen-tap path stays blocked because a stray finger
+    // during a phone call should not auto-hold the call.
     // ============================================================
 
     @Test
-    fun `IDLE call-state permits TX`() {
+    fun `IDLE call-state permits TX for on-screen source`() {
         assertEquals(
             PttGate.ALLOW,
-            shouldGateForCellularCall(TelephonyManager.CALL_STATE_IDLE),
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_IDLE, PttSource.ON_SCREEN),
         )
     }
 
     @Test
-    fun `OFFHOOK call-state blocks TX for active cellular call`() {
+    fun `OFFHOOK call-state blocks TX for on-screen source`() {
+        // On-screen taps are the accident-prone path — a wayward
+        // finger during a cellular call should not silently
+        // auto-hold that call via XV's self-managed Telecom call.
         assertEquals(
             PttGate.BLOCK_CELLULAR_CALL,
-            shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK),
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.ON_SCREEN),
         )
     }
 
     @Test
-    fun `RINGING call-state blocks TX for incoming cellular call`() {
+    fun `RINGING call-state blocks TX for on-screen source`() {
         assertEquals(
             PttGate.BLOCK_CELLULAR_RINGING,
-            shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING),
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.ON_SCREEN),
         )
     }
 
     @Test
-    fun `unknown call-state fails open to ALLOW`() {
+    fun `unknown call-state fails open to ALLOW for on-screen source`() {
         // Fail-open is deliberate — a silent PTT lockout with no
         // operator-visible cause is a worse failure mode than the
         // auto-hold bug this gate exists to fix. See PttCellularGate.
-        assertEquals(PttGate.ALLOW, shouldGateForCellularCall(-1))
-        assertEquals(PttGate.ALLOW, shouldGateForCellularCall(Int.MAX_VALUE))
+        assertEquals(PttGate.ALLOW, shouldGateForCellularCall(-1, PttSource.ON_SCREEN))
+        assertEquals(PttGate.ALLOW, shouldGateForCellularCall(Int.MAX_VALUE, PttSource.ON_SCREEN))
+    }
+
+    // --- Hardware sources bypass the gate entirely ---------------
+
+    @Test
+    fun `AINA V1 hardware bypasses gate during OFFHOOK`() {
+        // Hardware button presses represent deliberate operator
+        // intent. Tactical scenarios may require an operator to
+        // key up mid-call; blocking a hardware press would
+        // surprise-block a deliberate transmission attempt.
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.AINA_V1),
+        )
+    }
+
+    @Test
+    fun `AINA V1 hardware bypasses gate during RINGING`() {
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.AINA_V1),
+        )
+    }
+
+    @Test
+    fun `AINA V2 hardware bypasses gate during OFFHOOK`() {
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.AINA_V2),
+        )
+    }
+
+    @Test
+    fun `AINA V2 hardware bypasses gate during RINGING`() {
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.AINA_V2),
+        )
+    }
+
+    @Test
+    fun `Pryme BLE hardware bypasses gate during OFFHOOK`() {
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.PRYME_BLE),
+        )
+    }
+
+    @Test
+    fun `Pryme BLE hardware bypasses gate during RINGING`() {
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.PRYME_BLE),
+        )
+    }
+
+    @Test
+    fun `DEBUG source bypasses gate during OFFHOOK`() {
+        // DEBUG originates from adb / dev tooling, not from a
+        // stray touch. Keep the debug path usable during a call.
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.DEBUG),
+        )
+    }
+
+    @Test
+    fun `DEBUG source bypasses gate during RINGING`() {
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.DEBUG),
+        )
+    }
+
+    @Test
+    fun `IDLE call-state permits TX for every source`() {
+        // Belt-and-suspenders sanity: IDLE must always return ALLOW
+        // regardless of source. If a future PttSource ever slipped
+        // into a code path that read IDLE-as-blocked, the
+        // fidget-guard would flip from "silent success" to "silent
+        // lockout" — the exact failure mode the fail-open policy
+        // exists to prevent.
+        for (src in PttSource.values()) {
+            assertEquals(
+                "IDLE + $src must ALLOW",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(TelephonyManager.CALL_STATE_IDLE, src),
+            )
+        }
+    }
+
+    @Test
+    fun `every non-screen source bypasses gate during OFFHOOK`() {
+        // Data-driven complement to the enum-by-enum tests above.
+        // Any hardware source added in the future automatically
+        // gets the ALLOW-during-call treatment; the only source
+        // that stays blocked is ON_SCREEN.
+        for (src in PttSource.values()) {
+            if (src == PttSource.ON_SCREEN) continue
+            assertEquals(
+                "$src must bypass OFFHOOK gate",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, src),
+            )
+        }
+    }
+
+    @Test
+    fun `every non-screen source bypasses gate during RINGING`() {
+        for (src in PttSource.values()) {
+            if (src == PttSource.ON_SCREEN) continue
+            assertEquals(
+                "$src must bypass RINGING gate",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, src),
+            )
+        }
     }
 
     // ============================================================
@@ -171,36 +300,58 @@ class PttCellularGateTest {
     }
 
     @Test
-    fun `AudioManager mode round-trips through the full gate for cell OFFHOOK`() {
+    fun `AudioManager mode round-trips through the full gate for cell OFFHOOK on-screen`() {
         // End-to-end sanity: getMode() returns MODE_IN_CALL during an
         // active cellular call → provider adapter maps to
-        // CALL_STATE_OFFHOOK → gate returns BLOCK_CELLULAR_CALL.
+        // CALL_STATE_OFFHOOK → gate returns BLOCK_CELLULAR_CALL for
+        // an on-screen tap.
         assertEquals(
             PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(
                 cellularCallStateFromAudioMode(AudioManager.MODE_IN_CALL),
+                PttSource.ON_SCREEN,
             ),
         )
     }
 
     @Test
-    fun `AudioManager mode round-trips through the full gate for ringing`() {
+    fun `AudioManager mode round-trips through the full gate for ringing on-screen`() {
         assertEquals(
             PttGate.BLOCK_CELLULAR_RINGING,
             shouldGateForCellularCall(
                 cellularCallStateFromAudioMode(AudioManager.MODE_RINGTONE),
+                PttSource.ON_SCREEN,
             ),
         )
     }
 
     @Test
-    fun `AudioManager MODE_IN_COMMUNICATION does not gate ourselves`() {
+    fun `AudioManager MODE_IN_COMMUNICATION does not gate ourselves on-screen`() {
         // Full-pipeline complement to the mapping test: XV's own
-        // Telecom call must never cause the gate to fire.
+        // Telecom call must never cause the gate to fire even on
+        // the on-screen path.
         assertEquals(
             PttGate.ALLOW,
             shouldGateForCellularCall(
                 cellularCallStateFromAudioMode(AudioManager.MODE_IN_COMMUNICATION),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `AudioManager MODE_IN_CALL does not gate an AINA hardware press`() {
+        // Full-pipeline complement of the source-scope policy: even
+        // when the cellular stack has claimed MODE_IN_CALL, a
+        // hardware button press is deliberate operator intent and
+        // must transmit. XV's Telecom call will still auto-hold the
+        // cellular call as a side effect — but that side effect is
+        // now the operator's choice, not an accident.
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(AudioManager.MODE_IN_CALL),
+                PttSource.AINA_V2,
             ),
         )
     }
