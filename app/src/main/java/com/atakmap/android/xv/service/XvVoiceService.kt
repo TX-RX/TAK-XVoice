@@ -1669,6 +1669,37 @@ class XvVoiceService : Service() {
                 return plant().isExternalButtonConnected()
             }
 
+            override fun setSamsungActiveKeyEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSamsungActiveKey()
+                } else {
+                    plant().stopSamsungActiveKey()
+                }
+            }
+
+            override fun isSamsungActiveKeyRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSamsungActiveKeyRunning()
+            }
+
+            // Foreground-KeyEvent fallback edge dispatch. The plugin's
+            // SamsungActiveKeyForegroundReader owns the OnKeyListener
+            // attached to the MapView (the KeyEvent path only reaches
+            // the top activity); it forwards each filtered edge here so
+            // the service's PttDispatcher — the single source of truth
+            // for TX state — sees the SAMSUNG_ACTIVE_KEY-tagged edge in
+            // the correct process. Same authorization gate as the other
+            // PTT paths.
+            override fun notifySamsungActiveKeyEdge(isDown: Boolean) {
+                assertAuthorizedCaller()
+                if (isDown) {
+                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY)
+                } else {
+                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY)
+                }
+            }
+
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
                 assertAuthorizedCaller()
                 plant().setMumbleSessionLive(connectedAndInChannel)
@@ -1779,6 +1810,11 @@ class XvVoiceService : Service() {
         // against v3 fall back to full disconnectAina + reconnect on
         // kind changes (audio route hint clears momentarily) — no
         // functional breakage.
+        // Additive-since-v4 (no version bump): notifySamsungActiveKeyEdge
+        // for the foreground-KeyEvent fallback on Tab Active5 firmware
+        // that doesn't emit HARD_KEY_REPORT. Older plugins built
+        // against v4 simply won't call it — the broadcast path is
+        // still their only Samsung Active Key route.
         private const val AIDL_API_VERSION = 4
 
         // Channel ids for the incoming-ring + active-call CallStyle

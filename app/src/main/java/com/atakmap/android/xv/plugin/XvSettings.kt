@@ -242,6 +242,22 @@ class XvSettings(
         prefs()?.edit()?.putBoolean(PREF_STATUS_TONES, enabled)?.apply()
     }
 
+    // Whether the Samsung ruggedized-device Active Key is enabled as
+    // a PTT source. The corresponding Settings row is only shown at
+    // all when [com.atakmap.android.xv.util.SamsungActiveKey.isSupported]
+    // returns true (Galaxy Tab Active5, XCover6 Pro / 7, Tab Active4 Pro,
+    // Tab Active3) — on any other device this preference is inert and
+    // the toggle is hidden entirely. Default OFF so first launch on
+    // new hardware doesn't silently start intercepting the key; the
+    // operator opts in explicitly. Read at plugin load by
+    // [XvMapComponent.autoStartSamsungActiveKeyIfEnabled].
+    fun persistedSamsungActiveKeyEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_SAMSUNG_ACTIVE_KEY_ENABLED, false) ?: false
+
+    fun persistSamsungActiveKeyEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_SAMSUNG_ACTIVE_KEY_ENABLED, enabled)?.apply()
+    }
+
     // Last-joined primary channel. Written by onChannelChanged on
     // every slot-0 move (excluding "TAK PRIVATE - …" temp channels);
     // read by connectMumbleWithDefaults to override server-side default
@@ -290,6 +306,11 @@ class XvSettings(
         private const val PREF_TPT_TONE = "tpt_tone"
         private const val PREF_LATCHED_TIMEOUT = "latched_timeout_sec"
         private const val PREF_STATUS_TONES = "status_tones_enabled"
+
+        // Whether the Samsung ruggedized-device Active Key is used as
+        // a PTT source. Only meaningful on hardware that has the key.
+        // Default false; the row is hidden on other devices.
+        private const val PREF_SAMSUNG_ACTIVE_KEY_ENABLED = "samsung_active_key_enabled"
 
         // TAK server picker — empty/missing means auto-pick (first
         // connected, else first configured); else the explicit host
