@@ -126,21 +126,75 @@ const val CELLULAR_BLOCK_TOAST_THROTTLE_MS: Long = 3_000L
  *
  * Correspondence:
  * - [AudioManager.MODE_IN_CALL] → [TelephonyManager.CALL_STATE_OFFHOOK]:
- *   the telephony stack sets MODE_IN_CALL whenever a cellular call is
- *   in the OFFHOOK (connected) state.
+ *   the telephony stack sets MODE_IN_CALL whenever a legacy CSFB /
+ *   circuit-switched cellular call is in the OFFHOOK (connected)
+ *   state. Pre-VoLTE handsets and VoLTE-disabled carrier profiles
+ *   still land here.
  * - [AudioManager.MODE_RINGTONE] → [TelephonyManager.CALL_STATE_RINGING]:
  *   set while an inbound call is ringing.
- * - Everything else → [TelephonyManager.CALL_STATE_IDLE]. In particular
- *   [AudioManager.MODE_IN_COMMUNICATION] is what XV's OWN self-managed
- *   Telecom call uses (see AudioControllerImpl.enterTx) — mapping it
- *   to OFFHOOK here would gate ourselves out of every subsequent PTT
- *   press. MODE_NORMAL, MODE_CURRENT, and MODE_INVALID all fall to
- *   IDLE for the same fail-open rationale as
+ * - [AudioManager.MODE_IN_COMMUNICATION]: **ambiguous on modern
+ *   Android.** Two independent things put the device into
+ *   MODE_IN_COMMUNICATION:
+ *     1. XV's OWN self-managed Telecom call (see
+ *        AudioControllerImpl.enterTx and
+ *        XvVoiceService.placeTelecomCallInternal). Mapping this to
+ *        OFFHOOK would self-gate every PTT during an active burst.
+ *     2. On modern (API ≥ 30) Pixel/Samsung/etc. handsets with
+ *        VoLTE-enabled cellular — which is the default on every
+ *        major US carrier now — the telephony stack ALSO uses
+ *        MODE_IN_COMMUNICATION for the real cellular call instead
+ *        of the legacy MODE_IN_CALL. Same audio mode as any other
+ *        VoIP app (Signal, WhatsApp, Discord, Meet, etc.). Field
+ *        evidence from Pixel 9 Pro / API 35 (2026-07-11): the OS
+ *        reported "OnAudioModeChanged: update mode from
+ *        IN_COMMUNICATION to NORMAL" as a live VoLTE voicemail
+ *        call hung up. The old MODE_IN_COMMUNICATION → IDLE
+ *        mapping incorrectly treated that as "not a phone call",
+ *        allowed the on-screen PTT, and let XV's self-managed
+ *        Telecom call auto-hold the operator's live call.
+ *   Disambiguate at the call site: if XV already has an active
+ *   self-managed Telecom call ([xvHasActiveTelecomCall] = true),
+ *   MODE_IN_COMMUNICATION is OURS → IDLE (do not self-gate).
+ *   Otherwise MODE_IN_COMMUNICATION is somebody else's call
+ *   (VoLTE cellular, or another VoIP app) → OFFHOOK (block the
+ *   on-screen PTT so we do not auto-hold their call).
+ * - Everything else → [TelephonyManager.CALL_STATE_IDLE].
+ *   MODE_NORMAL, MODE_CURRENT, and MODE_INVALID all fall to IDLE
+ *   for the same fail-open rationale as
  *   [shouldGateForCellularCall].
+ *
+ * [xvHasActiveTelecomCall] is sampled at the moment the gate runs
+ * — supplied by the caller from
+ * [com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall].
+ * The registration and unregistration lifecycle is driven by
+ * XvConnection.onDestroy / teardownLocal, which is invoked by the
+ * TELECOM_END_DEBOUNCE_MS runnable in XvVoiceService — so the
+ * "our own call" flag stays true across the 8 s post-activity
+ * wind-down and drops only after Telecom has actually torn our
+ * connection down.
  */
-fun cellularCallStateFromAudioMode(audioMode: Int): Int =
+fun cellularCallStateFromAudioMode(
+    audioMode: Int,
+    xvHasActiveTelecomCall: Boolean,
+): Int =
     when (audioMode) {
         AudioManager.MODE_IN_CALL -> TelephonyManager.CALL_STATE_OFFHOOK
         AudioManager.MODE_RINGTONE -> TelephonyManager.CALL_STATE_RINGING
+        AudioManager.MODE_IN_COMMUNICATION ->
+            if (xvHasActiveTelecomCall) {
+                // OUR own Telecom call is holding MODE_IN_COMMUNICATION.
+                // Do not gate the operator out of their own follow-up
+                // presses inside a burst / the end-debounce window.
+                TelephonyManager.CALL_STATE_IDLE
+            } else {
+                // Nobody in XV placed a call, yet the device is in
+                // MODE_IN_COMMUNICATION. Somebody else did — VoLTE
+                // cellular is the field-observed case, but any other
+                // VoIP app in the foreground would land here too.
+                // Treat as an active external call: block the
+                // accident-prone on-screen PTT so we do not
+                // auto-hold their call by placing our own.
+                TelephonyManager.CALL_STATE_OFFHOOK
+            }
         else -> TelephonyManager.CALL_STATE_IDLE
     }
