@@ -215,28 +215,38 @@ object BtActiveDeviceController {
 }
 
 /**
- * Pure decision function for the override-routing state machine in
+ * Pure decision function for the target-routing state machine in
  * [ScoLink]. Extracted so unit tests can pin every branch without
  * standing up BluetoothAdapter / AudioManager / a live Context.
  *
+ * The "effective target" MAC is `overrideMac ?: hintMac`. The state
+ * machine treats both the same way — reflection nudge + switcher
+ * fallback — but the caller distinguishes them for toast wording
+ * (override vs. primary-speakermic-hint messaging). The extension to
+ * cover the hint case landed 2026-07-11 for the Auto + primary-AINA +
+ * secondary-BT-headset field scenario where the OS's active HFP peer
+ * is not the AINA hint and XV was silently falling through to whichever
+ * device the OS gave us in `getAvailableCommunicationDevices`.
+ *
  * Given the current state — override MAC, hint MAC, currently-available
  * comm-device MACs, last [BtActiveDeviceController.trySetActive] outcome
- * for the override, and the switcher-launch cooldown — return which
- * action the caller should take next.
+ * for the effective target, and the switcher-launch cooldown — return
+ * which action the caller should take next.
  *
  * The caller (production ScoLink) then executes the action:
- *   - [OverrideRoutingAction.PIN_DIRECT]: pin the override MAC directly;
- *     it's already in the available list.
+ *   - [OverrideRoutingAction.PIN_DIRECT]: pin the effective target MAC
+ *     directly; it's already in the available list.
  *   - [OverrideRoutingAction.TRY_REFLECTION]: call
- *     [BtActiveDeviceController.trySetActive]. On SUCCESS the caller
- *     polls the available list briefly and re-runs this decision.
+ *     [BtActiveDeviceController.trySetActive] against the effective
+ *     target. On SUCCESS the caller polls the available list briefly
+ *     and re-runs this decision.
  *   - [OverrideRoutingAction.LAUNCH_SWITCHER]: open the system output
  *     switcher panel (cooldown observed by the caller before invoking
  *     this — the decision has already checked it) and fall back to the
- *     hint for the current SCO acquire.
+ *     hint / auto chain for the current SCO acquire.
  *   - [OverrideRoutingAction.PIN_HINT]: skip the switcher (either
- *     nothing else to try, or cooldown not yet expired) and pin the
- *     hint MAC. Legacy behaviour.
+ *     no effective target to try, or cooldown not yet expired) and
+ *     pin whatever the hint / auto chain resolves to. Legacy behaviour.
  */
 enum class OverrideRoutingAction {
     PIN_DIRECT,
@@ -249,47 +259,60 @@ enum class OverrideRoutingAction {
  * See [OverrideRoutingAction] KDoc.
  *
  * @param overrideMac         The operator's explicit "Audio device"
- *                            override MAC. Null / blank → no override
- *                            active; caller should route by hint.
- * @param hintMac             The AINA hint MAC (fallback speakermic).
- *                            Not consulted directly by this decision —
- *                            passed through for symmetry so callers
- *                            can log both values from the same site.
+ *                            override MAC. Null / blank → no explicit
+ *                            override; caller should consult the hint.
+ * @param hintMac             The AINA hint MAC (primary speakermic
+ *                            picked from the AINA dropdown, or null
+ *                            when no AINA is paired). Used as the
+ *                            effective target when [overrideMac] is
+ *                            null / blank. Null / blank hint AND null
+ *                            override → PIN_HINT (nothing to nudge).
  * @param availableMacs       Set of MACs currently in
  *                            [android.media.AudioManager.getAvailableCommunicationDevices].
  *                            Compared case-insensitively via caller
  *                            upper-casing before the call.
  * @param reflectionCached    Previous [BtActiveDeviceController.trySetActive]
- *                            outcome for the override MAC, or null if
- *                            we haven't tried yet. Used to decide
- *                            whether reflection is worth attempting
- *                            again.
+ *                            outcome for the effective target MAC, or
+ *                            null if we haven't tried yet. Used to
+ *                            decide whether reflection is worth
+ *                            attempting again.
  * @param lastSwitcherLaunchMs Timestamp of the last switcher launch
  *                            (ms since boot), or 0L if none this
- *                            session.
+ *                            session. Cooldown is shared across both
+ *                            the override-target and hint-target paths
+ *                            — one switcher panel per 30 s regardless
+ *                            of which target triggered it.
  * @param nowMs               Current timestamp (ms since boot).
  * @param switcherCooldownMs  Minimum spacing between switcher launches.
  *                            Prevents focus-pull spam when the operator
- *                            hammers PTT while the override is out of
+ *                            hammers PTT while the target is out of
  *                            range.
  */
 fun decideOverrideAction(
     overrideMac: String?,
-    @Suppress("UNUSED_PARAMETER") hintMac: String?,
+    hintMac: String?,
     availableMacs: Set<String>,
     reflectionCached: BtActiveDeviceController.TrySetActiveResult?,
     lastSwitcherLaunchMs: Long,
     nowMs: Long,
     switcherCooldownMs: Long,
 ): OverrideRoutingAction {
-    if (overrideMac.isNullOrBlank()) return OverrideRoutingAction.PIN_HINT
-    val overrideUpper = overrideMac.uppercase()
-    if (availableMacs.contains(overrideUpper)) return OverrideRoutingAction.PIN_DIRECT
-    // Override present but not currently a comm device. If we've never
-    // tried reflection, try it — on Samsung / older builds it may
-    // succeed and the OS re-enumerates the override in.
+    // Effective target: explicit override wins; otherwise the hint MAC
+    // set by connectAinaInternal. Null / blank on both means there's
+    // nothing to nudge — the caller's existing hint / auto pick stands.
+    val target =
+        when {
+            !overrideMac.isNullOrBlank() -> overrideMac
+            !hintMac.isNullOrBlank() -> hintMac
+            else -> return OverrideRoutingAction.PIN_HINT
+        }
+    val targetUpper = target.uppercase()
+    if (availableMacs.contains(targetUpper)) return OverrideRoutingAction.PIN_DIRECT
+    // Target present but not currently a comm device. If we've never
+    // tried reflection for this target, try it — on Samsung / older
+    // builds it may succeed and the OS re-enumerates the target in.
     if (reflectionCached == null) return OverrideRoutingAction.TRY_REFLECTION
-    // Reflection already resolved. If it succeeded but the override
+    // Reflection already resolved. If it succeeded but the target
     // still isn't in the available set, we've hit a race or a platform
     // that accepts the API call without honoring it — fall through to
     // the switcher so the operator can complete the switch manually.
@@ -299,7 +322,7 @@ fun decideOverrideAction(
     // Reflection failed. Launch the switcher, but only if we're past
     // the per-session cooldown — otherwise the operator gets a panel
     // yanked over ATAK on every PTT press, which is worse than sitting
-    // on the hint.
+    // on the hint / auto pick.
     val cooldownExpired = (nowMs - lastSwitcherLaunchMs) >= switcherCooldownMs
     return if (cooldownExpired) {
         OverrideRoutingAction.LAUNCH_SWITCHER
