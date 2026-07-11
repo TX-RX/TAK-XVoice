@@ -186,6 +186,27 @@ class XvDropDownReceiver(
         // launches; auto-connect on plugin load uses this MAC if set.
         fun setSelectedAina(mac: String?)
 
+        // Change the button-input protocol on the CURRENTLY-selected
+        // primary AINA. Nullable to represent "no buttons / on-screen
+        // only" — the operator keeps the speakermic's audio path but
+        // XV stops listening for button events on that device.
+        //
+        // Semantics:
+        //  - Always persists (via the per-MAC protocol override) so a
+        //    later disconnect / reconnect edge picks up the new value.
+        //  - If the primary AINA is currently connected AND the new
+        //    kind differs from the running reader, tears the current
+        //    reader down and (for a real reader kind) spins up a new
+        //    one under the new kind — so the operator doesn't have to
+        //    disconnect + reconnect to make the change take effect.
+        //  - Idempotent under rapid A → B → A toggles (same-kind
+        //    writes short-circuit; "no reader → no reader" transitions
+        //    don't churn).
+        //
+        // Intentionally does NOT touch the external-button reader
+        // path — that's a separate reader lifecycle.
+        fun setAinaButtonProtocol(kind: AinaDeviceInfo.ButtonProtocol?) {}
+
         // ---- External button (Settings → Preferences) ----
         // Optional BLE PTT puck (Pryme BT-PTT-Z, PTT-Z01, generic
         // BLE-HID) whose button keys slot 0 in parallel with the

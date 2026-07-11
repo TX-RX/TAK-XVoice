@@ -130,6 +130,27 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var currentAinaDevice: BluetoothDevice? = null
 
+    // Resolved reader kind ("v1" / "v2" / "ble-hid") the current
+    // primary AINA reader was constructed under. Null when no reader
+    // is running (either disconnected or torn down via
+    // [voiceClient.disconnectAinaReaderOnly] because the operator
+    // flipped button-protocol to "audio only"). Set at the tail of
+    // [connectAinaInternal] and cleared in [disconnectAinaInternal] /
+    // the teardown-only branch. Read by [setAinaButtonProtocolInternal]
+    // to decide whether an operator kind flip needs a reader respawn.
+    @Volatile
+    private var currentAinaReaderKind: String? = null
+
+    // Re-entry guard for [setAinaButtonProtocolInternal]. The kind-
+    // change path calls [connectAinaInternal] whose SPP-→-BLE probe
+    // (AinaProtocolProbe) can itself re-enter [connectAinaInternal]
+    // when the probe resolves BLE. Without this guard, an operator
+    // kind flip that races the probe could double-teardown /
+    // double-respawn the reader. Reset in a finally so an exception
+    // in the connect path doesn't wedge the guard on.
+    @Volatile
+    private var reInitingReaderKind: Boolean = false
+
     // V2-AINA SDP-cache-gap probe — see [AinaProtocolProbe]. Lazily
     // constructed against the held plugin context.
     @Volatile
@@ -892,6 +913,38 @@ class XvMapComponent : AbstractMapComponent() {
                         proto: String?,
                     ) {
                         settings.persistAinaProtocolOverride(mac, proto)
+                        // If the caller is targeting the currently-
+                        // selected primary AINA, route through the
+                        // reader-lifecycle path so a live device gets
+                        // its reader respawned under the new
+                        // protocol immediately. Non-primary MACs
+                        // (secondary picks, unbonded scratch devices)
+                        // still get the pure persist path — they'll
+                        // pick up the override on the next connect
+                        // edge. Otherwise the debug intent path had
+                        // the same "persistence-only" bug as the UI
+                        // spinner: setting the override on a live
+                        // primary needed a manual disconnect / reconnect
+                        // to take effect.
+                        val primary = settings.persistedAinaMac()
+                        if (primary != null && primary.equals(mac, ignoreCase = true)) {
+                            val kindEnum =
+                                when (proto?.lowercase()) {
+                                    "v1", "spp" ->
+                                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP
+                                    "v2", "ble" ->
+                                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE
+                                    "ble-hid", "hid" ->
+                                        com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
+                                    // null / blank / "auto" clear the override; the
+                                    // reader-lifecycle path treats null as "no reader"
+                                    // and either tears the reader down or leaves it
+                                    // alone. On a subsequent connect edge, "auto"
+                                    // classification runs.
+                                    else -> null
+                                }
+                            setAinaButtonProtocolInternal(kindEnum)
+                        }
                         Log.i(
                             TAG,
                             "setAinaProtocolOverride($mac, $proto): persisted; effective on next connect",
@@ -2012,6 +2065,11 @@ class XvMapComponent : AbstractMapComponent() {
                 setSelectedAinaInternal(mac)
             }
 
+            override fun setAinaButtonProtocol(kind: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?) {
+                Log.i(TAG, "Controller.setAinaButtonProtocol('$kind')")
+                setAinaButtonProtocolInternal(kind)
+            }
+
             override fun availableExternalButtonDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
                 // The external button is a BUTTON-ONLY slot — a
                 // handlebar puck, hand-held BLE PTT, or similar
@@ -2763,6 +2821,146 @@ class XvMapComponent : AbstractMapComponent() {
         connectAinaInternal(ctx, mac, null, kind)
     }
 
+    // Operator-driven button-protocol flip on the CURRENTLY-selected
+    // primary AINA. Persists the per-MAC override so it survives
+    // reconnects, then — if the primary is currently connected and
+    // the new kind differs from the running reader — either tears
+    // the reader down (new kind == "no reader") or respawns it under
+    // the new kind. See [AinaReaderKindResolver] for the pure
+    // decision matrix.
+    //
+    // Rationale: the pre-fix setup persisted operator kind picks but
+    // only re-read them on the next connect edge. If the operator
+    // disconnected the speakermic, flipped kind, and reconnected while
+    // the persisted value was different from the auto-detected value
+    // for the newly-picked target, the reader spun up under the
+    // wrong protocol and PTT buttons went silent until a full
+    // disconnect / reconnect cycle. This method closes that gap.
+    //
+    // Reentry guarded because [connectAinaInternal] can itself re-
+    // enter via [AinaProtocolProbe]'s SPP→BLE resolution callback.
+    @SuppressWarnings("MissingPermission")
+    private fun setAinaButtonProtocolInternal(kind: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?) {
+        // Guarded against reentry from AinaProtocolProbe's
+        // SPP→BLE resolution callback (see [connectAinaInternal] —
+        // the probe re-enters connectAinaInternal when it decides
+        // BLE, and if a kind change lands in that window without the
+        // guard the reader gets double-torn-down / double-respawned).
+        if (reInitingReaderKind) {
+            Log.i(
+                TAG,
+                "setAinaButtonProtocolInternal: reader re-init already in flight — dropping " +
+                    "request for kind=$kind",
+            )
+            return
+        }
+        val mac = settings.persistedAinaMac()
+        if (mac.isNullOrBlank()) {
+            Log.i(TAG, "setAinaButtonProtocolInternal: no primary AINA selected — nothing to persist")
+            return
+        }
+        // Persistence: map the enum to the override string XV already
+        // uses ("v1" / "v2" / "ble-hid"). Null / AUDIO_ONLY / UNKNOWN
+        // all mean "no reader" — clear the override so the next
+        // connect edge falls through to auto-detect (which will pick
+        // a real reader if the operator's audio device happens to
+        // classify as one). This matches the pre-fix persistence
+        // semantics — see [XvSettings.persistedAinaProtocolOverride].
+        val protoString = protocolOverrideStringFor(kind)
+        settings.persistAinaProtocolOverride(mac, protoString)
+        val redactedMac = com.atakmap.android.xv.aina.redactMac(mac)
+        Log.i(TAG, "setAinaButtonProtocolInternal: mac=$redactedMac kind=$kind proto='$protoString'")
+
+        // Reader-lifecycle decision: currentKind + newKind + isConnected
+        // → NO_OP / TEARDOWN_ONLY / RESPAWN. Pure logic lives in
+        // [AinaReaderKindResolver] so it's independently unit-tested.
+        val currentKind = readerKindStringToEnum(currentAinaReaderKind)
+        val isConnected = currentAinaDevice != null
+        val decision =
+            com.atakmap.android.xv.aina.AinaReaderKindResolver.shouldRespawnReader(
+                currentKind = currentKind,
+                newKind = kind,
+                isConnected = isConnected,
+            )
+        Log.i(
+            TAG,
+            "setAinaButtonProtocolInternal: currentKind=$currentKind newKind=$kind " +
+                "isConnected=$isConnected → $decision",
+        )
+        when (decision) {
+            com.atakmap.android.xv.aina.AinaReaderKindResolver.Decision.NO_OP -> {
+                // Persist-only; nothing else to do. The next connect
+                // edge will pick up the new override via
+                // [XvSettings.persistedAinaProtocolOverride].
+                return
+            }
+            com.atakmap.android.xv.aina.AinaReaderKindResolver.Decision.TEARDOWN_ONLY -> {
+                // Drop the reader but leave the audio route hint in
+                // place. Operator flipped to "no buttons" but still
+                // wants the speakermic's HFP audio path.
+                reInitingReaderKind = true
+                try {
+                    voiceClient?.ifBound { it.disconnectAinaReaderOnly() }
+                    currentAinaReaderKind = null
+                } finally {
+                    reInitingReaderKind = false
+                }
+                return
+            }
+            com.atakmap.android.xv.aina.AinaReaderKindResolver.Decision.RESPAWN -> {
+                val ctx = heldPluginContext
+                if (ctx == null) {
+                    Log.w(TAG, "setAinaButtonProtocolInternal: no plugin context — skipping respawn")
+                    return
+                }
+                // "auto" so [connectAinaInternal] runs its full
+                // per-MAC override + classifier stack, which will
+                // land on the string we just persisted above (or on
+                // the classifier result when we persisted null /
+                // AUDIO_ONLY / UNKNOWN → cleared override).
+                reInitingReaderKind = true
+                try {
+                    Log.i(TAG, "setAinaButtonProtocolInternal: respawning reader on $redactedMac")
+                    connectAinaInternal(ctx, mac, null, "auto")
+                } finally {
+                    reInitingReaderKind = false
+                }
+                return
+            }
+        }
+    }
+
+    // Map a [AinaDeviceInfo.ButtonProtocol] pick from the Controller
+    // to the persistent override string XV writes to
+    // SharedPreferences. Null / AUDIO_ONLY / UNKNOWN all clear the
+    // override (return null); real reader kinds map to the strings
+    // [connectAinaInternal] already understands.
+    private fun protocolOverrideStringFor(kind: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?): String? =
+        when (kind) {
+            com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP -> "v1"
+            com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
+            com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> "ble-hid"
+            com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.AUDIO_ONLY,
+            com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.UNKNOWN,
+            null,
+            -> null
+        }
+
+    // Reverse of [protocolOverrideStringFor] for the reader-kind
+    // tracker (which stores the resolved string used at the last
+    // connectAina). "auto" defensively collapses to UNKNOWN — the
+    // reader-lifecycle decider treats UNKNOWN as "no reader" but
+    // that's only reachable when a device isn't connected (the
+    // resolver's isConnected=false branch NO_OPs anyway).
+    private fun readerKindStringToEnum(kindString: String?): com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol? =
+        when (kindString?.lowercase()) {
+            "v1", "spp" -> com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.SPP
+            "v2", "ble" -> com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE
+            "ble-hid", "hid" -> com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
+            null, "", "auto" -> null
+            else -> null
+        }
+
     // Resolve the reader "kind" string for a given MAC. Known BLE PTT
     // devices (added via the settings Scan-for-BLE-PTT dialog) are
     // always driven by the BLE-HID / HM-10 reader — the SDP-based
@@ -3403,6 +3601,11 @@ class XvMapComponent : AbstractMapComponent() {
         // The unused legacy in-plugin reader fields stay for now to
         // avoid a bigger refactor; they're never instantiated.
         voiceClient?.ifBound { it.connectAina(device.address, device.name, resolvedKind) }
+        // Track the reader kind we just handed to the service so the
+        // operator-driven button-protocol change path
+        // ([setAinaButtonProtocolInternal]) can decide whether a new
+        // pick actually differs from the running reader.
+        currentAinaReaderKind = resolvedKind
     }
 
     // V1 (SPP / RFCOMM ASCII) button event handler. The SPP parser emits
@@ -3461,6 +3664,7 @@ class XvMapComponent : AbstractMapComponent() {
         ainaSpp?.disconnect()
         ainaSpp = null
         currentAinaDevice = null
+        currentAinaReaderKind = null
     }
 
     @SuppressWarnings("MissingPermission")

@@ -80,6 +80,16 @@ interface IXvVoice {
     void disconnectAina();
     boolean isAinaConnected();
 
+    // Drop the primary AINA button reader ONLY — leave the audio
+    // route hint (preferredBtMacHint) and the connectedAinaMac in
+    // place. Used when the operator flips the button-input protocol
+    // on a currently-connected AINA to "no buttons / audio only":
+    // XV stops listening for button events (SPP / BLE / BLE-HID
+    // reader torn down) but the router still knows to prefer that
+    // device for BT audio. A full [disconnectAina] would clear the
+    // hint and randomize the BT audio pick on the next TX.
+    void disconnectAinaReaderOnly();
+
     // EXTERNAL BUTTON PTT input — an optional BLE PTT puck (Pryme
     // BT-PTT-Z, PTT-Z01, generic BLE-HID) whose button drives slot 0
     // in parallel with the primary speakermic. Button-only role.
