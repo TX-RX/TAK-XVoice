@@ -114,16 +114,16 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var lastAinaMac: String? = null
 
-    // Last secondary AINA / Pryme / BLE PTT MAC the plugin asked the
-    // service to bind, and a best-effort cached connect state for the
-    // UI. The service is the source of truth; we just need a snapshot
-    // for the picker status row so it doesn't have to round-trip AIDL
-    // on every refresh.
+    // Last external-button (AINA / Pryme / BLE PTT) MAC the plugin
+    // asked the service to bind, and a best-effort cached connect
+    // state for the UI. The service is the source of truth; we just
+    // need a snapshot for the picker status row so it doesn't have to
+    // round-trip AIDL on every refresh.
     @Volatile
-    private var lastSecondaryAinaMac: String? = null
+    private var lastExternalButtonMac: String? = null
 
     @Volatile
-    private var lastSecondaryAinaConnected: Boolean = false
+    private var lastExternalButtonConnected: Boolean = false
 
     // Resolved BluetoothDevice for the currently-connected AINA, set in
     // connectAinaInternal and cleared in disconnectAinaInternal.
@@ -769,6 +769,28 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
 
+                override fun onPttBlockedByCellularCall(reason: String?) {
+                    // Service side suppressed a PTT press because the
+                    // cellular telephony stack reports an active or
+                    // ringing call. Without this Toast the operator
+                    // sees no visible feedback for the press and
+                    // reasonably assumes XV is broken. Service already
+                    // throttles the fire so we do not stack toasts on
+                    // rapid button mashes.
+                    val msg = reason ?: "Cellular call active — hang up before XV PTT"
+                    Log.i(TAG, "onPttBlockedByCellularCall: $msg")
+                    val target = MapView.getMapView() ?: return
+                    try {
+                        target.post {
+                            android.widget.Toast
+                                .makeText(target.context, msg, android.widget.Toast.LENGTH_LONG)
+                                .show()
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "cellular-block toast threw", t)
+                    }
+                }
+
                 override fun onPrivateCallEnded() {
                     cancelPendingAnswerTimeout("call ended")
                     cancelPendingRingback("call ended")
@@ -1094,10 +1116,10 @@ class XvMapComponent : AbstractMapComponent() {
         // the speakermic's PTT / PTTE buttons produce events — that's
         // wrong for hardware the user has explicitly bonded.
         autoConnectAina()
-        // Restore the operator's secondary PTT input (e.g. handlebar
+        // Restore the operator's external button (e.g. handlebar
         // Pryme puck for a motorcyclist whose helmet AINA is the
-        // primary). No-op when no secondary is persisted.
-        autoConnectAinaSecondary()
+        // primary). No-op when no external button is persisted.
+        autoConnectExternalButton()
 
         // Trigger runtime permission prompts for our own UID. The
         // MapComponent runs in ATAK's process; checkSelfPermission here
@@ -2048,21 +2070,22 @@ class XvMapComponent : AbstractMapComponent() {
                 setAinaButtonProtocolInternal(kind)
             }
 
-            override fun availableSecondaryAinaDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
-                // Secondary PTT is a BUTTON slot — a handlebar puck,
-                // hand-held BLE PTT, or similar hardware whose sole
-                // job is to key the primary channel when the operator
-                // can't easily reach the speakermic (motorcyclist
-                // scenario: AINA on the vest + BLE puck on the bar).
-                // Speakermics (AINA V1 SPP + AINA V2 BLE, both audio-
-                // carrying) are deliberately hidden — the operator
-                // wears at most one speakermic at a time, so a
-                // "second speakermic" pick is confusing UX with no
-                // real use case. Field-observed 2026-07-07: operator
-                // saw AINA entries in the secondary picker and asked
-                // why speakermics were listed there when the label
-                // already promised "Optional second button (e.g. a
-                // Pryme handlebar puck)".
+            override fun availableExternalButtonDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
+                // The external button is a BUTTON-ONLY slot — a
+                // handlebar puck, hand-held BLE PTT, or similar
+                // hardware whose sole job is to key the primary
+                // channel when the operator can't easily reach the
+                // speakermic (motorcyclist scenario: AINA on the vest
+                // + BLE puck on the bar). Speakermics (AINA V1 SPP +
+                // AINA V2 BLE, both audio-carrying) are deliberately
+                // hidden — the operator wears at most one speakermic
+                // at a time, so a "second speakermic" pick is
+                // confusing UX with no real use case. Field-observed
+                // 2026-07-07: operator saw AINA entries in the
+                // external-button picker and asked why speakermics
+                // were listed there when the label already promised
+                // "Optional second button (e.g. a Pryme handlebar
+                // puck)".
                 //
                 // Also hides the device the operator picked as PRIMARY
                 // so they can't accidentally double-connect to the
@@ -2075,9 +2098,9 @@ class XvMapComponent : AbstractMapComponent() {
                 }
             }
 
-            override fun selectedSecondaryAinaMac(): String? = settings.persistedSecondaryAinaMac()
+            override fun selectedExternalButtonMac(): String? = settings.persistedExternalButtonMac()
 
-            override fun secondaryAinaConnectionUp(): Boolean = lastSecondaryAinaConnected
+            override fun externalButtonConnectionUp(): Boolean = lastExternalButtonConnected
 
             override fun addBlePttDevice(
                 mac: String,
@@ -2089,11 +2112,11 @@ class XvMapComponent : AbstractMapComponent() {
                     "addBlePttDevice: mac=${com.atakmap.android.xv.aina.redactMac(normalized)} name=$name",
                 )
                 // Record in the known-BLE-PTT store so both the primary
-                // and secondary pickers surface this device. Which slot
-                // it goes into is the operator's call from the picker.
-                // Existing "primary MAC != secondary MAC" enforcement in
-                // setSelectedSecondaryAinaInternal continues to guard
-                // against collisions.
+                // and external-button pickers surface this device. Which
+                // slot it goes into is the operator's call from the
+                // picker. Existing "primary MAC != external-button MAC"
+                // enforcement in setSelectedExternalButtonInternal
+                // continues to guard against collisions.
                 settings.addKnownBlePttDevice(normalized, name)
                 return null
             }
@@ -2119,17 +2142,17 @@ class XvMapComponent : AbstractMapComponent() {
                 if (primary != null && primary.equals(normalized, ignoreCase = true)) {
                     setSelectedAinaInternal(null)
                 }
-                val secondary = settings.persistedSecondaryAinaMac()
-                if (secondary != null && secondary.equals(normalized, ignoreCase = true)) {
-                    setSelectedSecondaryAinaInternal(null)
+                val externalButton = settings.persistedExternalButtonMac()
+                if (externalButton != null && externalButton.equals(normalized, ignoreCase = true)) {
+                    setSelectedExternalButtonInternal(null)
                 }
                 settings.removeKnownBlePttDevice(normalized)
                 return null
             }
 
-            override fun setSelectedSecondaryAina(mac: String?) {
-                Log.i(TAG, "Controller.setSelectedSecondaryAina('$mac')")
-                setSelectedSecondaryAinaInternal(mac)
+            override fun setSelectedExternalButton(mac: String?) {
+                Log.i(TAG, "Controller.setSelectedExternalButton('$mac')")
+                setSelectedExternalButtonInternal(mac)
             }
 
             override fun autoConnectBtEnabled(): Boolean = settings.persistedAutoConnectBtEnabled()
@@ -2387,25 +2410,26 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.i(TAG, "autoConnectAina: no saved selection and auto-connect disabled — skipping")
                 return@postDelayed
             }
-            // Auto-pick: prefer the first AVAILABLE compatible device
-            // in the picker list. listBondedAinaDevices already sorts
-            // available-first, then by protocol (SPP → BLE → BLE_HID)
-            // so a live speakermic always beats a stale one AND a
-            // speakermic always beats a button-only puck for the
-            // primary slot. If no device is marked available we
-            // deliberately do NOT connect — auto-connecting to a
-            // device that isn't live just to satisfy an old MAC hint
-            // is the exact bug we're fixing.
+            // Auto-pick: prefer the first AVAILABLE speakermic-class
+            // device (SPP / BLE / AUDIO_ONLY) in the picker list.
+            // BLE_HID pucks are button-only and are handled by
+            // autoConnectExternalButton — they must never win the
+            // primary slot even when they're the only "available"
+            // candidate. BLE_HID availability is unobservable so
+            // those rows are always marked available=true; without
+            // the filter, a bonded-but-off Pryme puck was winning
+            // firstOrNull { available } whenever the operator's AINA
+            // was powered down at plugin load (reported 2026-07-10).
             if (candidates.isEmpty()) {
                 Log.i(TAG, "autoConnectAina: no compatible bonded device found — nothing to auto-pick")
                 return@postDelayed
             }
-            val picked = candidates.firstOrNull { it.available }
+            val picked = com.atakmap.android.xv.aina.AinaDeviceClassifier.pickPrimary(candidates)
             if (picked == null) {
                 Log.i(
                     TAG,
-                    "autoConnectAina: ${candidates.size} bonded candidate(s) found but none currently reachable — " +
-                        "waiting for one to come up",
+                    "autoConnectAina: ${candidates.size} bonded candidate(s) but no available speakermic " +
+                        "(button-only pucks are ineligible for primary) — waiting for a speakermic to come up",
                 )
                 return@postDelayed
             }
@@ -2650,41 +2674,42 @@ class XvMapComponent : AbstractMapComponent() {
         ainaProbe ?: com.atakmap.android.xv.aina.AinaProtocolProbe(ctx).also { ainaProbe = it }
 
     @SuppressWarnings("MissingPermission")
-    private fun setSelectedSecondaryAinaInternal(mac: String?) {
-        settings.persistSecondaryAinaMac(mac)
+    private fun setSelectedExternalButtonInternal(mac: String?) {
+        settings.persistExternalButtonMac(mac)
         if (mac.isNullOrBlank()) {
-            voiceClient?.ifBound { it.disconnectAinaSecondary() }
-            lastSecondaryAinaMac = null
-            lastSecondaryAinaConnected = false
-            settings.persistSecondaryAinaKind(null)
+            voiceClient?.ifBound { it.disconnectExternalButton() }
+            lastExternalButtonMac = null
+            lastExternalButtonConnected = false
+            settings.persistExternalButtonKind(null)
             return
         }
         // Refuse silently if it collides with the primary — picker
         // already filters it out, but defend in depth.
         val primary = settings.persistedAinaMac()
         if (primary != null && primary.equals(mac, ignoreCase = true)) {
-            Log.w(TAG, "setSelectedSecondaryAinaInternal: $mac collides with primary — ignored")
-            settings.persistSecondaryAinaMac(null)
+            Log.w(TAG, "setSelectedExternalButtonInternal: $mac collides with primary — ignored")
+            settings.persistExternalButtonMac(null)
             return
         }
         val kind = resolveConnectKind(mac)
-        Log.i(TAG, "setSelectedSecondaryAinaInternal: connecting $mac as kind=$kind")
-        settings.persistSecondaryAinaKind(kind)
-        lastSecondaryAinaMac = mac
-        voiceClient?.ifBound { it.connectAinaSecondary(mac, null, kind) }
-        // No service-side state-edge callback for the secondary yet —
-        // optimistically cache "connected" so the UI shows progress.
-        // A future commit could thread an onAinaSecondaryConnectionChanged
-        // through the AIDL listener; for now the operator sees the picker
-        // status flip green on successful connect.
-        lastSecondaryAinaConnected = true
+        Log.i(TAG, "setSelectedExternalButtonInternal: connecting $mac as kind=$kind")
+        settings.persistExternalButtonKind(kind)
+        lastExternalButtonMac = mac
+        voiceClient?.ifBound { it.connectExternalButton(mac, null, kind) }
+        // No service-side state-edge callback for the external button
+        // yet — optimistically cache "connected" so the UI shows
+        // progress. A future commit could thread an
+        // onExternalButtonConnectionChanged through the AIDL listener;
+        // for now the operator sees the picker status flip green on
+        // successful connect.
+        lastExternalButtonConnected = true
     }
 
     // Shared MAC-format check for the scan-and-pick flow's primary /
-    // secondary Controller methods. Uppercases, normalizes dashes to
-    // colons, verifies the standard EUI-48 shape. Returns the
-    // canonical form on success or null on invalid input so callers
-    // can surface a specific error message.
+    // external-button Controller methods. Uppercases, normalizes
+    // dashes to colons, verifies the standard EUI-48 shape. Returns
+    // the canonical form on success or null on invalid input so
+    // callers can surface a specific error message.
     private fun normalizeAndValidateMac(mac: String): String? {
         val normalized = mac.trim().uppercase().replace('-', ':')
         val macRegex = Regex("^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
@@ -2692,25 +2717,25 @@ class XvMapComponent : AbstractMapComponent() {
     }
 
     @SuppressWarnings("MissingPermission")
-    private fun autoConnectAinaSecondary() {
+    private fun autoConnectExternalButton() {
         // Slight delay to match autoConnectAina + give the BT adapter
         // time to settle.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            val savedMac = settings.persistedSecondaryAinaMac()
+            val savedMac = settings.persistedExternalButtonMac()
             if (savedMac != null) {
-                connectSavedAinaSecondary(savedMac)
+                connectSavedExternalButton(savedMac)
                 return@postDelayed
             }
             if (!settings.persistedAutoConnectBtEnabled()) {
-                Log.i(TAG, "autoConnectAinaSecondary: no saved selection and auto-connect disabled — skipping")
+                Log.i(TAG, "autoConnectExternalButton: no saved selection and auto-connect disabled — skipping")
                 return@postDelayed
             }
-            // Auto-pick a SECONDARY: prefer a BLE_HID puck (typical
-            // motorcyclist handlebar button) over an additional
-            // speakermic, since the operator's primary is the audio
-            // path and a second audio device on slot 0 would compete
-            // for SCO. Filter out the primary's MAC so we don't pick
-            // the same device twice.
+            // Auto-pick an EXTERNAL BUTTON: prefer a BLE_HID puck
+            // (typical motorcyclist handlebar button) over an
+            // additional speakermic, since the operator's primary is
+            // the audio path and a second audio device on slot 0 would
+            // compete for SCO. Filter out the primary's MAC so we
+            // don't pick the same device twice.
             val primaryMac = settings.persistedAinaMac()
             val candidates =
                 listBondedAinaDevices()
@@ -2718,7 +2743,7 @@ class XvMapComponent : AbstractMapComponent() {
                         primaryMac != null && it.mac.equals(primaryMac, ignoreCase = true)
                     }
             if (candidates.isEmpty()) {
-                Log.i(TAG, "autoConnectAinaSecondary: no compatible secondary candidate — skipping")
+                Log.i(TAG, "autoConnectExternalButton: no compatible external-button candidate — skipping")
                 return@postDelayed
             }
             val picked =
@@ -2731,7 +2756,7 @@ class XvMapComponent : AbstractMapComponent() {
                     // create operator-surprise side effects. Operator
                     // can still manually pick a second AINA in the
                     // Settings → Preferences picker if they want it.
-                    Log.i(TAG, "autoConnectAinaSecondary: no BLE PTT button bonded — leaving secondary empty")
+                    Log.i(TAG, "autoConnectExternalButton: no BLE PTT button bonded — leaving external-button slot empty")
                     return@postDelayed
                 }
             val kind =
@@ -2741,41 +2766,41 @@ class XvMapComponent : AbstractMapComponent() {
                     com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE -> "v2"
                     else -> "auto"
                 }
-            Log.i(TAG, "autoConnectAinaSecondary: auto-picked → ${picked.name} ${picked.mac} kind=$kind")
-            settings.persistSecondaryAinaMac(picked.mac)
-            settings.persistSecondaryAinaKind(kind)
-            lastSecondaryAinaMac = picked.mac
-            voiceClient?.ifBound { it.connectAinaSecondary(picked.mac, null, kind) }
-            lastSecondaryAinaConnected = true
+            Log.i(TAG, "autoConnectExternalButton: auto-picked → ${picked.name} ${picked.mac} kind=$kind")
+            settings.persistExternalButtonMac(picked.mac)
+            settings.persistExternalButtonKind(kind)
+            lastExternalButtonMac = picked.mac
+            voiceClient?.ifBound { it.connectExternalButton(picked.mac, null, kind) }
+            lastExternalButtonConnected = true
         }, 1400)
     }
 
     @SuppressWarnings("MissingPermission")
-    private fun connectSavedAinaSecondary(savedMac: String) {
+    private fun connectSavedExternalButton(savedMac: String) {
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
         val bonded =
             try {
                 adapter.bondedDevices ?: emptySet()
             } catch (t: Throwable) {
-                Log.w(TAG, "connectSavedAinaSecondary: bondedDevices threw", t)
+                Log.w(TAG, "connectSavedExternalButton: bondedDevices threw", t)
                 return
             }
         val device =
             bonded.firstOrNull { it.address.equals(savedMac, ignoreCase = true) }
                 ?: run {
-                    Log.w(TAG, "connectSavedAinaSecondary: saved MAC $savedMac no longer bonded")
+                    Log.w(TAG, "connectSavedExternalButton: saved MAC $savedMac no longer bonded")
                     return
                 }
         val primary = settings.persistedAinaMac()
         if (primary != null && primary.equals(savedMac, ignoreCase = true)) {
-            Log.w(TAG, "connectSavedAinaSecondary: collides with primary — skipping")
+            Log.w(TAG, "connectSavedExternalButton: collides with primary — skipping")
             return
         }
-        val kind = settings.persistedSecondaryAinaKind() ?: "auto"
-        Log.i(TAG, "connectSavedAinaSecondary: ${device.name} ${device.address} kind=$kind")
-        lastSecondaryAinaMac = device.address
-        voiceClient?.ifBound { it.connectAinaSecondary(device.address, null, kind) }
-        lastSecondaryAinaConnected = true
+        val kind = settings.persistedExternalButtonKind() ?: "auto"
+        Log.i(TAG, "connectSavedExternalButton: ${device.name} ${device.address} kind=$kind")
+        lastExternalButtonMac = device.address
+        voiceClient?.ifBound { it.connectExternalButton(device.address, null, kind) }
+        lastExternalButtonConnected = true
     }
 
     private fun setSelectedAinaInternal(mac: String?) {

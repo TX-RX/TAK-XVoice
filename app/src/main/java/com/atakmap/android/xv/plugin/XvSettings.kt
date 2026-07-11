@@ -43,28 +43,29 @@ class XvSettings(
         }
     }
 
-    // Secondary PTT input — an OPTIONAL second bonded BT device whose
-    // PTT button drives slot 0 in parallel with the primary. Motorcyclist
-    // use case: AINA helmet speakermic + Pryme handlebar puck both
-    // keying VS1. Independent of the primary so the operator can swap
-    // either side without affecting the other. Null/blank = no secondary
-    // selected (single-input behaviour).
-    fun persistedSecondaryAinaMac(): String? =
-        prefs()?.getString(PREF_AINA_MAC_SECONDARY, null)?.takeIf { it.isNotBlank() }
+    // External button — an OPTIONAL second bonded BT PTT input whose
+    // button drives slot 0 in parallel with the primary speakermic.
+    // Button-only role: a BLE PTT puck (Pryme BT-PTT-Z, PTT-Z01, generic
+    // BLE-HID). Motorcyclist use case: AINA helmet speakermic + Pryme
+    // handlebar puck both keying VS1. Independent of the primary so the
+    // operator can swap either side without affecting the other.
+    // Null/blank = no external button selected (single-input behaviour).
+    fun persistedExternalButtonMac(): String? =
+        prefs()?.getString(PREF_EXTERNAL_BUTTON_MAC, null)?.takeIf { it.isNotBlank() }
 
-    fun persistSecondaryAinaMac(mac: String?) {
+    fun persistExternalButtonMac(mac: String?) {
         prefs()?.edit()?.apply {
-            if (mac.isNullOrBlank()) remove(PREF_AINA_MAC_SECONDARY) else putString(PREF_AINA_MAC_SECONDARY, mac)
+            if (mac.isNullOrBlank()) remove(PREF_EXTERNAL_BUTTON_MAC) else putString(PREF_EXTERNAL_BUTTON_MAC, mac)
             apply()
         }
     }
 
-    fun persistedSecondaryAinaKind(): String? =
-        prefs()?.getString(PREF_AINA_KIND_SECONDARY, null)?.takeIf { it.isNotBlank() }
+    fun persistedExternalButtonKind(): String? =
+        prefs()?.getString(PREF_EXTERNAL_BUTTON_KIND, null)?.takeIf { it.isNotBlank() }
 
-    fun persistSecondaryAinaKind(kind: String?) {
+    fun persistExternalButtonKind(kind: String?) {
         prefs()?.edit()?.apply {
-            if (kind.isNullOrBlank()) remove(PREF_AINA_KIND_SECONDARY) else putString(PREF_AINA_KIND_SECONDARY, kind)
+            if (kind.isNullOrBlank()) remove(PREF_EXTERNAL_BUTTON_KIND) else putString(PREF_EXTERNAL_BUTTON_KIND, kind)
             apply()
         }
     }
@@ -259,9 +260,17 @@ class XvSettings(
         // Persistent keys.
         private const val PREF_AINA_MAC = "aina_mac"
 
-        // Secondary PTT input pair — see persistedSecondaryAinaMac.
-        private const val PREF_AINA_MAC_SECONDARY = "aina_mac_secondary"
-        private const val PREF_AINA_KIND_SECONDARY = "aina_kind_secondary"
+        // External-button input pair — see persistedExternalButtonMac.
+        //
+        // On-disk key names retain the historical `_secondary` suffix
+        // intentionally: this constant was renamed from
+        // PREF_AINA_MAC_SECONDARY / PREF_AINA_KIND_SECONDARY as part
+        // of the "Secondary → External button" concept rename, but the
+        // stored String value is preserved so existing installs keep
+        // auto-connecting the persisted MAC without a prefs migration.
+        // Do NOT change the string values.
+        private const val PREF_EXTERNAL_BUTTON_MAC = "aina_mac_secondary"
+        private const val PREF_EXTERNAL_BUTTON_KIND = "aina_kind_secondary"
 
         // Manually-added BLE PTT devices — see knownBlePttDevices.
         // Set<String> with "MAC|Name" entries.

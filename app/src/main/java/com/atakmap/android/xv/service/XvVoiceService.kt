@@ -915,6 +915,10 @@ class XvVoiceService : Service() {
                 fanOut { it.onCaptureError(reason) }
             }
 
+            override fun onPttBlockedByCellularCall(reason: String) {
+                fanOut { it.onPttBlockedByCellularCall(reason) }
+            }
+
             override fun onPlaceTelecomCall(tag: String) {
                 placeTelecomCallInternal(tag)
             }
@@ -1646,23 +1650,23 @@ class XvVoiceService : Service() {
                 return plant().isAinaConnected()
             }
 
-            override fun connectAinaSecondary(
+            override fun connectExternalButton(
                 mac: String?,
                 name: String?,
                 kind: String?,
             ) {
                 assertAuthorizedCaller()
-                plant().connectAinaSecondary(mac, name, kind)
+                plant().connectExternalButton(mac, name, kind)
             }
 
-            override fun disconnectAinaSecondary() {
+            override fun disconnectExternalButton() {
                 assertAuthorizedCaller()
-                plant().disconnectAinaSecondary()
+                plant().disconnectExternalButton()
             }
 
-            override fun isAinaSecondaryConnected(): Boolean {
+            override fun isExternalButtonConnected(): Boolean {
                 assertAuthorizedCaller()
-                return plant().isAinaSecondaryConnected()
+                return plant().isExternalButtonConnected()
             }
 
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {

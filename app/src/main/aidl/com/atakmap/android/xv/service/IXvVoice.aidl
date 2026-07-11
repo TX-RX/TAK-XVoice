@@ -90,17 +90,18 @@ interface IXvVoice {
     // hint and randomize the BT audio pick on the next TX.
     void disconnectAinaReaderOnly();
 
-    // SECONDARY PTT input — an additional bonded BT speakermic or
-    // BLE PTT button that drives slot 0 in parallel with the primary.
+    // EXTERNAL BUTTON PTT input — an optional BLE PTT puck (Pryme
+    // BT-PTT-Z, PTT-Z01, generic BLE-HID) whose button drives slot 0
+    // in parallel with the primary speakermic. Button-only role.
     // PttDispatcher's OR-gate keeps concurrent presses from cutting
     // each other off so a motorcyclist with an AINA helmet
     // speakermic + a handlebar Pryme puck can hold either button
-    // without one tearing the other's TX down. Secondary is hard-
-    // locked to slot 0; PTTS / PTTE / MFB on the secondary device
-    // are ignored.
-    void connectAinaSecondary(String mac, String name, String kind);
-    void disconnectAinaSecondary();
-    boolean isAinaSecondaryConnected();
+    // without one tearing the other's TX down. The external button
+    // is hard-locked to slot 0; PTTS / PTTE / MFB on the external
+    // device are ignored.
+    void connectExternalButton(String mac, String name, String kind);
+    void disconnectExternalButton();
+    boolean isExternalButtonConnected();
 
     // Mumble session signal. The plugin still owns the Mumble TCP
     // socket (because cert lookup needs ATAK runtime), but tells the

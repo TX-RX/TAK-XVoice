@@ -76,4 +76,13 @@ interface IXvVoiceListener {
     // operator-actionable string from AudioCapture (e.g. "RECORD_AUDIO
     // permission revoked — re-grant in system Settings").
     void onCaptureError(String reason);
+
+    // PTT was suppressed because the cellular telephony stack reports
+    // an active or ringing call. XV's self-managed Telecom call would
+    // otherwise auto-hold the cellular call, which is almost never what
+    // an operator fidgeting with a BT speakermic actually wants. Plugin
+    // surfaces [reason] as a Toast so the operator knows why nothing
+    // transmitted. The service side already throttles repeated fires
+    // during rapid button mashing.
+    void onPttBlockedByCellularCall(String reason);
 }
