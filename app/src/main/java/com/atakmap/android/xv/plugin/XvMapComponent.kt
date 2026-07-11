@@ -2140,7 +2140,7 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun selectedAinaMac(): String? = settings.persistedAinaMac()
 
-            override fun ainaConnectionUp(): Boolean = isAinaConnected()
+            override fun ainaConnectionUp(): Boolean = isAinaConnected() && isBluetoothAdapterOn()
 
             override fun setSelectedAina(mac: String?) {
                 Log.i(TAG, "Controller.setSelectedAina('$mac')")
@@ -2182,7 +2182,7 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun selectedExternalButtonMac(): String? = settings.persistedExternalButtonMac()
 
-            override fun externalButtonConnectionUp(): Boolean = lastExternalButtonConnected
+            override fun externalButtonConnectionUp(): Boolean = lastExternalButtonConnected && isBluetoothAdapterOn()
 
             override fun addBlePttDevice(
                 mac: String,
@@ -3676,6 +3676,24 @@ class XvMapComponent : AbstractMapComponent() {
     }
 
     private fun isAinaConnected(): Boolean = ainaBle != null || ainaSpp != null
+
+    // Gate on the actual adapter state so the picker's "— connected"
+    // status text doesn't lie when the operator has turned Bluetooth
+    // off out from under a still-running reader. Both
+    // `lastExternalButtonConnected` and the `ainaBle`/`ainaSpp`
+    // reader-holds are set optimistically on connect and only cleared
+    // by explicit picker changes or an AIDL-relayed disconnect
+    // callback (the callback path isn't wired for external-button
+    // yet — see the KDoc at [lastExternalButtonConnected] set sites).
+    // Field-observed 2026-07-11 during STATE_TURNING_OFF dedup
+    // validation: BT off → picker still read "Pryme (BLE HID) —
+    // connected" because the cache flag never noticed.
+    private fun isBluetoothAdapterOn(): Boolean =
+        try {
+            BluetoothAdapter.getDefaultAdapter()?.isEnabled == true
+        } catch (_: Throwable) {
+            false
+        }
 
     // SharedPreferences MUST be backed by ATAK's own context, not the
     // plugin context. See the [XvSettings] class for the full extracted
