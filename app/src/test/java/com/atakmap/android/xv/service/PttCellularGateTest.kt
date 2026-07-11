@@ -1,5 +1,6 @@
 package com.atakmap.android.xv.service
 
+import android.media.AudioManager
 import android.telephony.TelephonyManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -103,5 +104,104 @@ class PttCellularGateTest {
     @Test
     fun `throttle constant is 3 seconds`() {
         assertEquals(3_000L, CELLULAR_BLOCK_TOAST_THROTTLE_MS)
+    }
+
+    // ============================================================
+    // cellularCallStateFromAudioMode — permission-free state source
+    // ============================================================
+
+    @Test
+    fun `MODE_IN_CALL maps to CALL_STATE_OFFHOOK`() {
+        // AudioManager.MODE_IN_CALL is set by the telephony framework
+        // whenever a cellular call is in the OFFHOOK (connected) state.
+        // This is the primary "block PTT" trigger — we do not want XV
+        // to place its self-managed Telecom call and auto-hold the
+        // active cellular call.
+        assertEquals(
+            TelephonyManager.CALL_STATE_OFFHOOK,
+            cellularCallStateFromAudioMode(AudioManager.MODE_IN_CALL),
+        )
+    }
+
+    @Test
+    fun `MODE_RINGTONE maps to CALL_STATE_RINGING`() {
+        assertEquals(
+            TelephonyManager.CALL_STATE_RINGING,
+            cellularCallStateFromAudioMode(AudioManager.MODE_RINGTONE),
+        )
+    }
+
+    @Test
+    fun `MODE_NORMAL maps to CALL_STATE_IDLE`() {
+        assertEquals(
+            TelephonyManager.CALL_STATE_IDLE,
+            cellularCallStateFromAudioMode(AudioManager.MODE_NORMAL),
+        )
+    }
+
+    @Test
+    fun `MODE_IN_COMMUNICATION maps to CALL_STATE_IDLE (not our own gate)`() {
+        // XV's self-managed Telecom call sets MODE_IN_COMMUNICATION on
+        // every TX (see AudioControllerImpl.enterTx). If we mapped that
+        // to OFFHOOK the gate would fire on our OWN follow-up presses
+        // during a burst — a permanent PTT lockout. Explicitly assert
+        // the invariant "MODE_IN_CALL = cell, MODE_IN_COMMUNICATION =
+        // us, skip".
+        assertEquals(
+            TelephonyManager.CALL_STATE_IDLE,
+            cellularCallStateFromAudioMode(AudioManager.MODE_IN_COMMUNICATION),
+        )
+    }
+
+    @Test
+    fun `unknown audio-mode fails open to CALL_STATE_IDLE`() {
+        // Same fail-open rationale as shouldGateForCellularCall — a
+        // silent PTT lockout with no visible cause is worse than the
+        // auto-hold bug this gate exists to fix. Any future audio-mode
+        // constant we do not recognize (or a spurious MODE_INVALID)
+        // must not gate PTT.
+        assertEquals(
+            TelephonyManager.CALL_STATE_IDLE,
+            cellularCallStateFromAudioMode(AudioManager.MODE_INVALID),
+        )
+        assertEquals(
+            TelephonyManager.CALL_STATE_IDLE,
+            cellularCallStateFromAudioMode(Int.MAX_VALUE),
+        )
+    }
+
+    @Test
+    fun `AudioManager mode round-trips through the full gate for cell OFFHOOK`() {
+        // End-to-end sanity: getMode() returns MODE_IN_CALL during an
+        // active cellular call → provider adapter maps to
+        // CALL_STATE_OFFHOOK → gate returns BLOCK_CELLULAR_CALL.
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_CALL,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(AudioManager.MODE_IN_CALL),
+            ),
+        )
+    }
+
+    @Test
+    fun `AudioManager mode round-trips through the full gate for ringing`() {
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_RINGING,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(AudioManager.MODE_RINGTONE),
+            ),
+        )
+    }
+
+    @Test
+    fun `AudioManager MODE_IN_COMMUNICATION does not gate ourselves`() {
+        // Full-pipeline complement to the mapping test: XV's own
+        // Telecom call must never cause the gate to fire.
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(AudioManager.MODE_IN_COMMUNICATION),
+            ),
+        )
     }
 }

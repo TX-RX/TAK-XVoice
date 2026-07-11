@@ -55,34 +55,37 @@ class VoicePlant(
     private val callbacks: Callbacks,
     // Cellular-call state probe for the pttDown gate. Injected so unit
     // tests can drive OFFHOOK / RINGING / IDLE without touching a real
-    // TelephonyManager. Defaults to reading the system TelephonyManager
-    // via getCallState() — the plain call-state API works without
-    // READ_PHONE_STATE from API 26 (our minSdk) upward, so we do not
-    // widen the app's permission surface for this gate. On any
-    // SecurityException the probe returns CALL_STATE_IDLE (fail-open)
-    // — a locked-out PTT with no explanation is a worse failure than
-    // the auto-hold bug this gate exists to fix.
+    // AudioManager. Defaults to reading AudioManager.getMode() and
+    // mapping the audio-mode constant to a TelephonyManager call-state
+    // constant via [cellularCallStateFromAudioMode].
+    //
+    // Why AudioManager and not TelephonyManager: the original wire-up
+    // used TelephonyManager.getCallState() on the assumption that the
+    // plain non-permission API works from API 26 upward. That is wrong
+    // from API 31 onward — on-device evidence from Pixel API 35 shows
+    // getCallState() throws SecurityException ("Neither user nor
+    // current process has android.permission.READ_PHONE_STATE") on
+    // every PTT-down. The fidget-guard exists to reduce noise; a probe
+    // that itself throws + logs a stack trace on every press makes the
+    // audio hot-path more expensive AND buys no benefit (we never see
+    // OFFHOOK). AudioManager.getMode() requires no permission at any
+    // API level and returns MODE_IN_CALL / MODE_RINGTONE for the exact
+    // states we want to gate on. XV's own audio-plant code already
+    // reads audioManager.mode extensively (AudioControllerImpl,
+    // ScoLink, TptPlayer) — this is just one more reader.
+    //
+    // Belt-and-suspenders: a defensive catch on Throwable still returns
+    // IDLE (fail-open). getMode() is not documented to throw, but a
+    // SILENT permission denial that we cannot observe is a worse
+    // failure than the auto-hold bug this gate exists to fix.
     private val cellularCallStateProvider: () -> Int = {
         try {
-            val tm =
-                context.getSystemService(Context.TELEPHONY_SERVICE)
-                    as? android.telephony.TelephonyManager
-            // Suppress: getCallState() is deprecated in favor of
-            // getCallStateForSubscription() (API 31+), which requires
-            // READ_PHONE_STATE. We deliberately use the plain non-
-            // permission API here — the fidget-during-call bug only
-            // needs the default subscription's aggregate state, and
-            // widening our permission surface for a fidget-guard is
-            // not justified.
-            @Suppress("DEPRECATION")
-            tm?.callState ?: android.telephony.TelephonyManager.CALL_STATE_IDLE
-        } catch (se: SecurityException) {
-            android.util.Log.w(
-                TAG,
-                "cellularCallStateProvider: SecurityException — treating as IDLE",
-                se,
+            val am =
+                context.getSystemService(Context.AUDIO_SERVICE)
+                    as? AudioManager
+            cellularCallStateFromAudioMode(
+                am?.mode ?: AudioManager.MODE_NORMAL,
             )
-            android.telephony.TelephonyManager.CALL_STATE_IDLE
         } catch (t: Throwable) {
             android.util.Log.w(
                 TAG,
