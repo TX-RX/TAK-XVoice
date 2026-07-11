@@ -59,23 +59,58 @@ object ExternalButtonReaderResolver {
      * XvMapComponent.setSelectedExternalButtonInternal is
      * case-insensitive).
      *
-     * If [isConnected] is false, the decision is always
-     * [PttReaderRespawnDecision.Decision.NO_OP]: the persistence
-     * write is the only side effect, and the next connect edge
-     * (autoConnectExternalButton on plugin start) will pick up the
-     * new value.
+     * External Button vs. primary AINA — connection-edge semantics
+     * diverge:
+     *
+     * The primary AINA slot binds to devices that Android's headset
+     * profile service brokers: the OS pushes a connect edge when the
+     * peer powers on, and only then does the reader spin up. There
+     * the "no live reader + new MAC" case correctly maps to NO_OP —
+     * persist the pick, wait for the OS.
+     *
+     * The External Button slot binds to BLE peripherals that DO NOT
+     * push a connect edge to the phone. BLE PTT pucks (Pryme,
+     * PTT-Z-family, generic HM10 buttons, third-party Amazon buttons)
+     * advertise passively; XV has to open the GATT connection itself.
+     * If we return NO_OP when no reader exists yet, we never open the
+     * GATT connection, no button events ever arrive, and the picker
+     * status stays "Connected" (from the OS bond state) while
+     * physical presses do nothing.
+     *
+     * Field-observed 2026-07-11 on Pixel 9 Pro (Pryme puck +
+     * separate Amazon BLE button, neither reader-attached at
+     * pick time): setSelectedExternalButtonInternal fired with
+     * currentMac=null / isConnected=false, the shared
+     * PttReaderRespawnDecision returned NO_OP on the !isConnected
+     * short-circuit, and the reader was never spawned. Toggling
+     * the picker to (none) and back to the same puck did not help
+     * because the same NO_OP path fired again.
+     *
+     * Fix: for the External Button slot specifically, when the
+     * operator picks a real MAC and there is no live reader, always
+     * RESPAWN — that spawns the reader whose GATT connect attempt
+     * is how the BLE peripheral becomes reachable in the first
+     * place. All other transitions continue to delegate to the
+     * shared decision matrix. Primary AINA behaviour is unchanged
+     * because that resolver still uses the plain shared decision.
      */
     fun shouldRespawnReader(
         currentMac: String?,
         newMac: String?,
         isConnected: Boolean,
-    ): PttReaderRespawnDecision.Decision =
-        PttReaderRespawnDecision.decide(
+    ): PttReaderRespawnDecision.Decision {
+        // BLE peripherals need XV to initiate GATT connect — no
+        // external connect edge is coming to trigger auto-spawn.
+        // If the operator picked a real MAC and there is no reader
+        // yet, spawn one so the connection can be attempted.
+        if (!isConnected && hasReader(newMac)) return PttReaderRespawnDecision.Decision.RESPAWN
+        return PttReaderRespawnDecision.decide(
             currentHasReader = hasReader(currentMac),
             newHasReader = hasReader(newMac),
             currentEqualsNew = macsEqual(currentMac, newMac),
             isConnected = isConnected,
         )
+    }
 
     /**
      * True iff the given MAC represents a live external-button
