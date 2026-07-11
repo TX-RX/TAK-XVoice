@@ -30,6 +30,7 @@ import com.atakmap.android.xv.audio.StatusTones
 import com.atakmap.android.xv.audio.TptPlayer
 import com.atakmap.android.xv.audio.TptTone
 import com.atakmap.android.xv.audio.TxController
+import com.atakmap.android.xv.audio.logPrefixForPttSource
 import com.atakmap.android.xv.ptt.SamsungActiveKeyReader
 import com.atakmap.android.xv.ptt.SonimEmergencyButtonReader
 import com.atakmap.android.xv.ptt.SonimPttButtonReader
@@ -1859,7 +1860,7 @@ class VoicePlant(
     // there's no risk of half-press accidental dispatch.
     private fun primaryAinaEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
         { btn, down ->
-            Log.i(TAG, "primary AINA button $btn down=$down source=$source")
+            Log.i(TAG, "${logPrefixForPttSource(source)} $btn down=$down source=$source")
             when (btn) {
                 AinaButton.PTTE -> callbacks.onEmergencyButton(down)
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
@@ -1879,7 +1880,7 @@ class VoicePlant(
     // the user asked for.
     private fun externalButtonEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
         { btn, down ->
-            Log.i(TAG, "external button $btn down=$down source=$source")
+            Log.i(TAG, "${logPrefixForPttSource(source)} $btn down=$down source=$source")
             when (btn) {
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
                 else -> { /* external button does not drive PTTS/PTTE/MFB */ }
