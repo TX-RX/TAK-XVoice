@@ -236,6 +236,76 @@ class AinaDeviceClassifierTest {
         assertEquals(listOf("Alpha", "bravo"), ranked.map { it.name })
     }
 
+    // ============================================================
+    // pickPrimary — auto-connect for the PRIMARY speakermic slot
+    // (fix/primary-picks-speakermic-over-button)
+    // ============================================================
+
+    @Test
+    fun `pickPrimary skips available BLE_HID puck when speakermic is off`() {
+        // The 2026-07-10 field report: bonded Pryme puck (BLE_HID) is
+        // always marked available=true because HID pucks don't appear
+        // in AudioManager.getAvailableCommunicationDevices, so the old
+        // firstOrNull { available } auto-picked the puck as PRIMARY
+        // whenever the operator's AINA was powered off at plugin load.
+        // pickPrimary must filter BLE_HID out entirely — the puck is
+        // the SECONDARY slot's problem, not primary's.
+        val puckLive = info("Pryme-live", AinaDeviceInfo.ButtonProtocol.BLE_HID, available = true)
+        val ainaOff = info("APTT-off", AinaDeviceInfo.ButtonProtocol.SPP, available = false)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(puckLive, ainaOff))
+        assertEquals(
+            "no available speakermic → pickPrimary returns null instead of the button-only puck",
+            null,
+            AinaDeviceClassifier.pickPrimary(ranked),
+        )
+    }
+
+    @Test
+    fun `pickPrimary picks the available speakermic when both puck and AINA are live`() {
+        val puck = info("Pryme-live", AinaDeviceInfo.ButtonProtocol.BLE_HID, available = true)
+        val aina = info("APTT-live", AinaDeviceInfo.ButtonProtocol.BLE, available = true)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(puck, aina))
+        assertEquals(
+            "speakermic beats button-only puck for primary",
+            "APTT-live",
+            AinaDeviceClassifier.pickPrimary(ranked)?.name,
+        )
+    }
+
+    @Test
+    fun `pickPrimary prefers SPP over BLE when both are available`() {
+        // Within the eligible-for-primary tier, the picker's protocol
+        // order (SPP → BLE → AUDIO_ONLY) must round-trip through
+        // pickPrimary. This is the historical AINA V1 preference —
+        // when both a V1 and a V2 are on, take V1 for auto-pick.
+        val v2 = info("APTT-V2", AinaDeviceInfo.ButtonProtocol.BLE, available = true)
+        val v1 = info("APTT-V1", AinaDeviceInfo.ButtonProtocol.SPP, available = true)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(v2, v1))
+        assertEquals("APTT-V1", AinaDeviceClassifier.pickPrimary(ranked)?.name)
+    }
+
+    @Test
+    fun `pickPrimary returns null when all candidates are unavailable`() {
+        // No live speakermic and no live puck — nothing to connect. The
+        // caller must NOT fall back to an unavailable device just to
+        // satisfy an old MAC hint (that was the original 2026-07-08 bug
+        // this whole auto-pick path was fixing).
+        val ainaOff = info("APTT-off", AinaDeviceInfo.ButtonProtocol.SPP, available = false)
+        val puckOff = info("Pryme-off", AinaDeviceInfo.ButtonProtocol.BLE_HID, available = false)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(ainaOff, puckOff))
+        assertEquals(null, AinaDeviceClassifier.pickPrimary(ranked))
+    }
+
+    @Test
+    fun `pickPrimary accepts an available AUDIO_ONLY device`() {
+        // Speakermic with an unrecognized button protocol still routes
+        // its audio; XV falls back to on-screen PTT. Not our happy path
+        // but it's a legitimate primary — must not be filtered out.
+        val audioOnly = info("Generic-HFP", AinaDeviceInfo.ButtonProtocol.AUDIO_ONLY, available = true)
+        val ranked = AinaDeviceClassifier.rankForPicker(listOf(audioOnly))
+        assertEquals("Generic-HFP", AinaDeviceClassifier.pickPrimary(ranked)?.name)
+    }
+
     @Test
     fun `device that throws on name access is treated as nameless`() {
         // Some OEM stacks throw SecurityException on getName() if

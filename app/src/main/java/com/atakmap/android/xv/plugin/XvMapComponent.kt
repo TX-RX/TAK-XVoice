@@ -2329,25 +2329,26 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.i(TAG, "autoConnectAina: no saved selection and auto-connect disabled — skipping")
                 return@postDelayed
             }
-            // Auto-pick: prefer the first AVAILABLE compatible device
-            // in the picker list. listBondedAinaDevices already sorts
-            // available-first, then by protocol (SPP → BLE → BLE_HID)
-            // so a live speakermic always beats a stale one AND a
-            // speakermic always beats a button-only puck for the
-            // primary slot. If no device is marked available we
-            // deliberately do NOT connect — auto-connecting to a
-            // device that isn't live just to satisfy an old MAC hint
-            // is the exact bug we're fixing.
+            // Auto-pick: prefer the first AVAILABLE speakermic-class
+            // device (SPP / BLE / AUDIO_ONLY) in the picker list.
+            // BLE_HID pucks are button-only and are handled by
+            // autoConnectAinaSecondary — they must never win the
+            // primary slot even when they're the only "available"
+            // candidate. BLE_HID availability is unobservable so
+            // those rows are always marked available=true; without
+            // the filter, a bonded-but-off Pryme puck was winning
+            // firstOrNull { available } whenever the operator's AINA
+            // was powered down at plugin load (reported 2026-07-10).
             if (candidates.isEmpty()) {
                 Log.i(TAG, "autoConnectAina: no compatible bonded device found — nothing to auto-pick")
                 return@postDelayed
             }
-            val picked = candidates.firstOrNull { it.available }
+            val picked = com.atakmap.android.xv.aina.AinaDeviceClassifier.pickPrimary(candidates)
             if (picked == null) {
                 Log.i(
                     TAG,
-                    "autoConnectAina: ${candidates.size} bonded candidate(s) found but none currently reachable — " +
-                        "waiting for one to come up",
+                    "autoConnectAina: ${candidates.size} bonded candidate(s) but no available speakermic " +
+                        "(button-only pucks are ineligible for primary) — waiting for a speakermic to come up",
                 )
                 return@postDelayed
             }
