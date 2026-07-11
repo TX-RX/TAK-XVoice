@@ -55,44 +55,42 @@ enum class PttGate {
  * auto-hold bug this gate exists to fix; XV is a tactical voice tool
  * and unexplained mute is the more dangerous failure mode.
  *
- * Source-scoped policy (2026-07-10 revision): the cellular-call gate
- * only applies to [PttSource.ON_SCREEN] — the on-screen PTT button.
- * Every non-screen source (AINA V1/V2, Pryme MFB, any future
- * BT-HID / gpio hardware button, and the DEBUG intent path) bypasses
- * the gate entirely and returns [PttGate.ALLOW] even during OFFHOOK
- * or RINGING.
+ * Policy (2026-07-11 revision — supersedes both the original
+ * "block everything" (2026-07-10 21:00) and the source-scoped
+ * "on-screen only" (2026-07-10 22:00) positions): **every PTT source
+ * blocks during an active cellular call.** Phone calls are the #1
+ * priority on the device — nothing XV does should silently interrupt
+ * or auto-hold a live call regardless of which button initiated the
+ * PTT.
  *
  * Rationale:
- *  - On-screen PTT taps are accident-prone. A wayward finger during a
- *    phone call should not silently auto-hold the operator's call by
- *    placing XV's self-managed Telecom call. The toast + block is the
- *    right response for that path.
- *  - A hardware button press represents deliberate operator intent.
- *    Tactical scenarios routinely require an operator to key up
- *    mid-call (call-of-record on the phone, but the incident lives on
- *    XV). Blocking a hardware press would surprise-block a
- *    deliberate transmission attempt — a worse failure than the
- *    auto-hold it would prevent. The operator gets what they asked
- *    for; XV's Telecom call still auto-holds the cellular call as a
- *    side effect, but that side effect is now intentional.
- *  - DEBUG intents originate from adb / dev tooling, never from a
- *    stray touch. Treating them as bypass keeps the debug path
- *    usable while a cellular call is up.
- *
- * Future hardware sources added to [PttSource] inherit the ALLOW
- * behavior automatically — the gate only ever blocks the one
- * accident-prone input (ON_SCREEN).
+ *  - Field observation 2026-07-11: a hardware AINA button press
+ *    during a cellular voicemail call auto-held the call (Android's
+ *    Telecom framework parks the first self-managed call when a
+ *    second one is placed). The operator had NOT intended to
+ *    interrupt the call; the button was pressed as part of an
+ *    unrelated test motion. That failure mode is the same
+ *    "accident-prone" concern the on-screen tap has — and it turns
+ *    out the "hardware = intentional" assumption in the earlier
+ *    source-scoped policy was too generous.
+ *  - Blocking every source keeps the invariant simple, testable, and
+ *    matches operator intent: XV does not compete with a live phone
+ *    call. The toast tells the operator what happened.
+ *  - The [source] parameter is retained (rather than removed) so
+ *    logging can still name the actual button that would have fired,
+ *    and so a future need to re-introduce per-source behaviour does
+ *    not have to reshape the API.
  */
 fun shouldGateForCellularCall(
     callState: Int,
-    source: PttSource,
+    @Suppress("UNUSED_PARAMETER") source: PttSource,
 ): PttGate =
-    when {
-        // Only the on-screen PTT tap is accident-prone enough to gate.
-        // Every hardware button and the debug intent path bypass.
-        source != PttSource.ON_SCREEN -> PttGate.ALLOW
-        callState == TelephonyManager.CALL_STATE_OFFHOOK -> PttGate.BLOCK_CELLULAR_CALL
-        callState == TelephonyManager.CALL_STATE_RINGING -> PttGate.BLOCK_CELLULAR_RINGING
+    when (callState) {
+        // All PTT sources get blocked — phone calls are #1 priority.
+        // Hardware AINA button, Pryme puck, Samsung Active Key, Sonim
+        // PTT / Emergency, on-screen, DEBUG intent — every one of them.
+        TelephonyManager.CALL_STATE_OFFHOOK -> PttGate.BLOCK_CELLULAR_CALL
+        TelephonyManager.CALL_STATE_RINGING -> PttGate.BLOCK_CELLULAR_RINGING
         else -> PttGate.ALLOW
     }
 
