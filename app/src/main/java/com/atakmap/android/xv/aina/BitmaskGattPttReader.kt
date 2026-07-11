@@ -90,6 +90,18 @@ open class BitmaskGattPttReader(
     @Volatile
     private var intentionalDisconnect: Boolean = false
 
+    // Sticky "reader is being torn down for good" flag. Set by
+    // [dispose] before the owner (VoicePlant) drops its reference.
+    // Guards against late callbacks from the OS's binder queue — the
+    // stale GATT callback closure can still be live for a few ms
+    // after we've closed the gatt handle, and if VoicePlant has
+    // already swapped in a fresh reader those late events would fire
+    // into the plugin with a stale [PttSource] identity. Any
+    // callback dispatch path (connection state, button events) short-
+    // circuits when this is true.
+    @Volatile
+    private var disposed: Boolean = false
+
     private var directRetryCount: Int = 0
     private var autoConnectArmed: Boolean = false
 
@@ -110,6 +122,10 @@ open class BitmaskGattPttReader(
         }
 
     fun connect(device: BluetoothDevice) {
+        if (disposed) {
+            Log.w(config.tag, "connect() called on disposed reader — ignoring")
+            return
+        }
         disconnect()
         intentionalDisconnect = false
         targetDevice = device
@@ -136,7 +152,43 @@ open class BitmaskGattPttReader(
         targetDevice = null
         handler.removeCallbacks(retryRunnable)
         closeGatt()
-        onConnectionState(false)
+        dispatchConnectionState(false)
+    }
+
+    /**
+     * Permanent teardown. Marks the reader disposed so any late
+     * callback still queued behind the OS's binder short-circuits
+     * before it can fire back into the plugin with a stale identity.
+     * Callers (VoicePlant on external-button swap / plugin shutdown)
+     * should invoke this BEFORE nulling out their reference — after
+     * dispose, [connect] is a no-op and every callback dispatch path
+     * is muted. Idempotent.
+     */
+    fun dispose() {
+        disposed = true
+        disconnect()
+    }
+
+    /**
+     * Single choke point for connection-state fan-out so [disposed]
+     * gates every path — direct call from [disconnect] as well as
+     * the GATT-callback path.
+     */
+    private fun dispatchConnectionState(up: Boolean) {
+        if (disposed) return
+        onConnectionState(up)
+    }
+
+    /**
+     * Single choke point for button-event fan-out so [disposed]
+     * gates late notifications too.
+     */
+    private fun dispatchEvent(
+        button: AinaButton,
+        isDown: Boolean,
+    ) {
+        if (disposed) return
+        onEvent(button, isDown)
     }
 
     private fun closeGatt() {
@@ -189,15 +241,35 @@ open class BitmaskGattPttReader(
                         Log.i(config.tag, "Connected (status=$status), discovering services")
                         directRetryCount = 0
                         autoConnectArmed = false
-                        onConnectionState(true)
+                        dispatchConnectionState(true)
                         g.discoverServices()
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         Log.i(config.tag, "Disconnected (status=$status)")
                         lastHeld = emptySet()
-                        onConnectionState(false)
-                        if (!intentionalDisconnect) {
-                            scheduleReconnect("status=$status")
+                        // Two paths can land here in the same
+                        // millisecond during a controlled teardown:
+                        //   1. [disconnect] already fired the false
+                        //      callback synchronously.
+                        //   2. The OS then delivers its async
+                        //      STATE_DISCONNECTED echo via this
+                        //      callback.
+                        // Gate on [intentionalDisconnect] so the
+                        // async echo is a no-op — it would otherwise
+                        // fire a duplicate `up=false` into VoicePlant
+                        // and log-spam the field capture (see the
+                        // 2026-07-10 Pryme reconnect trace).
+                        // Real disconnects (link drop, power-off,
+                        // out-of-range) still fall through to both
+                        // the callback AND scheduleReconnect.
+                        when (classifyDisconnect(intentionalDisconnect, disposed)) {
+                            DisconnectAction.NOTIFY_AND_RECONNECT -> {
+                                dispatchConnectionState(false)
+                                scheduleReconnect("status=$status")
+                            }
+                            DisconnectAction.SUPPRESS_INTENTIONAL,
+                            DisconnectAction.SUPPRESS_DISPOSED,
+                            -> Unit
                         }
                     }
                 }
@@ -299,8 +371,8 @@ open class BitmaskGattPttReader(
                 val prev = lastHeld
                 val edges = diffEdges(prev, nowHeld) ?: return
                 lastHeld = nowHeld
-                for (btn in edges.down) onEvent(btn, true)
-                for (btn in edges.up) onEvent(btn, false)
+                for (btn in edges.down) dispatchEvent(btn, true)
+                for (btn in edges.up) dispatchEvent(btn, false)
             }
         }
 
@@ -330,6 +402,24 @@ open class BitmaskGattPttReader(
         val up: List<AinaButton>,
     )
 
+    /**
+     * What to do when the OS delivers `STATE_DISCONNECTED`.
+     *
+     * Split out from [onConnectionStateChange] as a pure decision
+     * function so unit tests can pin the state table without an
+     * Android GATT stack.
+     */
+    enum class DisconnectAction {
+        /** Real link drop — fire the callback and schedule reconnect. */
+        NOTIFY_AND_RECONNECT,
+
+        /** Controlled teardown — [disconnect] already fired the callback synchronously; the OS's async echo is redundant. */
+        SUPPRESS_INTENTIONAL,
+
+        /** Reader has been [dispose]d — the owner has moved on, do not fire back. */
+        SUPPRESS_DISPOSED,
+    }
+
     companion object {
         private const val MAX_DIRECT_RETRIES = 4
         private const val INITIAL_RETRY_DELAY_MS = 2_000L
@@ -347,5 +437,20 @@ open class BitmaskGattPttReader(
             val up = prev.filter { it !in now }
             return Edges(down = down, up = up)
         }
+
+        /**
+         * Decision table for `STATE_DISCONNECTED` handling.
+         * `disposed` beats `intentional` — a disposed reader should
+         * never fire back into the plugin under any circumstances.
+         */
+        fun classifyDisconnect(
+            intentional: Boolean,
+            disposed: Boolean,
+        ): DisconnectAction =
+            when {
+                disposed -> DisconnectAction.SUPPRESS_DISPOSED
+                intentional -> DisconnectAction.SUPPRESS_INTENTIONAL
+                else -> DisconnectAction.NOTIFY_AND_RECONNECT
+            }
     }
 }
