@@ -25,13 +25,26 @@ class ExternalButtonReaderResolverTest {
         const val PUCK_A_LOWER = "aa:bb:cc:dd:ee:ff"
     }
 
-    // ---- Not-connected: every change is persist-only ----
+    // ---- Not-connected: BLE peripherals need XV-initiated spawn ----
+    //
+    // Divergence from the primary AINA slot: External Button binds
+    // to BLE peripherals that never push a connect edge — XV opens
+    // GATT itself, so picking a new MAC while no reader exists is
+    // exactly the situation where we MUST spawn. Field bug 2026-07-11:
+    // pickers logged NO_OP for both a Pryme and a third-party Amazon
+    // BLE button because the shared decision short-circuited on
+    // !isConnected. This resolver overrides that specifically.
 
     @Test
-    fun `not connected — MAC change is a no-op`() {
+    fun `not connected — new MAC picked spawns the reader`() {
+        // The 2026-07-11 field bug's canonical case: no reader alive
+        // yet, operator picks a puck for the first time, GATT must
+        // be initiated. Blocking on !isConnected here traps the
+        // operator forever — no connect edge is coming to unblock.
         assertEquals(
-            "picking a new MAC while the slot is idle is persist-only",
-            Decision.NO_OP,
+            "picking a new MAC while the slot is idle must spawn a reader — " +
+                "BLE peripherals don't push a connect edge",
+            Decision.RESPAWN,
             ExternalButtonReaderResolver.shouldRespawnReader(
                 currentMac = null,
                 newMac = PUCK_A,
@@ -41,7 +54,42 @@ class ExternalButtonReaderResolverTest {
     }
 
     @Test
+    fun `not connected — same MAC re-pick spawns the reader`() {
+        // Operator re-picks the currently-configured MAC while no
+        // reader is alive (post-restart, post-crash, or the field
+        // scenario where a previous NO_OP left the slot stuck). The
+        // re-pick is the operator's way of asking XV to try again;
+        // honour it by spawning the reader.
+        assertEquals(
+            Decision.RESPAWN,
+            ExternalButtonReaderResolver.shouldRespawnReader(
+                currentMac = PUCK_A,
+                newMac = PUCK_A,
+                isConnected = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `not connected — different MAC pick spawns the new reader`() {
+        // Operator has a puck configured but no reader alive, then
+        // picks a different puck. Spawn a reader for the new MAC —
+        // nothing to tear down since nothing was live.
+        assertEquals(
+            Decision.RESPAWN,
+            ExternalButtonReaderResolver.shouldRespawnReader(
+                currentMac = PUCK_A,
+                newMac = PUCK_B,
+                isConnected = false,
+            ),
+        )
+    }
+
+    @Test
     fun `not connected — MAC clear is a no-op`() {
+        // Operator picks "(none)" while no reader is alive. Nothing
+        // to spawn (no MAC), nothing to tear down (no reader). Just
+        // persist the clear.
         assertEquals(
             Decision.NO_OP,
             ExternalButtonReaderResolver.shouldRespawnReader(
@@ -53,12 +101,15 @@ class ExternalButtonReaderResolverTest {
     }
 
     @Test
-    fun `not connected — same MAC pick is a no-op`() {
+    fun `not connected — blank MAC clear is a no-op`() {
+        // Same as above but with "" instead of null — some callers
+        // pass empty strings for "(none)". Should be equivalent to
+        // null under hasReader's isNullOrBlank check.
         assertEquals(
             Decision.NO_OP,
             ExternalButtonReaderResolver.shouldRespawnReader(
                 currentMac = PUCK_A,
-                newMac = PUCK_A,
+                newMac = "",
                 isConnected = false,
             ),
         )
