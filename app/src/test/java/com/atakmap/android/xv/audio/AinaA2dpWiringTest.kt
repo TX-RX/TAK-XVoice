@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.media.AudioManager
+import com.atakmap.android.xv.aina.AinaDeviceInfo
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -134,5 +135,77 @@ class AinaA2dpWiringTest {
         wiring.onDeviceConnected(ainaDevice)
 
         verify(exactly = 1) { controller.forbid(ainaDevice) }
+    }
+
+    /**
+     * Field bug 2026-07-11 (Pixel 9 Pro + Pryme BT-PTT-Z): the wiring
+     * classified a Pryme BLE_HID puck as a "plausible speakermic" — its
+     * name contains "BT-PTT" — and fired the reflective A2DP forbid
+     * against it. On the Pixel 14+ platform-refused path this posted a
+     * "disable Media audio" operator notification for a device that has
+     * NO A2DP profile at all (BLE HID-over-GATT only). The narrow fix
+     * is to skip the forbid path entirely when the button-protocol
+     * classifier reports BLE_HID.
+     */
+    @Test
+    fun `BLE_HID device bypasses the forbid path`() {
+        val ctx = mockk<Context>(relaxed = true)
+        val controller = mockk<AinaA2dpController>(relaxed = true)
+        val pryme =
+            mockk<BluetoothDevice>(relaxed = true).also {
+                every { it.address } returns "AA:BB:CC:DD:EE:FF"
+            }
+        val wiring =
+            AinaA2dpWiring(
+                context = ctx,
+                controller = controller,
+                // Pryme's name pattern historically hit the plausible-
+                // speakermic filter — that path caused the field bug.
+                // The button-protocol classifier is what should short-
+                // circuit the forbid.
+                isAina = { true },
+                buttonProtocolOf = { AinaDeviceInfo.ButtonProtocol.BLE_HID },
+                notificationManager = null as NotificationManager?,
+                audioManager = null as AudioManager?,
+            )
+
+        wiring.onDeviceConnected(pryme)
+
+        verify(exactly = 0) { controller.forbid(any()) }
+    }
+
+    /**
+     * Every non-BLE_HID button protocol still exercises the forbid
+     * path. Guards against Fix 1 over-narrowing — an SPP AINA V1, a
+     * BLE AINA V2, an AUDIO_ONLY headset that happens to also match
+     * the plausible-speakermic filter, and an UNKNOWN device that
+     * squeaked through name matching all still get A2DP forbidden as
+     * before.
+     */
+    @Test
+    fun `non-BLE_HID protocols still fire the forbid path`() {
+        for (protocol in AinaDeviceInfo.ButtonProtocol.values()) {
+            if (protocol == AinaDeviceInfo.ButtonProtocol.BLE_HID) continue
+            val ctx = mockk<Context>(relaxed = true)
+            val controller = mockk<AinaA2dpController>(relaxed = true)
+            every { controller.forbid(any()) } returns AinaA2dpController.ForbidResult.OK
+            val dev =
+                mockk<BluetoothDevice>(relaxed = true).also {
+                    every { it.address } returns "AA:BB:CC:DD:EE:FF"
+                }
+            val wiring =
+                AinaA2dpWiring(
+                    context = ctx,
+                    controller = controller,
+                    isAina = { true },
+                    buttonProtocolOf = { protocol },
+                    notificationManager = null as NotificationManager?,
+                    audioManager = null as AudioManager?,
+                )
+
+            wiring.onDeviceConnected(dev)
+
+            verify(exactly = 1) { controller.forbid(dev) }
+        }
     }
 }
