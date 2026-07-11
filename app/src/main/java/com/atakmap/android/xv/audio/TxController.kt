@@ -4,6 +4,31 @@ import android.media.AudioManager
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 
+/**
+ * Coarse-grained TX audio route classification used by the cold-SCO
+ * start-of-burst mitigations. Deliberately narrower than
+ * [BtAudioMode] / [OutputRoute] — those enums describe policy and
+ * user preference; [TxRoute] describes the ONE thing the mitigation
+ * gate needs to know: "is this burst going through the BT SCO
+ * uplink, where the Pixel AOC modem underruns at cold-start?"
+ *
+ * - [SCO]      — BT HFP SCO uplink is live. AOC modem is in play; cold
+ *                bursts get the extended PRIMING hold + drop-first-N-
+ *                frames treatment.
+ * - [OFFLOAD]  — Any non-SCO route (built-in mic, wired headset, or
+ *                the case where BT is available but we're on A2DP-only
+ *                and TX falls back to the built-in mic). No AOC modem
+ *                involvement, no mitigation needed.
+ *
+ * The name "OFFLOAD" is used instead of a bare `NON_SCO` sentinel to
+ * make the enum future-friendly: if we later distinguish e.g. built-in
+ * vs. wired, both remain non-SCO and stay outside the mitigation gate.
+ */
+enum class TxRoute {
+    SCO,
+    OFFLOAD,
+}
+
 // Orchestrates the TX side. "Open channel" lifecycle:
 //   - On first start() (or explicit channelOpened()): allocate
 //     AudioCapture once and hold it for the channel session, with the
@@ -189,6 +214,36 @@ class TxController(
     @Volatile
     private var primingUseScoGates: Boolean = false
 
+    // Was this burst started with SCO in a cold state (i.e. we had to
+    // acquire SCO from scratch instead of reusing a warm cool-down or
+    // RX SCO_HOT link)? Captured at start() BEFORE we transition into
+    // ACQUIRING_SCO / PRIMING, because primingUseScoGates only tells us
+    // "SCO is CONNECTED right now" — by the time the scoListener drives
+    // startPriming() the link is up, so the cold vs. warm distinction
+    // is already lost from scoLink.state. Used to decide (a) whether
+    // to hold TPT play an extra COLD_SCO_TPT_HOLD_MS while the Pixel
+    // AOC modem stabilizes, and (b) whether to silently drop the first
+    // few TX frames past the initial AOC underrun window.
+    //
+    // Field observation 2026-07-10: cold-SCO first-burst on Pixel 9 Pro
+    // showed AOC "[AMixMODEM] uplink underrun for 86 frames" in the
+    // 100 ms surrounding the mic-ready → TPT → TX transition. TPT plays
+    // OK (dedicated AudioTrack path), but the first ~30-60 ms of live
+    // TX frames catch the tail of the modem underrun and encode to
+    // garbled audio on the peer. Warm-SCO bursts don't underrun.
+    @Volatile
+    private var currentBurstColdSco: Boolean = false
+
+    // Frame counter for the drop-first-N-frames-on-cold-SCO mitigation.
+    // Incremented on every PCM frame that reaches encodeAndQueueFrame in
+    // state=TRANSMITTING. Compared against COLD_SCO_START_DROP_FRAMES via
+    // shouldDropStartFrame(). Reset in startTransmitting() (mirrors
+    // framesSent). Distinct from framesSent because framesSent only
+    // increments on frames that actually reach the wire — we need to
+    // count and gate BEFORE the encode step.
+    @Volatile
+    private var txFrameNumber: Int = 0
+
     // Wall-clock when state transitioned to TPT. The TPT-overlap ring
     // buffer's "skip the loud first N ms" filter uses this to decide
     // whether to drop or retain each incoming PCM frame. Reset on every
@@ -237,11 +292,22 @@ class TxController(
                     // frames may be silent (peer hears nothing for
                     // 0.5-1 s) but then real audio flows. Better UX
                     // than bonking + retrying.
-                    Log.w(
-                        TAG,
-                        "PRIMING: timeout after ${elapsed}ms ($primingFramesObserved frames seen, all silent) — chipset still warming, proceeding to TPT + TX anyway",
-                    )
-                    startTpt()
+                    val txRoute = if (primingUseScoGates) TxRoute.SCO else TxRoute.OFFLOAD
+                    val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
+                    if (holdMs > 0L) {
+                        Log.w(
+                            TAG,
+                            "PRIMING: timeout after ${elapsed}ms ($primingFramesObserved frames seen, all silent) — " +
+                                "chipset still warming, holding ${holdMs}ms for cold-SCO modem before TPT + TX",
+                        )
+                        scheduleColdScoTptHold(holdMs)
+                    } else {
+                        Log.w(
+                            TAG,
+                            "PRIMING: timeout after ${elapsed}ms ($primingFramesObserved frames seen, all silent) — chipset still warming, proceeding to TPT + TX anyway",
+                        )
+                        startTpt()
+                    }
                 }
             }
         }
@@ -356,6 +422,10 @@ class TxController(
                     scoLink.acquire(this)
                     holdsSco = true
                 }
+                // Warm-SCO: modem is already stable, no AOC underrun
+                // window to work around. Clear the cold flag so the
+                // TPT hold and drop-first-N mitigations stay dormant.
+                currentBurstColdSco = false
                 Log.i(TAG, "SCO already CONNECTED (warm via cool-down or RX SCO_HOT) — direct to PRIMING")
                 startPriming()
                 return
@@ -367,6 +437,11 @@ class TxController(
                 scoLink.acquire(this)
                 holdsSco = true
             }
+            // Cold-SCO burst: latch the flag NOW while we still know
+            // the pre-acquire state. By the time scoListener drives
+            // startPriming(), scoLink.state will read CONNECTED and
+            // the cold vs. warm distinction is otherwise erased.
+            currentBurstColdSco = true
             state = State.ACQUIRING_SCO
             cooldownHandler.postDelayed({
                 synchronized(this@TxController) {
@@ -388,6 +463,7 @@ class TxController(
             // again — repeating the cycle. PRIMING gates TPT on
             // verifiable mic output, so the operator hears the TPT
             // exactly when the mic is ready.
+            currentBurstColdSco = false
             startPriming()
         }
     }
@@ -717,9 +793,36 @@ class TxController(
         stopInternal()
     }
 
-    private fun startTpt() {
+    /**
+     * Post a delayed [startTpt] to give the cold-SCO Pixel AOC modem
+     * time to stabilize. State is flipped to [State.TPT] BEFORE the
+     * delay so incoming PCM frames get dropped by the existing
+     * state==TPT branch — no risk of re-entering the PRIMING-completion
+     * branch and scheduling multiple TPT plays.
+     *
+     * INVARIANT: caller holds the this@TxController monitor and state
+     * is currently PRIMING.
+     */
+    private fun scheduleColdScoTptHold(holdMs: Long) {
         state = State.TPT
         tptStateEnteredAtMs = System.currentTimeMillis()
+        cooldownHandler.postDelayed({
+            synchronized(this@TxController) {
+                // If the operator released PTT during the hold window,
+                // stopInternal already flipped state to IDLE. Bail
+                // without playing TPT — matches the existing behavior
+                // for late-firing timeout runnables.
+                if (state != State.TPT) return@synchronized
+                startTpt(alreadyInTptState = true)
+            }
+        }, holdMs)
+    }
+
+    private fun startTpt(alreadyInTptState: Boolean = false) {
+        if (!alreadyInTptState) {
+            state = State.TPT
+            tptStateEnteredAtMs = System.currentTimeMillis()
+        }
         // useSco gates on BOTH the BT policy (HFP profile is reachable)
         // AND the actual SCO link state (the physical link is up). The
         // old policy-only gate caused TPT to claim the SCO route even
@@ -777,6 +880,7 @@ class TxController(
         // (Earlier race where state changed first caused 1-3 frames to
         // log "encoder is null!" and drop on each cold-SCO burst.)
         framesSent = 0
+        txFrameNumber = 0
         val enc = opusEncoderFactory()
         encoder = enc
         state = State.TRANSMITTING
@@ -953,12 +1057,24 @@ class TxController(
                                 "frames-confirm-alive"
                             }
                         val route = if (primingUseScoGates) "sco" else "non-sco"
-                        Log.i(
-                            TAG,
-                            "PRIMING: mic ready after ${elapsed}ms ($reason: rms=$rms, " +
-                                "$primingFramesObserved frames observed, route=$route) — playing TPT",
-                        )
-                        startTpt()
+                        val txRoute = if (primingUseScoGates) TxRoute.SCO else TxRoute.OFFLOAD
+                        val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
+                        if (holdMs > 0L) {
+                            Log.i(
+                                TAG,
+                                "PRIMING: mic ready after ${elapsed}ms ($reason: rms=$rms, " +
+                                    "$primingFramesObserved frames observed, route=$route) — " +
+                                    "holding ${holdMs}ms for cold-SCO modem stabilization before TPT",
+                            )
+                            scheduleColdScoTptHold(holdMs)
+                        } else {
+                            Log.i(
+                                TAG,
+                                "PRIMING: mic ready after ${elapsed}ms ($reason: rms=$rms, " +
+                                    "$primingFramesObserved frames observed, route=$route) — playing TPT",
+                            )
+                            startTpt()
+                        }
                     }
                 }
             }
@@ -1013,6 +1129,34 @@ class TxController(
                 Log.e(TAG, "onPcmFrame: encoder is null!")
                 return
             }
+        // Cold-SCO start-of-burst frame drop. On Pixel with BT SCO the
+        // AOC modem underruns for ~30 ms after the SCO uplink stabilizes;
+        // the first N live frames land in that window and encode to
+        // garbled audio on the peer. Silently discard the head of the
+        // burst so the encoder sees only frames captured after the
+        // underrun clears. Mirrors the TRAILING_FRAMES swallow at
+        // TX-stop that eats the PTT release click — same shape, opposite
+        // end of the burst.
+        //
+        // The counter is incremented BEFORE the gate so frame numbering
+        // is 1-based and matches the pure helper's contract.
+        txFrameNumber++
+        if (shouldDropStartFrame(
+                frameNumber = txFrameNumber,
+                route = if (currentBurstColdSco) TxRoute.SCO else TxRoute.OFFLOAD,
+                cold = currentBurstColdSco,
+                dropCount = COLD_SCO_START_DROP_FRAMES,
+            )
+        ) {
+            if (txFrameNumber == 1 || txFrameNumber == COLD_SCO_START_DROP_FRAMES) {
+                Log.i(
+                    TAG,
+                    "TX: dropping start frame #$txFrameNumber (cold-SCO AOC underrun window, " +
+                        "N=$COLD_SCO_START_DROP_FRAMES)",
+                )
+            }
+            return
+        }
         encodeAndQueueFrame(pcm, enc)
     }
 
@@ -1520,5 +1664,117 @@ class TxController(
         // teardown. 50ms covers that without limiting rapid intentional
         // re-keys. Effect: warm-path rapid-tap PTT is ~150ms faster.
         private const val STOP_TO_START_WARM_MIN_MS = 50L
+
+        // ---------- Cold-SCO start-of-burst polish (2026-07-10) ----------
+        //
+        // Field observation on Pixel 9 Pro + AINA V2: the first TX after
+        // app launch, or the first TX after a long idle (SCO cool-down
+        // long since expired), consistently produced garbled audio in
+        // the first ~30-60 ms of the burst on the receiving peer.
+        // Logcat scan of that TX window showed the Pixel's Always-On
+        // Compute audio mixer under-running its uplink buffer during
+        // the SCO warm-up:
+        //
+        //   D/AOC: [AMixMODEM] uplink underrun
+        //   D/AOC: [AMixMODEM] uplink underrun for 86 frames
+        //   D/AOC: [AMixMODEM] CCA rb underrun (0 < 480)
+        //
+        // 86 dropped frames at the modem's frame size = ~30 ms of
+        // dropped audio right at the start of the burst. PRIMING's
+        // "mic ready" declaration is correct — the mic IS reading
+        // valid audio — but the SCO uplink modem is still stabilizing
+        // AFTER that point, so real mic frames land in the underrun
+        // window and encode to garbage.
+        //
+        // Two complementary mitigations, both scoped to cold-SCO only:
+        //
+        //   1. Extend PRIMING → TPT by [COLD_SCO_TPT_HOLD_MS] on the
+        //      cold-SCO path so the modem has time to settle before
+        //      the operator hears the go-ahead tone. Warm-SCO and
+        //      non-SCO bursts skip the hold entirely — see
+        //      [computePrimingHoldMs].
+        //
+        //   2. Silently drop the first [COLD_SCO_START_DROP_FRAMES] TX
+        //      frames past state=TRANSMITTING on cold-SCO bursts.
+        //      N=3 at 20 ms/frame = 60 ms of dropped leading edge,
+        //      typically covering a breath or click rather than
+        //      intelligible speech. Analogous to the trailing-frame
+        //      swallow ([TRAILING_FRAMES]) that eats the PTT release
+        //      click at TX-stop — same shape, opposite end of the
+        //      burst. See [shouldDropStartFrame].
+
+        // Extra PRIMING → TPT delay on the cold-SCO path. 200 ms was
+        // selected to cover the observed AOC underrun window (86 frames
+        // ≈ 30 ms of the underrun itself, plus ~150 ms of pipeline-
+        // recovery margin so subsequent TX frames land against a
+        // stabilized uplink). Tunable — smaller values leave residual
+        // underrun in the TPT-to-TX transition; larger values are
+        // perceived by the operator as PTT sluggishness.
+        internal const val COLD_SCO_TPT_HOLD_MS: Long = 200L
+
+        // Number of leading TX frames to silently discard on the cold-
+        // SCO path. Each frame is 20 ms of PCM. N=3 = 60 ms of dropped
+        // leading edge, which covers the tail of the AOC underrun
+        // burst without eating meaningful speech content (typical
+        // human reaction time from TPT-audible to first phoneme is
+        // 250-400 ms).
+        //
+        // Set to 0 to disable the drop entirely (useful for A/B
+        // comparison or for platforms without the AOC modem behavior).
+        internal const val COLD_SCO_START_DROP_FRAMES: Int = 3
+
+        /**
+         * Extra time to hold PRIMING → TPT so the SCO uplink modem
+         * stabilizes past its cold-start underrun window. Returns
+         * [baseMs] for every non-cold-SCO case (warm SCO, non-SCO
+         * route entirely, feature disabled via a zero
+         * [COLD_SCO_TPT_HOLD_MS]).
+         *
+         * Pure function — no dependency on TxController state; tests
+         * exercise it directly.
+         *
+         * Semantics:
+         *  - cold=false           → baseMs (warm-SCO: modem stable, no hold)
+         *  - route != TxRoute.SCO → baseMs (non-SCO: no AOC modem in play)
+         *  - COLD_SCO_TPT_HOLD_MS == 0 → baseMs (feature disabled)
+         *  - otherwise            → baseMs + COLD_SCO_TPT_HOLD_MS
+         */
+        internal fun computePrimingHoldMs(
+            route: TxRoute,
+            cold: Boolean,
+            baseMs: Long,
+        ): Long {
+            if (!cold) return baseMs
+            if (route != TxRoute.SCO) return baseMs
+            if (COLD_SCO_TPT_HOLD_MS <= 0L) return baseMs
+            return baseMs + COLD_SCO_TPT_HOLD_MS
+        }
+
+        /**
+         * Should this leading TX frame be silently discarded to skip
+         * past the cold-SCO Pixel AOC modem underrun window?
+         *
+         * [frameNumber] is 1-based (frame #1 is the first PCM frame to
+         * reach state=TRANSMITTING for this burst). Returns true only
+         * when ALL of the following hold:
+         *  - the burst is cold-SCO ([cold] && [route] == [TxRoute.SCO])
+         *  - the feature is enabled ([dropCount] > 0)
+         *  - this frame falls within the drop window
+         *    ([frameNumber] <= [dropCount])
+         *
+         * Pure function — no dependency on TxController state; tests
+         * exercise it directly.
+         */
+        internal fun shouldDropStartFrame(
+            frameNumber: Int,
+            route: TxRoute,
+            cold: Boolean,
+            dropCount: Int,
+        ): Boolean {
+            if (!cold) return false
+            if (route != TxRoute.SCO) return false
+            if (dropCount <= 0) return false
+            return frameNumber in 1..dropCount
+        }
     }
 }
