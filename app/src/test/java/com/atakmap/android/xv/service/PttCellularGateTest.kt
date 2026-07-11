@@ -552,4 +552,149 @@ class PttCellularGateTest {
             ),
         )
     }
+
+    // ============================================================
+    // Post-teardown grace window — VoicePlant closure semantics
+    //
+    // These tests model the OR that the `cellularCallStateProvider`
+    // closure in VoicePlant performs before calling
+    // [cellularCallStateFromAudioMode]:
+    //
+    //   val xvOwnCallOrGrace =
+    //       registry.hasActiveCall() ||
+    //       registry.withinRecentCallGrace(nowMs, RECENT_OWN_CALL_GRACE_MS)
+    //
+    // The pure gate function's contract does not change — it still
+    // receives a single Boolean "own call?" input. The disambiguation
+    // between "call is literally active" and "call was recently
+    // active" happens at the caller level. The tests here lock in
+    // the round-trip through the pure functions so a future refactor
+    // that alters the pure gate's Boolean contract does not silently
+    // regress the grace path.
+    //
+    // Field trace 2026-07-11 14:47 (Pixel 9 Pro / API 35):
+    //   14:47:14.722 XV Telecom externally torn down → registry
+    //                unregister → hasActiveCall = false
+    //   14:47:14.765 AudioManager.getMode() still IN_COMMUNICATION
+    //   14:47:16.126 AudioManager.getMode() finally NORMAL
+    // The ~1.4 s window between 14.722 and 16.126 is where operator
+    // PTT presses were being falsely blocked.
+    // ============================================================
+
+    @Test
+    fun `IN_COMMUNICATION during post-teardown grace resolves as own call — ALLOW`() {
+        // hasActiveCall=false (registry already unregistered), but
+        // withinGrace=true (audio mode still catching up). The
+        // provider closure ORs them; the pure gate sees "own call =
+        // true", maps IN_COMMUNICATION → IDLE, and the gate ALLOWs.
+        // This is the scenario the fix restores from the field
+        // regression.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `IN_COMMUNICATION after grace expired still blocks external call — BLOCK`() {
+        // Both hasActiveCall and withinGrace are false — grace
+        // window has elapsed and no fresh own call exists. This is
+        // an actual external call (VoLTE cellular, other VoIP app)
+        // and the block-all-sources policy must still fire.
+        val withinGrace = false
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_CALL,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `grace window covers every PTT source during audio-HAL tail`() {
+        // The grace does not carve out per-source behaviour — if the
+        // OR resolves to "still ours" the whole gate treats the mode
+        // as IDLE for every source. A hardware AINA press, on-screen
+        // tap, Pryme puck, and DEBUG intent all ALLOW during the
+        // tail, matching operator intent that mid-burst / just-
+        // -after-burst presses should not lock out.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        for (src in PttSource.values()) {
+            assertEquals(
+                "$src must ALLOW during post-teardown grace",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(
+                    cellularCallStateFromAudioMode(
+                        audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                        xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                    ),
+                    src,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `grace window does not unlock a legacy MODE_IN_CALL cellular call`() {
+        // Belt-and-suspenders: the grace only papers over the
+        // MODE_IN_COMMUNICATION ambiguity. If the audio HAL reports
+        // MODE_IN_CALL — the legacy CSFB / non-VoLTE path that XV
+        // NEVER enters itself — the gate must still block regardless
+        // of the grace, because MODE_IN_CALL is unambiguously an
+        // external cellular call. The pure mapping already handles
+        // this (MODE_IN_CALL → OFFHOOK independent of the own-call
+        // flag), but locking it in here defends against a future
+        // refactor that might route the flag through more broadly.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_CALL,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_CALL,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `grace window does not unlock MODE_RINGTONE`() {
+        // Same rationale as MODE_IN_CALL — MODE_RINGTONE is
+        // unambiguously an incoming external call. The grace only
+        // exists to hide the IN_COMMUNICATION tail from misclassifying
+        // an own-call teardown as external.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_RINGING,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_RINGTONE,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
 }
