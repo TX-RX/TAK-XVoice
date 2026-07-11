@@ -898,18 +898,33 @@ class TptPlayer(
          * when the AudioTrack opens and the audio path transitions
          * from "off" to "active." Pre-rolling silence absorbs the
          * transient on a silent buffer; the tone PCM then lands on a
-         * stable stream. 50 ms covers worst-case BT chipset settling
-         * (measured on AINA V1) without pushing back the perceived
-         * TPT start by anything an operator can detect.
+         * stable stream.
+         *
+         * 80 ms — sized for the highest-latency device in the fleet
+         * (Samsung Tab Active5 SM-X308U speaker HAL warmup). Pixel's
+         * BT chipset settles inside ~50 ms so it gets a small
+         * unnecessary silence prefix but no operator can detect an
+         * 80 ms front-of-tone latency delta. Was 50 ms tuned solely
+         * against AINA V1 — field observation 2026-07-11 on Tab5
+         * built-in speaker: leading chirp intermittently clipped.
          */
-        private const val SILENCE_PREROLL_MS: Int = 50
+        private const val SILENCE_PREROLL_MS: Int = 80
 
         // Trailing silence appended after the tone PCM so the
         // notification marker fires on silent samples — that way the
         // t.stop() call in finalize() flushes silence out of the
         // hardware output pipeline rather than the tone's last few ms.
-        // Matched to the preRoll size so total added latency (before +
-        // after) is symmetric.
-        private const val SILENCE_POSTROLL_MS: Int = 50
+        //
+        // 100 ms — the AudioTrack head-position counter (which the
+        // marker fires on) advances when samples are consumed by the
+        // DAC internal buffer, NOT when they physically leave the
+        // speaker. Pixel's DAC pipeline is 10-30 ms deep; Samsung
+        // Tab Active5's is larger. Was 50 ms and field-observed
+        // 2026-07-11 to occasionally clip the ASTRO 25 tone tail on
+        // Tab5 — the marker fires with the last 50 ms of tone still
+        // in the DAC and `t.stop()` cancels them. 100 ms gives
+        // margin for both device families without pushing perceived
+        // TPT-to-TX gap into operator-noticeable territory.
+        private const val SILENCE_POSTROLL_MS: Int = 100
     }
 }
