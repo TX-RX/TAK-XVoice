@@ -604,6 +604,78 @@ class AudioRouter(
         private const val TAG = "XvAudioRouter"
 
         /**
+         * Launches the system Media Output Switcher panel so the
+         * operator can pick which HFP device the OS marks active. Used
+         * as a fallback when the operator's chosen audio-device
+         * override MAC isn't in [android.media.AudioManager.getAvailableCommunicationDevices]
+         * (because only one HFP device can be active at a time on
+         * API 31+) AND [BtActiveDeviceController.trySetActive] can't
+         * programmatically switch it (Pixel 14+ enforces
+         * BLUETOOTH_PRIVILEGED as signature-only).
+         *
+         * The panel opens as an overlay — ATAK stays running behind
+         * it; when the operator dismisses, they return to XV. XV then
+         * picks up the newly-active HFP on the next
+         * [android.media.AudioManager.getAvailableCommunicationDevices]
+         * read via the existing AudioDeviceCallback wiring.
+         *
+         * Adds [android.content.Intent.FLAG_ACTIVITY_NEW_TASK] because
+         * this may be launched from a service Context (VoicePlant /
+         * XvVoiceService). If the media-output panel intent isn't
+         * resolvable (some OEM ROMs strip it), falls back to the
+         * generic system Bluetooth-settings screen — same fallback
+         * chain used by the BT-off banner in `XvDropDownReceiver`.
+         *
+         * Returns true when either intent launched successfully. No
+         * declared permission needed — both intents are exported by
+         * the system Settings package as normal-priority activities.
+         */
+        fun launchSystemOutputSwitcher(context: Context): Boolean {
+            // Preferred: the modern per-app "which output" panel. On
+            // API 30+ Android exposes this as the "media output" quick
+            // settings tile programmatically via a Settings.Panel
+            // action string. Pixel + Samsung both resolve it.
+            val panelIntent =
+                Intent("com.android.settings.panel.action.MEDIA_OUTPUT").apply {
+                    // EXTRA_APP_PACKAGE tells the panel which app is
+                    // asking, so the switcher's title reads "XV" and
+                    // the picked device applies to our audio session
+                    // hint instead of the currently-focused media
+                    // app. Field-observed on Pixel 9 Pro / API 35 —
+                    // without this, the panel opens on whichever app
+                    // last played media, which is confusing UX.
+                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+            try {
+                context.startActivity(panelIntent)
+                Log.i(TAG, "launched media output switcher (per-app panel)")
+                return true
+            } catch (_: android.content.ActivityNotFoundException) {
+                Log.i(TAG, "media output panel not resolvable — falling back to BT settings")
+            } catch (t: Throwable) {
+                Log.w(TAG, "media output panel launch threw", t)
+            }
+            // Fallback: system Bluetooth settings screen. Same
+            // affordance used elsewhere (see XvDropDownReceiver's
+            // BT-off banner). Slower UX (extra taps to reach the
+            // output picker) but universally present on every
+            // shipped OEM build.
+            val btSettings =
+                Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+            return try {
+                context.startActivity(btSettings)
+                Log.i(TAG, "launched BT settings (media output panel unavailable)")
+                true
+            } catch (t: Throwable) {
+                Log.w(TAG, "BT settings launch threw — no switcher fallback available", t)
+                false
+            }
+        }
+
+        /**
          * How long the operator's preferred BT device (the AINA /
          * speakermic that matches [preferredBtMacHint]) is allowed to
          * stay unreachable in the audio-device output list before

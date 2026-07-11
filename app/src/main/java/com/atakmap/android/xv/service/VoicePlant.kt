@@ -208,6 +208,24 @@ class VoicePlant(
             // pins comm to the hint (which is typically the AINA
             // that owns the PTT button).
             preferredBtMac = { router.preferredBtMacHint },
+            // Display-name lookup for the audio-device override
+            // MAC. Used only for the operator-facing Toast when
+            // ScoLink can't reach the override programmatically
+            // and is about to open the system output switcher.
+            // Reads from the router's live output enumeration —
+            // when the operator picked the device from the XV
+            // Settings picker the name was captured then. Returns
+            // null when the device isn't currently in the output
+            // list, in which case ScoLink omits the name segment
+            // of the Toast rather than fall back to the redacted
+            // MAC (worse UX than a nameless prompt).
+            overrideDisplayName = overrideDisplayName@{
+                val mac = router.outputBtOverrideMac ?: return@overrideDisplayName null
+                router
+                    .availableBtOutputs()
+                    .firstOrNull { it.address.equals(mac, ignoreCase = true) }
+                    ?.displayName
+            },
         ).also { link ->
             // Wire ScoLink into AudioControllerImpl so focus-loss
             // teardown publishes SUSPENDED instead of the controller
