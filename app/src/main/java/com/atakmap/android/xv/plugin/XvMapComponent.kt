@@ -486,6 +486,26 @@ class XvMapComponent : AbstractMapComponent() {
     private var ainaBle: AinaBleReader? = null
     private var ainaSpp: AinaSppReader? = null
     private var emergency: EmergencyController? = null
+
+    // Foreground-KeyEvent fallback readers for the two Sonim
+    // ruggedized-device dedicated hardware buttons (XP10 / XP9900 and
+    // XP-family peers). Attached to the MapView's OnKeyListener only
+    // on Sonim hardware AND when the operator has enabled the
+    // corresponding toggle. On any non-Sonim device these stay null
+    // and no OnKeyListener is ever added. Required because Sonim
+    // firmware may deliver the dedicated PTT / SOS keys via KeyEvent
+    // regardless of the operator's Programmable Keys mapping —
+    // catching that path means "just works" for the operator's first
+    // press without visiting Sonim system settings. Foreground-only
+    // by construction (InputDispatcher routes non-broadcast keys to
+    // the top activity); the broadcast paths in the service handle
+    // background PTT on firmware that emits them.
+    @Volatile
+    private var sonimPttFg: com.atakmap.android.xv.ptt.SonimPttForegroundReader? = null
+
+    @Volatile
+    private var sonimEmergencyFg: com.atakmap.android.xv.ptt.SonimEmergencyForegroundReader? = null
+
     private var presenceRegistry: XvPresenceRegistry? = null
     private var presencePublisher: XvCotPublisher? = null
     private var presenceListener: XvCotListener? = null
@@ -1046,6 +1066,16 @@ class XvMapComponent : AbstractMapComponent() {
         // primary). No-op when no secondary is persisted.
         autoConnectAinaSecondary()
 
+        // Sonim ruggedized-device dedicated hardware buttons (XP10 /
+        // XP9900 and XP-family peers). Zero-cost on any non-Sonim
+        // device: SonimHardwareButtons.isSupported() returns false,
+        // this method exits before touching the service, and the
+        // corresponding Settings rows stay hidden. On Sonim hardware +
+        // operator opt-in, the service registers the broadcast
+        // receivers and the ATAK-process foreground reader attaches
+        // its OnKeyListener so both signal paths coexist.
+        autoStartSonimButtonsIfEnabled()
+
         // Trigger runtime permission prompts for our own UID. The
         // MapComponent runs in ATAK's process; checkSelfPermission here
         // would query ATAK's grants, masking the fact that XV's own UID
@@ -1139,6 +1169,19 @@ class XvMapComponent : AbstractMapComponent() {
         context: Context,
         mapView: MapView,
     ) {
+        // Foreground-KeyEvent fallback paths: detach the OnKeyListeners
+        // BEFORE we drop heldMapView. Each also fires a defensive up()
+        // through the AIDL so the service's dispatcher can't strand
+        // SONIM_PTT / SONIM_EMERGENCY in heldButtons if the plugin
+        // unloads while the operator was mid-press.
+        try {
+            stopSonimPttForeground()
+        } catch (_: Throwable) {
+        }
+        try {
+            stopSonimEmergencyForeground()
+        } catch (_: Throwable) {
+        }
         presenceListener?.stop()
         presenceListener = null
         presencePublisher?.stop()
@@ -2081,6 +2124,60 @@ class XvMapComponent : AbstractMapComponent() {
                 settings.persistAutoConnectBtEnabled(enabled)
             }
 
+            override fun sonimHardwareButtonsSupported(): Boolean {
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return false
+                return com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)
+            }
+
+            override fun sonimPttButtonEnabled(): Boolean =
+                settings.persistedSonimPttButtonEnabled()
+
+            override fun setSonimPttButtonEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setSonimPttButtonEnabled($enabled)")
+                settings.persistSonimPttButtonEnabled(enabled)
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return
+                if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+                    Log.w(
+                        TAG,
+                        "setSonimPttButtonEnabled($enabled) — device is not a supported Sonim " +
+                            "ruggedized model; persisting pref but skipping service call",
+                    )
+                    return
+                }
+                voiceClient?.setPersistent("sonimPttButton") {
+                    it.setSonimPttButtonEnabled(enabled)
+                }
+                // Foreground-KeyEvent fallback path (attached in ATAK's
+                // process). Runs in parallel with the service-side
+                // broadcast reader — the dispatcher's OR-gate collapses
+                // any duplicate down / up if both paths happen to fire
+                // for the same press. Started / stopped in lockstep
+                // with the toggle so a mid-session flip cleans up
+                // consistently across both paths.
+                if (enabled) startSonimPttForeground() else stopSonimPttForeground()
+            }
+
+            override fun sonimEmergencyButtonEnabled(): Boolean =
+                settings.persistedSonimEmergencyButtonEnabled()
+
+            override fun setSonimEmergencyButtonEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setSonimEmergencyButtonEnabled($enabled)")
+                settings.persistSonimEmergencyButtonEnabled(enabled)
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return
+                if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+                    Log.w(
+                        TAG,
+                        "setSonimEmergencyButtonEnabled($enabled) — device is not a supported Sonim " +
+                            "ruggedized model; persisting pref but skipping service call",
+                    )
+                    return
+                }
+                voiceClient?.setPersistent("sonimEmergencyButton") {
+                    it.setSonimEmergencyButtonEnabled(enabled)
+                }
+                if (enabled) startSonimEmergencyForeground() else stopSonimEmergencyForeground()
+            }
+
             override fun latchedMode(): Boolean = settings.persistedLatchedMode()
 
             override fun setLatchedMode(enabled: Boolean) {
@@ -2255,6 +2352,128 @@ class XvMapComponent : AbstractMapComponent() {
             "strict" -> VxCompat.STRICT
             else -> null
         }
+
+    // Start the service-side Sonim button broadcast receivers AND the
+    // plugin-side foreground KeyEvent readers iff both the device
+    // capability check AND the operator's persisted toggle agree.
+    // Gate ordering (capability first) matters: on non-Sonim hardware
+    // we never even ask the service to start the readers, so there is
+    // zero runtime cost — no broadcast receiver, no OnKeyListener, no
+    // wasted Binder round-trip.
+    //
+    // The PTT + Emergency toggles are independent — the operator may
+    // enable one but not the other — so we check them separately.
+    private fun autoStartSonimButtonsIfEnabled() {
+        val ctx = heldMapView?.context ?: return
+        if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+            Log.i(TAG, "autoStartSonimButtons: device is not a supported Sonim ruggedized model — skipping")
+            return
+        }
+        if (settings.persistedSonimPttButtonEnabled()) {
+            Log.i(TAG, "autoStartSonimButtons: enabling Sonim PTT button")
+            voiceClient?.setPersistent("sonimPttButton") { it.setSonimPttButtonEnabled(true) }
+            startSonimPttForeground()
+        } else {
+            Log.i(TAG, "autoStartSonimButtons: PTT-button toggle OFF — skipping PTT reader")
+        }
+        if (settings.persistedSonimEmergencyButtonEnabled()) {
+            Log.i(TAG, "autoStartSonimButtons: enabling Sonim Emergency button")
+            voiceClient?.setPersistent("sonimEmergencyButton") { it.setSonimEmergencyButtonEnabled(true) }
+            startSonimEmergencyForeground()
+        } else {
+            Log.i(TAG, "autoStartSonimButtons: Emergency-button toggle OFF — skipping Emergency reader")
+        }
+    }
+
+    /**
+     * Attach the [com.atakmap.android.xv.ptt.SonimPttForegroundReader]
+     * to the MapView. Idempotent. Foreground-only by design —
+     * complements the backgrounded-safe broadcast reader in the
+     * service. Both paths coexist and dedupe via
+     * [com.atakmap.android.xv.audio.PttDispatcher]'s source-based
+     * OR-gate.
+     */
+    private fun startSonimPttForeground() {
+        val mapView = heldMapView ?: return
+        val ctx = mapView.context
+        if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+            return
+        }
+        if (sonimPttFg != null) {
+            Log.i(TAG, "startSonimPttForeground: already attached — ignoring")
+            return
+        }
+        val reader =
+            com.atakmap.android.xv.ptt.SonimPttForegroundReader { isDown, _ ->
+                // Source is source-implicit across the AIDL — the
+                // receiver on the service side always tags SONIM_PTT.
+                voiceClient?.ifBound { it.notifySonimPttEdge(isDown) }
+            }
+        if (reader.start(mapView)) {
+            sonimPttFg = reader
+        } else {
+            Log.w(TAG, "startSonimPttForeground: reader.start() failed — leaving detached")
+        }
+    }
+
+    /**
+     * Detach the Sonim PTT foreground reader from the MapView.
+     * Idempotent. Fires a defensive `notifySonimPttEdge(false)` on
+     * detach so the service dispatcher doesn't strand SONIM_PTT in
+     * its held-source set.
+     */
+    private fun stopSonimPttForeground() {
+        val reader = sonimPttFg ?: return
+        try {
+            reader.stop(heldMapView)
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimPttForeground: reader.stop() threw", t)
+        }
+        sonimPttFg = null
+        try {
+            voiceClient?.ifBound { it.notifySonimPttEdge(false) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "defensive notifySonimPttEdge(false) threw", t)
+        }
+    }
+
+    /** Attach the Sonim Emergency foreground reader. See [startSonimPttForeground]. */
+    private fun startSonimEmergencyForeground() {
+        val mapView = heldMapView ?: return
+        val ctx = mapView.context
+        if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+            return
+        }
+        if (sonimEmergencyFg != null) {
+            Log.i(TAG, "startSonimEmergencyForeground: already attached — ignoring")
+            return
+        }
+        val reader =
+            com.atakmap.android.xv.ptt.SonimEmergencyForegroundReader { isDown, _ ->
+                voiceClient?.ifBound { it.notifySonimEmergencyEdge(isDown) }
+            }
+        if (reader.start(mapView)) {
+            sonimEmergencyFg = reader
+        } else {
+            Log.w(TAG, "startSonimEmergencyForeground: reader.start() failed — leaving detached")
+        }
+    }
+
+    /** Detach the Sonim Emergency foreground reader. See [stopSonimPttForeground]. */
+    private fun stopSonimEmergencyForeground() {
+        val reader = sonimEmergencyFg ?: return
+        try {
+            reader.stop(heldMapView)
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimEmergencyForeground: reader.stop() threw", t)
+        }
+        sonimEmergencyFg = null
+        try {
+            voiceClient?.ifBound { it.notifySonimEmergencyEdge(false) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "defensive notifySonimEmergencyEdge(false) threw", t)
+        }
+    }
 
     private fun autoConnectMumble() {
         // Slight delay so the rest of plugin init (cert lookup, presence

@@ -241,6 +241,36 @@ class XvSettings(
         prefs()?.edit()?.putBoolean(PREF_STATUS_TONES, enabled)?.apply()
     }
 
+    // Whether the Sonim ruggedized-device dedicated PTT side button is
+    // enabled as a PTT source. The corresponding Settings row is only
+    // shown at all when [com.atakmap.android.xv.util.SonimHardwareButtons.isSupported]
+    // returns true (Sonim XP10 / XP9900 and XP-family peers) — on any
+    // other device this preference is inert and the toggle is hidden
+    // entirely. Default OFF so first launch on new hardware doesn't
+    // silently start intercepting the key; the operator opts in
+    // explicitly. Read at plugin load by
+    // [XvMapComponent.autoStartSonimButtonsIfEnabled].
+    fun persistedSonimPttButtonEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_SONIM_PTT_BUTTON_ENABLED, false) ?: false
+
+    fun persistSonimPttButtonEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_SONIM_PTT_BUTTON_ENABLED, enabled)?.apply()
+    }
+
+    // Whether the Sonim ruggedized-device dedicated Emergency / SOS
+    // button is enabled as a PTT source. Same gate story as the PTT
+    // button pref above — hidden on non-Sonim hardware, default OFF.
+    // Currently treated as a plain PTT source with a distinct
+    // [com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY] tag
+    // and a distinct log tag; a follow-up may promote it to fire a
+    // real emergency CoT event.
+    fun persistedSonimEmergencyButtonEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_SONIM_EMERGENCY_BUTTON_ENABLED, false) ?: false
+
+    fun persistSonimEmergencyButtonEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_SONIM_EMERGENCY_BUTTON_ENABLED, enabled)?.apply()
+    }
+
     // Last-joined primary channel. Written by onChannelChanged on
     // every slot-0 move (excluding "TAK PRIVATE - …" temp channels);
     // read by connectMumbleWithDefaults to override server-side default
@@ -281,6 +311,13 @@ class XvSettings(
         private const val PREF_TPT_TONE = "tpt_tone"
         private const val PREF_LATCHED_TIMEOUT = "latched_timeout_sec"
         private const val PREF_STATUS_TONES = "status_tones_enabled"
+
+        // Sonim ruggedized-device programmable-key toggles. Only
+        // meaningful on Sonim hardware that carries the dedicated
+        // buttons (XP10 / XP9900). Default false; the row is hidden
+        // on other devices.
+        private const val PREF_SONIM_PTT_BUTTON_ENABLED = "sonim_ptt_button_enabled"
+        private const val PREF_SONIM_EMERGENCY_BUTTON_ENABLED = "sonim_emergency_button_enabled"
 
         // TAK server picker — empty/missing means auto-pick (first
         // connected, else first configured); else the explicit host

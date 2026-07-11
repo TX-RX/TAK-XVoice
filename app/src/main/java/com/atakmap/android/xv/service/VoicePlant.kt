@@ -30,6 +30,8 @@ import com.atakmap.android.xv.audio.StatusTones
 import com.atakmap.android.xv.audio.TptPlayer
 import com.atakmap.android.xv.audio.TptTone
 import com.atakmap.android.xv.audio.TxController
+import com.atakmap.android.xv.ptt.SonimEmergencyButtonReader
+import com.atakmap.android.xv.ptt.SonimPttButtonReader
 
 // All of XV's audio + AINA + PTT-state subsystem, instantiated in our
 // APK's UID where FOREGROUND_SERVICE_TYPE_MICROPHONE actually grants
@@ -351,6 +353,18 @@ class VoicePlant(
     @Volatile private var ainaSecondaryBle: AinaBleReader? = null
 
     @Volatile private var prymeSecondaryBle: PrymeBleReader? = null
+
+    // Sonim ruggedized-device dedicated PTT + Emergency broadcast
+    // readers (XP10 / XP9900 and XP-family peers). Independent of AINA
+    // / Secondary — run in parallel and key slot 0 via
+    // PttSource.SONIM_PTT / SONIM_EMERGENCY. Present only on Sonim
+    // hardware that emits the corresponding broadcasts; on any other
+    // device these stay null because [XvVoiceService] never calls
+    // [startSonimPttButton] / [startSonimEmergencyButton]. See
+    // [com.atakmap.android.xv.util.SonimHardwareButtons].
+    @Volatile private var sonimPtt: SonimPttButtonReader? = null
+
+    @Volatile private var sonimEmergency: SonimEmergencyButtonReader? = null
 
     // MAC of the currently-connected AINA (or null when none). Used by
     // the BOND_STATE_CHANGED receiver to detect "the operator just
@@ -1352,6 +1366,117 @@ class VoicePlant(
     fun isAinaSecondaryConnected(): Boolean =
         ainaSecondaryBle != null || ainaSecondarySpp != null || prymeSecondaryBle != null
 
+    // ============================================================
+    // Sonim ruggedized-device dedicated hardware buttons
+    // ============================================================
+
+    /**
+     * Start the Sonim dedicated PTT side button reader. Registers a
+     * broadcast receiver for `com.sonim.intent.action.PTT_KEY_DOWN/_UP`
+     * and routes press / release edges through [pttDown] / [pttUp]
+     * with [PttSource.SONIM_PTT]. Idempotent — repeated calls are
+     * no-ops if the reader is already running.
+     *
+     * The plugin gates the call on
+     * [com.atakmap.android.xv.util.SonimHardwareButtons.isSupported] +
+     * the operator's persisted toggle, so this method itself does not
+     * re-verify hardware capability — starting on a non-Sonim device
+     * is harmless (the broadcast just never fires).
+     */
+    fun startSonimPttButton() {
+        if (sonimPtt != null) {
+            Log.i(TAG, "startSonimPttButton: already running — ignoring")
+            return
+        }
+        val reader =
+            SonimPttButtonReader(context) { isDown, source ->
+                if (isDown) {
+                    pttDown(slot = 0, source = source)
+                } else {
+                    pttUp(slot = 0, source = source)
+                }
+            }
+        if (reader.start()) {
+            sonimPtt = reader
+        } else {
+            Log.w(TAG, "startSonimPttButton: reader.start() failed — leaving disabled")
+        }
+    }
+
+    /**
+     * Stop the Sonim PTT reader (if running) and drop any pending
+     * held-source bookkeeping from the dispatcher so a mid-press
+     * "toggle-off" doesn't leave the OR-gate thinking the button is
+     * still down. Idempotent.
+     */
+    fun stopSonimPttButton() {
+        val reader = sonimPtt ?: return
+        try {
+            reader.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimPttButton: reader.stop() threw", t)
+        }
+        sonimPtt = null
+        try {
+            pttDispatcher.forgetSource(PttSource.SONIM_PTT)
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetSource(SONIM_PTT) threw", t)
+        }
+    }
+
+    /** True while the Sonim PTT broadcast receiver is registered. */
+    fun isSonimPttButtonRunning(): Boolean = sonimPtt?.isRunning() == true
+
+    /**
+     * Start the Sonim dedicated Emergency / SOS button reader.
+     * Registers a broadcast receiver for `android.intent.action.SOS.down`
+     * / `_up` and routes press / release edges through [pttDown] /
+     * [pttUp] with [PttSource.SONIM_EMERGENCY]. Idempotent.
+     *
+     * Currently a plain PTT source with a distinct log tag / source
+     * enum value — a future PR may promote it to fire an emergency
+     * CoT event or SOS broadcast without disturbing the plain PTT
+     * path.
+     */
+    fun startSonimEmergencyButton() {
+        if (sonimEmergency != null) {
+            Log.i(TAG, "startSonimEmergencyButton: already running — ignoring")
+            return
+        }
+        val reader =
+            SonimEmergencyButtonReader(context) { isDown, source ->
+                if (isDown) {
+                    pttDown(slot = 0, source = source)
+                } else {
+                    pttUp(slot = 0, source = source)
+                }
+            }
+        if (reader.start()) {
+            sonimEmergency = reader
+        } else {
+            Log.w(TAG, "startSonimEmergencyButton: reader.start() failed — leaving disabled")
+        }
+    }
+
+    /** Stop the Sonim Emergency reader (if running). Idempotent. */
+    fun stopSonimEmergencyButton() {
+        val reader = sonimEmergency ?: return
+        try {
+            reader.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimEmergencyButton: reader.stop() threw", t)
+        }
+        sonimEmergency = null
+        try {
+            pttDispatcher.forgetSource(PttSource.SONIM_EMERGENCY)
+        } catch (t: Throwable) {
+            Log.w(TAG, "forgetSource(SONIM_EMERGENCY) threw", t)
+        }
+    }
+
+    /** True while the Sonim Emergency broadcast receiver is registered. */
+    fun isSonimEmergencyButtonRunning(): Boolean = sonimEmergency?.isRunning() == true
+
     fun disconnectAina() {
         ainaBle?.disconnect()
         ainaBle = null
@@ -1548,6 +1673,14 @@ class VoicePlant(
         }
         try {
             disconnectAinaSecondary()
+        } catch (_: Throwable) {
+        }
+        try {
+            stopSonimPttButton()
+        } catch (_: Throwable) {
+        }
+        try {
+            stopSonimEmergencyButton()
         } catch (_: Throwable) {
         }
         try {

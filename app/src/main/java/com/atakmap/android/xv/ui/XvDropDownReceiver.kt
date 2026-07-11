@@ -242,6 +242,25 @@ class XvDropDownReceiver(
 
         fun setAutoConnectBtEnabled(enabled: Boolean) {}
 
+        // ---- Sonim ruggedized-device dedicated hardware buttons ----
+        // True only when the current device is a Sonim ruggedized
+        // model (XP10 / XP9900 and XP-family peers) that carries the
+        // dedicated PTT + Emergency keys. Consulted at Settings-row
+        // inflation time — both rows are hidden (`View.GONE`) on any
+        // device where this returns false so operators on non-Sonim
+        // hardware never see the toggles at all. Default false so a
+        // lazy Controller impl on a non-Sonim dev host still hides
+        // the rows.
+        fun sonimHardwareButtonsSupported(): Boolean = false
+
+        fun sonimPttButtonEnabled(): Boolean = false
+
+        fun setSonimPttButtonEnabled(enabled: Boolean) {}
+
+        fun sonimEmergencyButtonEnabled(): Boolean = false
+
+        fun setSonimEmergencyButtonEnabled(enabled: Boolean) {}
+
         // ---- TX / RX preferences (Settings → TX/RX) ----
         // Latched (full-duplex) call mode. While on, channel stays
         // open in both directions. Off = standard half-duplex PTT.
@@ -1443,6 +1462,8 @@ class XvDropDownReceiver(
         wireSecondaryAinaPicker(v)
         wireBlePttScanButton(v)
         wireAutoConnectBtSwitch(v)
+        wireSonimPttButtonSwitch(v)
+        wireSonimEmergencyButtonSwitch(v)
         wireBtAudioOverridePicker(v)
     }
 
@@ -1850,6 +1871,56 @@ class XvDropDownReceiver(
         sw.isChecked = controller.autoConnectBtEnabled()
         sw.setOnCheckedChangeListener { _, isChecked ->
             controller.setAutoConnectBtEnabled(isChecked)
+        }
+    }
+
+    // Sonim ruggedized-device dedicated PTT side button toggle. The
+    // whole row is hidden entirely on any device that isn't a
+    // supported Sonim model — per operator direction, non-Sonim
+    // hardware never sees the option. On Sonim XP10 / XP9900 / XP-
+    // family peers the row is shown, reflects the persisted toggle,
+    // and updates the service on flip.
+    private fun wireSonimPttButtonSwitch(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_sonim_ptt_button) ?: return
+        val help = v.findViewById<View>(R.id.xv_label_sonim_ptt_button_help)
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_sonim_ptt_button) ?: return
+        val supported = controller.sonimHardwareButtonsSupported()
+        if (!supported) {
+            row.visibility = View.GONE
+            help?.visibility = View.GONE
+            return
+        }
+        row.visibility = View.VISIBLE
+        help?.visibility = View.VISIBLE
+        // Detach any previous listener before pushing state so restoring
+        // the persisted value doesn't spuriously call setSonimPttButtonEnabled.
+        sw.setOnCheckedChangeListener(null)
+        sw.isChecked = controller.sonimPttButtonEnabled()
+        sw.setOnCheckedChangeListener { _, isChecked ->
+            controller.setSonimPttButtonEnabled(isChecked)
+        }
+    }
+
+    // Sonim ruggedized-device dedicated Emergency / SOS button toggle.
+    // Same gate as the PTT-button switch above. Currently a plain PTT
+    // source with a distinct log tag; a follow-up may upgrade it to
+    // fire an emergency CoT event.
+    private fun wireSonimEmergencyButtonSwitch(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_sonim_emergency_button) ?: return
+        val help = v.findViewById<View>(R.id.xv_label_sonim_emergency_button_help)
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_sonim_emergency_button) ?: return
+        val supported = controller.sonimHardwareButtonsSupported()
+        if (!supported) {
+            row.visibility = View.GONE
+            help?.visibility = View.GONE
+            return
+        }
+        row.visibility = View.VISIBLE
+        help?.visibility = View.VISIBLE
+        sw.setOnCheckedChangeListener(null)
+        sw.isChecked = controller.sonimEmergencyButtonEnabled()
+        sw.setOnCheckedChangeListener { _, isChecked ->
+            controller.setSonimEmergencyButtonEnabled(isChecked)
         }
     }
 

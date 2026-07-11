@@ -1660,6 +1660,61 @@ class XvVoiceService : Service() {
                 return plant().isAinaSecondaryConnected()
             }
 
+            override fun setSonimPttButtonEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSonimPttButton()
+                } else {
+                    plant().stopSonimPttButton()
+                }
+            }
+
+            override fun isSonimPttButtonRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSonimPttButtonRunning()
+            }
+
+            override fun setSonimEmergencyButtonEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSonimEmergencyButton()
+                } else {
+                    plant().stopSonimEmergencyButton()
+                }
+            }
+
+            override fun isSonimEmergencyButtonRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSonimEmergencyButtonRunning()
+            }
+
+            // Foreground-KeyEvent fallback edge dispatch. The plugin's
+            // SonimPttForegroundReader / SonimEmergencyForegroundReader
+            // own the OnKeyListener attached to the MapView (the
+            // KeyEvent path only reaches the top activity); each
+            // filtered edge is forwarded here so the service's
+            // PttDispatcher — the single source of truth for TX state
+            // — sees the source-tagged edge in the correct process.
+            // The dispatcher's OR-gate dedupes when the broadcast path
+            // also fires for the same press.
+            override fun notifySonimPttEdge(isDown: Boolean) {
+                assertAuthorizedCaller()
+                if (isDown) {
+                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
+                } else {
+                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
+                }
+            }
+
+            override fun notifySonimEmergencyEdge(isDown: Boolean) {
+                assertAuthorizedCaller()
+                if (isDown) {
+                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
+                } else {
+                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
+                }
+            }
+
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
                 assertAuthorizedCaller()
                 plant().setMumbleSessionLive(connectedAndInChannel)
@@ -1763,7 +1818,15 @@ class XvVoiceService : Service() {
         // except that one hook (their outgoing-call mic stays hot
         // from the moment of dial — same behavior as before, no
         // breakage).
-        private const val AIDL_API_VERSION = 3
+        // v3 → v4: added the Sonim ruggedized-device hardware button
+        // surface — setSonimPttButtonEnabled / setSonimEmergencyButtonEnabled
+        // / isSonimPttButtonRunning / isSonimEmergencyButtonRunning
+        // for lifecycle, and notifySonimPttEdge / notifySonimEmergencyEdge
+        // for the foreground-KeyEvent fallback path. Older plugins
+        // built against v3 lack these hooks — the Sonim buttons
+        // simply won't fire PTT for them, but everything else works
+        // unchanged.
+        private const val AIDL_API_VERSION = 4
 
         // Channel ids for the incoming-ring + active-call CallStyle
         // notifications live in NotificationChannels.kt. The service's
