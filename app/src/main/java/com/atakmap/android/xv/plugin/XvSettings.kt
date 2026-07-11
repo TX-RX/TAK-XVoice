@@ -43,28 +43,29 @@ class XvSettings(
         }
     }
 
-    // Secondary PTT input — an OPTIONAL second bonded BT device whose
-    // PTT button drives slot 0 in parallel with the primary. Motorcyclist
-    // use case: AINA helmet speakermic + Pryme handlebar puck both
-    // keying VS1. Independent of the primary so the operator can swap
-    // either side without affecting the other. Null/blank = no secondary
-    // selected (single-input behaviour).
-    fun persistedSecondaryAinaMac(): String? =
-        prefs()?.getString(PREF_AINA_MAC_SECONDARY, null)?.takeIf { it.isNotBlank() }
+    // External button — an OPTIONAL second bonded BT PTT input whose
+    // button drives slot 0 in parallel with the primary speakermic.
+    // Button-only role: a BLE PTT puck (Pryme BT-PTT-Z, PTT-Z01, generic
+    // BLE-HID). Motorcyclist use case: AINA helmet speakermic + Pryme
+    // handlebar puck both keying VS1. Independent of the primary so the
+    // operator can swap either side without affecting the other.
+    // Null/blank = no external button selected (single-input behaviour).
+    fun persistedExternalButtonMac(): String? =
+        prefs()?.getString(PREF_EXTERNAL_BUTTON_MAC, null)?.takeIf { it.isNotBlank() }
 
-    fun persistSecondaryAinaMac(mac: String?) {
+    fun persistExternalButtonMac(mac: String?) {
         prefs()?.edit()?.apply {
-            if (mac.isNullOrBlank()) remove(PREF_AINA_MAC_SECONDARY) else putString(PREF_AINA_MAC_SECONDARY, mac)
+            if (mac.isNullOrBlank()) remove(PREF_EXTERNAL_BUTTON_MAC) else putString(PREF_EXTERNAL_BUTTON_MAC, mac)
             apply()
         }
     }
 
-    fun persistedSecondaryAinaKind(): String? =
-        prefs()?.getString(PREF_AINA_KIND_SECONDARY, null)?.takeIf { it.isNotBlank() }
+    fun persistedExternalButtonKind(): String? =
+        prefs()?.getString(PREF_EXTERNAL_BUTTON_KIND, null)?.takeIf { it.isNotBlank() }
 
-    fun persistSecondaryAinaKind(kind: String?) {
+    fun persistExternalButtonKind(kind: String?) {
         prefs()?.edit()?.apply {
-            if (kind.isNullOrBlank()) remove(PREF_AINA_KIND_SECONDARY) else putString(PREF_AINA_KIND_SECONDARY, kind)
+            if (kind.isNullOrBlank()) remove(PREF_EXTERNAL_BUTTON_KIND) else putString(PREF_EXTERNAL_BUTTON_KIND, kind)
             apply()
         }
     }
@@ -241,6 +242,52 @@ class XvSettings(
         prefs()?.edit()?.putBoolean(PREF_STATUS_TONES, enabled)?.apply()
     }
 
+    // Whether the Samsung ruggedized-device Active Key is enabled as
+    // a PTT source. The corresponding Settings row is only shown at
+    // all when [com.atakmap.android.xv.util.SamsungActiveKey.isSupported]
+    // returns true (Galaxy Tab Active5, XCover6 Pro / 7, Tab Active4 Pro,
+    // Tab Active3) — on any other device this preference is inert and
+    // the toggle is hidden entirely. Default OFF so first launch on
+    // new hardware doesn't silently start intercepting the key; the
+    // operator opts in explicitly. Read at plugin load by
+    // [XvMapComponent.autoStartSamsungActiveKeyIfEnabled].
+    fun persistedSamsungActiveKeyEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_SAMSUNG_ACTIVE_KEY_ENABLED, false) ?: false
+
+    fun persistSamsungActiveKeyEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_SAMSUNG_ACTIVE_KEY_ENABLED, enabled)?.apply()
+    }
+
+    // Whether the Sonim ruggedized-device dedicated PTT side button is
+    // enabled as a PTT source. The corresponding Settings row is only
+    // shown at all when [com.atakmap.android.xv.util.SonimHardwareButtons.isSupported]
+    // returns true (Sonim XP10 / XP9900 and XP-family peers) — on any
+    // other device this preference is inert and the toggle is hidden
+    // entirely. Default OFF so first launch on new hardware doesn't
+    // silently start intercepting the key; the operator opts in
+    // explicitly. Read at plugin load by
+    // [XvMapComponent.autoStartSonimButtonsIfEnabled].
+    fun persistedSonimPttButtonEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_SONIM_PTT_BUTTON_ENABLED, false) ?: false
+
+    fun persistSonimPttButtonEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_SONIM_PTT_BUTTON_ENABLED, enabled)?.apply()
+    }
+
+    // Whether the Sonim ruggedized-device dedicated Emergency / SOS
+    // button is enabled as a PTT source. Same gate story as the PTT
+    // button pref above — hidden on non-Sonim hardware, default OFF.
+    // Currently treated as a plain PTT source with a distinct
+    // [com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY] tag
+    // and a distinct log tag; a follow-up may promote it to fire a
+    // real emergency CoT event.
+    fun persistedSonimEmergencyButtonEnabled(): Boolean =
+        prefs()?.getBoolean(PREF_SONIM_EMERGENCY_BUTTON_ENABLED, false) ?: false
+
+    fun persistSonimEmergencyButtonEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_SONIM_EMERGENCY_BUTTON_ENABLED, enabled)?.apply()
+    }
+
     // Last-joined primary channel. Written by onChannelChanged on
     // every slot-0 move (excluding "TAK PRIVATE - …" temp channels);
     // read by connectMumbleWithDefaults to override server-side default
@@ -259,9 +306,17 @@ class XvSettings(
         // Persistent keys.
         private const val PREF_AINA_MAC = "aina_mac"
 
-        // Secondary PTT input pair — see persistedSecondaryAinaMac.
-        private const val PREF_AINA_MAC_SECONDARY = "aina_mac_secondary"
-        private const val PREF_AINA_KIND_SECONDARY = "aina_kind_secondary"
+        // External-button input pair — see persistedExternalButtonMac.
+        //
+        // On-disk key names retain the historical `_secondary` suffix
+        // intentionally: this constant was renamed from
+        // PREF_AINA_MAC_SECONDARY / PREF_AINA_KIND_SECONDARY as part
+        // of the "Secondary → External button" concept rename, but the
+        // stored String value is preserved so existing installs keep
+        // auto-connecting the persisted MAC without a prefs migration.
+        // Do NOT change the string values.
+        private const val PREF_EXTERNAL_BUTTON_MAC = "aina_mac_secondary"
+        private const val PREF_EXTERNAL_BUTTON_KIND = "aina_kind_secondary"
 
         // Manually-added BLE PTT devices — see knownBlePttDevices.
         // Set<String> with "MAC|Name" entries.
@@ -281,6 +336,18 @@ class XvSettings(
         private const val PREF_TPT_TONE = "tpt_tone"
         private const val PREF_LATCHED_TIMEOUT = "latched_timeout_sec"
         private const val PREF_STATUS_TONES = "status_tones_enabled"
+
+        // Whether the Samsung ruggedized-device Active Key is used as
+        // a PTT source. Only meaningful on hardware that has the key.
+        // Default false; the row is hidden on other devices.
+        private const val PREF_SAMSUNG_ACTIVE_KEY_ENABLED = "samsung_active_key_enabled"
+
+        // Sonim ruggedized-device programmable-key toggles. Only
+        // meaningful on Sonim hardware that carries the dedicated
+        // buttons (XP10 / XP9900). Default false; the row is hidden
+        // on other devices.
+        private const val PREF_SONIM_PTT_BUTTON_ENABLED = "sonim_ptt_button_enabled"
+        private const val PREF_SONIM_EMERGENCY_BUTTON_ENABLED = "sonim_emergency_button_enabled"
 
         // TAK server picker — empty/missing means auto-pick (first
         // connected, else first configured); else the explicit host

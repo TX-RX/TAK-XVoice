@@ -915,6 +915,10 @@ class XvVoiceService : Service() {
                 fanOut { it.onCaptureError(reason) }
             }
 
+            override fun onPttBlockedByCellularCall(reason: String) {
+                fanOut { it.onPttBlockedByCellularCall(reason) }
+            }
+
             override fun onPlaceTelecomCall(tag: String) {
                 placeTelecomCallInternal(tag)
             }
@@ -1636,28 +1640,119 @@ class XvVoiceService : Service() {
                 plant().disconnectAina()
             }
 
+            override fun disconnectAinaReaderOnly() {
+                assertAuthorizedCaller()
+                plant().disconnectAinaReaderOnly()
+            }
+
             override fun isAinaConnected(): Boolean {
                 assertAuthorizedCaller()
                 return plant().isAinaConnected()
             }
 
-            override fun connectAinaSecondary(
+            override fun connectExternalButton(
                 mac: String?,
                 name: String?,
                 kind: String?,
             ) {
                 assertAuthorizedCaller()
-                plant().connectAinaSecondary(mac, name, kind)
+                plant().connectExternalButton(mac, name, kind)
             }
 
-            override fun disconnectAinaSecondary() {
+            override fun disconnectExternalButton() {
                 assertAuthorizedCaller()
-                plant().disconnectAinaSecondary()
+                plant().disconnectExternalButton()
             }
 
-            override fun isAinaSecondaryConnected(): Boolean {
+            override fun isExternalButtonConnected(): Boolean {
                 assertAuthorizedCaller()
-                return plant().isAinaSecondaryConnected()
+                return plant().isExternalButtonConnected()
+            }
+
+            override fun setSamsungActiveKeyEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSamsungActiveKey()
+                } else {
+                    plant().stopSamsungActiveKey()
+                }
+            }
+
+            override fun isSamsungActiveKeyRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSamsungActiveKeyRunning()
+            }
+
+            // Foreground-KeyEvent fallback edge dispatch. The plugin's
+            // SamsungActiveKeyForegroundReader owns the OnKeyListener
+            // attached to the MapView (the KeyEvent path only reaches
+            // the top activity); it forwards each filtered edge here so
+            // the service's PttDispatcher — the single source of truth
+            // for TX state — sees the SAMSUNG_ACTIVE_KEY-tagged edge in
+            // the correct process. Same authorization gate as the other
+            // PTT paths.
+            override fun notifySamsungActiveKeyEdge(isDown: Boolean) {
+                assertAuthorizedCaller()
+                if (isDown) {
+                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY)
+                } else {
+                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY)
+                }
+            }
+
+            override fun setSonimPttButtonEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSonimPttButton()
+                } else {
+                    plant().stopSonimPttButton()
+                }
+            }
+
+            override fun isSonimPttButtonRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSonimPttButtonRunning()
+            }
+
+            override fun setSonimEmergencyButtonEnabled(enabled: Boolean) {
+                assertAuthorizedCaller()
+                if (enabled) {
+                    plant().startSonimEmergencyButton()
+                } else {
+                    plant().stopSonimEmergencyButton()
+                }
+            }
+
+            override fun isSonimEmergencyButtonRunning(): Boolean {
+                assertAuthorizedCaller()
+                return plant().isSonimEmergencyButtonRunning()
+            }
+
+            // Foreground-KeyEvent fallback edge dispatch. The plugin's
+            // SonimPttForegroundReader / SonimEmergencyForegroundReader
+            // own the OnKeyListener attached to the MapView (the
+            // KeyEvent path only reaches the top activity); each
+            // filtered edge is forwarded here so the service's
+            // PttDispatcher — the single source of truth for TX state
+            // — sees the source-tagged edge in the correct process.
+            // The dispatcher's OR-gate dedupes when the broadcast path
+            // also fires for the same press.
+            override fun notifySonimPttEdge(isDown: Boolean) {
+                assertAuthorizedCaller()
+                if (isDown) {
+                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
+                } else {
+                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
+                }
+            }
+
+            override fun notifySonimEmergencyEdge(isDown: Boolean) {
+                assertAuthorizedCaller()
+                if (isDown) {
+                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
+                } else {
+                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
+                }
             }
 
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
@@ -1763,7 +1858,27 @@ class XvVoiceService : Service() {
         // except that one hook (their outgoing-call mic stays hot
         // from the moment of dial — same behavior as before, no
         // breakage).
-        private const val AIDL_API_VERSION = 3
+        // v3 → v4: added disconnectAinaReaderOnly() — needed by the
+        // primary AINA button-kind change path so the operator can
+        // flip button-protocol on an already-connected speakermic
+        // without churning the audio route. Stale plugins built
+        // against v3 fall back to full disconnectAina + reconnect on
+        // kind changes (audio route hint clears momentarily) — no
+        // functional breakage.
+        // Additive-since-v4 (no version bump): notifySamsungActiveKeyEdge
+        // for the foreground-KeyEvent fallback on Tab Active5 firmware
+        // that doesn't emit HARD_KEY_REPORT. Older plugins built
+        // against v4 simply won't call it — the broadcast path is
+        // still their only Samsung Active Key route.
+        // Additive-since-v4 (no version bump): the Sonim ruggedized-
+        // device hardware button surface — setSonimPttButtonEnabled /
+        // setSonimEmergencyButtonEnabled / isSonimPttButtonRunning /
+        // isSonimEmergencyButtonRunning for lifecycle, and
+        // notifySonimPttEdge / notifySonimEmergencyEdge for the
+        // foreground-KeyEvent fallback path. Older plugins built
+        // against v4 without these hooks — the Sonim buttons simply
+        // won't fire PTT for them, but everything else works unchanged.
+        private const val AIDL_API_VERSION = 4
 
         // Channel ids for the incoming-ring + active-call CallStyle
         // notifications live in NotificationChannels.kt. The service's
