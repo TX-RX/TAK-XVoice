@@ -54,6 +54,54 @@ import com.atakmap.android.xv.ptt.SamsungActiveKeyReader
 class VoicePlant(
     private val context: Context,
     private val callbacks: Callbacks,
+    // Cellular-call state probe for the pttDown gate. Injected so unit
+    // tests can drive OFFHOOK / RINGING / IDLE without touching a real
+    // AudioManager. Defaults to reading AudioManager.getMode() and
+    // mapping the audio-mode constant to a TelephonyManager call-state
+    // constant via [cellularCallStateFromAudioMode].
+    //
+    // Why AudioManager and not TelephonyManager: the original wire-up
+    // used TelephonyManager.getCallState() on the assumption that the
+    // plain non-permission API works from API 26 upward. That is wrong
+    // from API 31 onward — on-device evidence from Pixel API 35 shows
+    // getCallState() throws SecurityException ("Neither user nor
+    // current process has android.permission.READ_PHONE_STATE") on
+    // every PTT-down. The fidget-guard exists to reduce noise; a probe
+    // that itself throws + logs a stack trace on every press makes the
+    // audio hot-path more expensive AND buys no benefit (we never see
+    // OFFHOOK). AudioManager.getMode() requires no permission at any
+    // API level and returns MODE_IN_CALL / MODE_RINGTONE for the exact
+    // states we want to gate on. XV's own audio-plant code already
+    // reads audioManager.mode extensively (AudioControllerImpl,
+    // ScoLink, TptPlayer) — this is just one more reader.
+    //
+    // Belt-and-suspenders: a defensive catch on Throwable still returns
+    // IDLE (fail-open). getMode() is not documented to throw, but a
+    // SILENT permission denial that we cannot observe is a worse
+    // failure than the auto-hold bug this gate exists to fix.
+    private val cellularCallStateProvider: () -> Int = {
+        try {
+            val am =
+                context.getSystemService(Context.AUDIO_SERVICE)
+                    as? AudioManager
+            cellularCallStateFromAudioMode(
+                am?.mode ?: AudioManager.MODE_NORMAL,
+            )
+        } catch (t: Throwable) {
+            android.util.Log.w(
+                TAG,
+                "cellularCallStateProvider: unexpected throw — treating as IDLE",
+                t,
+            )
+            android.telephony.TelephonyManager.CALL_STATE_IDLE
+        }
+    },
+    // Monotonic clock for the cellular-block toast throttle. Injected
+    // for the unit test so its "advance time" step does not require
+    // real elapsed wall-clock. Defaults to SystemClock.elapsedRealtime
+    // — insensitive to wall-clock jumps (NTP sync during a burst),
+    // unlike currentTimeMillis.
+    private val nowMsProvider: () -> Long = { android.os.SystemClock.elapsedRealtime() },
 ) {
     interface Callbacks {
         fun onTxOpus(
@@ -108,6 +156,13 @@ class VoicePlant(
         // plugin so it can Toast the operator instead of leaving them
         // staring at a dead PTT.
         fun onCaptureError(reason: String)
+
+        // PTT press was suppressed because the cellular telephony stack
+        // reports an active or ringing call. Plugin surfaces [reason]
+        // as a Toast so the operator learns why nothing transmitted;
+        // the plant already throttles this event so mashing PTT during
+        // a call does not spam the UI.
+        fun onPttBlockedByCellularCall(reason: String)
     }
 
     private val audioManager =
@@ -140,18 +195,20 @@ class VoicePlant(
     private val scoLink: ScoLink =
         ScoLink(
             context = context,
-            preferredBtMac = {
-                // ScoLink controls MIC INPUT via SCO/HFP — and the mic
-                // lives on whichever device the operator picked as
-                // their speakermic (the AINA picker = preferredBtMacHint).
-                // The AUDIO DEVICE override (outputBtOverrideMac) is
-                // for output routing only — splitting it across, e.g.,
-                // a car-stereo A2DP sink while the AINA still carries
-                // the mic. So the hint wins here; the override is a
-                // fallback for the no-speakermic-picked case so a
-                // single-BT operator's override still drives SCO.
-                router.preferredBtMacHint ?: router.outputBtOverrideMac
-            },
+            // "Audio device" override — the explicit Settings pick.
+            // Wins absolutely when set AND the device exposes HFP
+            // (i.e. shows up in availableCommunicationDevices). When
+            // the operator picks a specific BT output, their mental
+            // model is "audio goes there, regardless of which puck
+            // owns the button" — ScoLink honors that here.
+            outputOverrideMac = { router.outputBtOverrideMac },
+            // AINA-hint fallback. Used when either (a) no override
+            // is set or (b) the override MAC isn't a valid comm
+            // device — A2DP-only headphones, out-of-range puck,
+            // etc. ScoLink logs a warning at the fall-back and
+            // pins comm to the hint (which is typically the AINA
+            // that owns the PTT button).
+            preferredBtMac = { router.preferredBtMacHint },
         ).also { link ->
             // Wire ScoLink into AudioControllerImpl so focus-loss
             // teardown publishes SUSPENDED instead of the controller
@@ -337,21 +394,21 @@ class VoicePlant(
 
     @Volatile private var prymeBle: PrymeBleReader? = null
 
-    // Secondary PTT slot (e.g. a Pryme handlebar puck for motorcyclists
-    // who already wear an AINA speakermic). Independent connect /
-    // disconnect surface so the operator can pair both a speakermic
-    // AND a secondary button without one tearing the other down.
-    // PttDispatcher's OR-gate keeps concurrent presses from cutting
-    // each other off — see [PttDispatcher.down]. Secondary input is
-    // hard-locked to slot 0 (primary channel) and ignores PTTS/PTTE
-    // because the typical motorcyclist use case is "talk on the main
-    // channel without taking a hand off the bar" — not a full second
-    // input device with its own emergency button.
-    @Volatile private var ainaSecondarySpp: AinaSppReader? = null
+    // External-button PTT slot (e.g. a Pryme handlebar puck for
+    // motorcyclists who already wear an AINA speakermic). Independent
+    // connect / disconnect surface so the operator can pair both a
+    // speakermic AND an external button without one tearing the other
+    // down. PttDispatcher's OR-gate keeps concurrent presses from
+    // cutting each other off — see [PttDispatcher.down]. The external
+    // button is hard-locked to slot 0 (primary channel) and ignores
+    // PTTS/PTTE because the typical motorcyclist use case is "talk on
+    // the main channel without taking a hand off the bar" — not a full
+    // second input device with its own emergency button.
+    @Volatile private var externalButtonSpp: AinaSppReader? = null
 
-    @Volatile private var ainaSecondaryBle: AinaBleReader? = null
+    @Volatile private var externalButtonBle: AinaBleReader? = null
 
-    @Volatile private var prymeSecondaryBle: PrymeBleReader? = null
+    @Volatile private var externalButtonPrymeBle: PrymeBleReader? = null
 
     // Samsung ruggedized-device programmable Active Key reader
     // (Tab Active5, XCover6 Pro / 7, Tab Active4 Pro, Tab Active3).
@@ -627,6 +684,13 @@ class VoicePlant(
     // normal radio operation becomes the answer button during a ring.
     @Volatile private var callRinging: Boolean = false
 
+    // Timestamp (elapsedRealtime ms) of the most recent
+    // "cellular call active — hang up before XV PTT" toast fire.
+    // 0 = never fired. Used by the pttDown cellular-call gate to
+    // throttle the toast so mashing PTT during an active phone call
+    // does not spam the operator's screen. Bump on every fire.
+    @Volatile private var lastCellCallToastAtMs: Long = 0L
+
     /** Used by XvVoiceService to gate external PTT events during the
      *  call lifecycle. The internal mic-engage uses
      *  [pttDownForPrivateCall]; the matching release is split across
@@ -698,6 +762,64 @@ class VoicePlant(
                 Log.w(TAG, "callButton dispatch from pttDown threw", t)
             }
             return
+        }
+        // Cellular-call gate. XV places a self-managed Telecom call
+        // on every pttDown to claim MODE_IN_COMMUNICATION + audio
+        // focus; Android's Telecom framework auto-holds any active
+        // third-party call whenever a second self-managed call is
+        // placed. Operators fidgeting with a BT speakermic during
+        // an active cellular call have accidentally keyed PTT and
+        // dropped their phone call onto hold mid-conversation. Block
+        // the TX (Option A) instead of preempting the cellular call
+        // for what is almost certainly an unintentional press. See
+        // PttCellularGate for the pure decision function and the
+        // toast throttle. This gate must run BEFORE the Telecom call
+        // placement below — the whole point is to avoid placing that
+        // call while the cellular stack is busy.
+        //
+        // Source-scoped (2026-07-10): the gate only fires for
+        // [PttSource.ON_SCREEN] taps. Hardware button sources
+        // (AINA V1/V2, Pryme MFB, and any future BT-HID hardware
+        // input) represent deliberate operator intent — a mid-call
+        // hardware key-up must not be surprise-blocked. The pure
+        // decision in [shouldGateForCellularCall] returns ALLOW for
+        // every non-screen source unconditionally; the fetch of
+        // cellState is still cheap and worth keeping outside the
+        // branch so the INFO log below can name the actual telephony
+        // state that was bypassed.
+        val cellState = cellularCallStateProvider()
+        val gate = shouldGateForCellularCall(cellState, source)
+        if (gate != PttGate.ALLOW) {
+            Log.i(TAG, "PTT blocked — cellular call state=$cellState source=$source (gate=$gate)")
+            val now = nowMsProvider()
+            if (shouldToastCellularBlock(nowMs = now, lastToastAtMs = lastCellCallToastAtMs)) {
+                lastCellCallToastAtMs = now
+                try {
+                    callbacks.onPttBlockedByCellularCall(CELLULAR_BLOCK_TOAST_MSG)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "onPttBlockedByCellularCall dispatch threw", t)
+                }
+            } else {
+                Log.i(
+                    TAG,
+                    "cellular-block toast throttled (last=${now - lastCellCallToastAtMs}ms ago)",
+                )
+            }
+            return
+        } else {
+            // Log at INFO so an operator reading a post-mortem logcat
+            // understands why the "cellular call active" toast did NOT
+            // fire for a hardware press during a call. Expected
+            // behavior — deliberate hardware intent bypasses the
+            // fidget-guard. Only log when the cellular stack actually
+            // was in one of the states we would have gated on for an
+            // on-screen tap; the IDLE case is not interesting.
+            val cellActive =
+                cellState == android.telephony.TelephonyManager.CALL_STATE_OFFHOOK ||
+                    cellState == android.telephony.TelephonyManager.CALL_STATE_RINGING
+            if (source != PttSource.ON_SCREEN && cellActive) {
+                Log.i(TAG, "cellular call active but source=$source is hardware — allowing PTT")
+            }
         }
         // Pre-set the comm device for our route preference BEFORE
         // anything else. Two consumers need this assertion:
@@ -1233,30 +1355,30 @@ class VoicePlant(
     }
 
     /**
-     * Connect a SECONDARY AINA / Pryme / BLE PTT input. Use case:
-     * motorcyclist with an AINA V2 helmet speakermic AND a Pryme
-     * BLE PTT puck mounted on the handlebar — they need both to be
-     * able to key VS1 without one tearing the other down. Hard-
-     * locked to slot 0 (primary channel) and ignores PTTS/PTTE
-     * because the typical handlebar-button use case is "talk on
-     * the main channel"; a real second-channel split / emergency
-     * input would be its own redesign. Independent disconnect via
-     * [disconnectAinaSecondary] so the operator can swap the
-     * secondary independently of the primary.
+     * Connect an EXTERNAL BUTTON PTT input. Use case: motorcyclist
+     * with an AINA V2 helmet speakermic AND a Pryme BLE PTT puck
+     * mounted on the handlebar — they need both to be able to key
+     * VS1 without one tearing the other down. Hard-locked to slot 0
+     * (primary channel) and ignores PTTS/PTTE because the typical
+     * handlebar-button use case is "talk on the main channel"; a
+     * real second-channel split / emergency input would be its own
+     * redesign. Independent disconnect via [disconnectExternalButton]
+     * so the operator can swap the external button independently of
+     * the primary.
      */
-    fun connectAinaSecondary(
+    fun connectExternalButton(
         mac: String?,
         name: String?,
         kind: String?,
     ) {
         Log.i(
             TAG,
-            "connectAinaSecondary kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
+            "connectExternalButton kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
         )
-        disconnectAinaSecondary()
+        disconnectExternalButton()
         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
         if (adapter == null) {
-            Log.w(TAG, "connectAinaSecondary: no Bluetooth adapter")
+            Log.w(TAG, "connectExternalButton: no Bluetooth adapter")
             return
         }
         val device =
@@ -1272,11 +1394,11 @@ class VoicePlant(
                     null
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "connectAinaSecondary: resolve threw", t)
+                Log.w(TAG, "connectExternalButton: resolve threw", t)
                 null
             }
         if (device == null) {
-            Log.w(TAG, "connectAinaSecondary: no device for mac=$mac name=$name")
+            Log.w(TAG, "connectExternalButton: no device for mac=$mac name=$name")
             return
         }
         val resolvedKind =
@@ -1291,14 +1413,15 @@ class VoicePlant(
                 kind
             }
         // Mirror the primary path's per-source disconnect handling —
-        // when the secondary transport drops mid-TX, forget the held
-        // button so the burst can terminate. See the field-bug note in
-        // [connectAina] above; the same failure mode applies to a
-        // handlebar Pryme puck as to a helmet AINA.
+        // when the external-button transport drops mid-TX, forget the
+        // held button so the burst can terminate. See the field-bug
+        // note in [connectAina] above; the same failure mode applies
+        // to a handlebar Pryme puck as to a helmet AINA.
         val onConn: (source: PttSource, up: Boolean) -> Unit = { source, up ->
-            Log.i(TAG, "Secondary AINA connection up=$up source=$source")
-            // Secondary doesn't drive the AINA-connected dot in the UI
-            // (that's the primary's indicator). Logged only.
+            Log.i(TAG, "External button connection up=$up source=$source")
+            // External button doesn't drive the AINA-connected dot in
+            // the UI (that's the primary speakermic's indicator).
+            // Logged only.
             if (!up) {
                 releaseStuckPttOnTransportDrop(source)
             }
@@ -1308,59 +1431,67 @@ class VoicePlant(
                 val r =
                     AinaSppReader(
                         context,
-                        secondaryAinaEvent(PttSource.AINA_V1),
+                        externalButtonEvent(PttSource.AINA_V1),
                         { up -> onConn(PttSource.AINA_V1, up) },
                     )
-                ainaSecondarySpp = r
+                externalButtonSpp = r
                 r.connect(device)
             }
             "v2", "ble" -> {
                 val r =
                     AinaBleReader(
                         context,
-                        secondaryAinaEvent(PttSource.AINA_V2),
+                        externalButtonEvent(PttSource.AINA_V2),
                         { up -> onConn(PttSource.AINA_V2, up) },
                     )
-                ainaSecondaryBle = r
+                externalButtonBle = r
                 r.connect(device)
             }
             "ble-hid", "hid" -> {
                 val r =
                     PrymeBleReader(
                         context,
-                        secondaryAinaEvent(PttSource.PRYME_BLE),
+                        externalButtonEvent(PttSource.PRYME_BLE),
                         { up -> onConn(PttSource.PRYME_BLE, up) },
                     )
-                prymeSecondaryBle = r
+                externalButtonPrymeBle = r
                 r.connect(device)
             }
-            else -> Log.w(TAG, "connectAinaSecondary: unknown kind '$resolvedKind'")
+            else -> Log.w(TAG, "connectExternalButton: unknown kind '$resolvedKind'")
         }
     }
 
-    fun disconnectAinaSecondary() {
-        ainaSecondaryBle?.disconnect()
-        ainaSecondaryBle = null
-        ainaSecondarySpp?.disconnect()
-        ainaSecondarySpp = null
-        prymeSecondaryBle?.disconnect()
-        prymeSecondaryBle = null
-        // Clear any held-source bookkeeping the secondary left behind
-        // mid-burst — otherwise the OR-gate would think a press is
-        // still in flight on a now-disconnected source.
+    fun disconnectExternalButton() {
+        externalButtonBle?.disconnect()
+        externalButtonBle = null
+        externalButtonSpp?.disconnect()
+        externalButtonSpp = null
+        // dispose() (not just disconnect()) so any late GATT callback
+        // still queued behind the OS's binder cannot fire back into
+        // VoicePlant after we swap in a fresh reader — otherwise a
+        // stale up=false from the OLD PrymeBleReader can echo through
+        // and log-spam / confuse mid-TX state. See fix/reader-
+        // duplicate-disconnect-suppression: dispose() sets a sticky
+        // flag on BitmaskGattPttReader that short-circuits both the
+        // connection-state and button-event dispatch paths.
+        externalButtonPrymeBle?.dispose()
+        externalButtonPrymeBle = null
+        // Clear any held-source bookkeeping the external button left
+        // behind mid-burst — otherwise the OR-gate would think a press
+        // is still in flight on a now-disconnected source.
         try {
-            // Multiple sources might match; clear all the secondary
-            // ones to be safe. Idempotent inside PttDispatcher.
+            // Multiple sources might match; clear all the external-
+            // button ones to be safe. Idempotent inside PttDispatcher.
             pttDispatcher.forgetSource(PttSource.AINA_V1)
             pttDispatcher.forgetSource(PttSource.AINA_V2)
             pttDispatcher.forgetSource(PttSource.PRYME_BLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "forgetSource on secondary disconnect threw", t)
+            Log.w(TAG, "forgetSource on external-button disconnect threw", t)
         }
     }
 
-    fun isAinaSecondaryConnected(): Boolean =
-        ainaSecondaryBle != null || ainaSecondarySpp != null || prymeSecondaryBle != null
+    fun isExternalButtonConnected(): Boolean =
+        externalButtonBle != null || externalButtonSpp != null || externalButtonPrymeBle != null
 
     /**
      * Start the Samsung ruggedized-device Active Key reader. Registers
@@ -1420,17 +1551,43 @@ class VoicePlant(
     fun isSamsungActiveKeyRunning(): Boolean = samsungActiveKey?.isRunning() == true
 
     fun disconnectAina() {
-        ainaBle?.disconnect()
-        ainaBle = null
-        ainaSpp?.disconnect()
-        ainaSpp = null
-        prymeBle?.disconnect()
-        prymeBle = null
+        disconnectAinaReaderOnly()
         // Drop the BT routing hint — no AINA selected means no implicit
         // BT preference. Operator's explicit override (if any) still wins.
         router.preferredBtMacHint = null
         connectedAinaMac = null
-        // Mirror [disconnectAinaSecondary]: if the operator (or a wholesale
+        // Notify the plugin so the UI dot can clear and the listener
+        // chain (incl. any future reconnect attempts) sees the drop.
+        try {
+            callbacks.onAinaConnectionChanged(false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onAinaConnectionChanged(false) on disconnect threw", t)
+        }
+    }
+
+    /**
+     * Drop the primary AINA button reader ONLY. Leaves
+     * [router.preferredBtMacHint] and [connectedAinaMac] intact so
+     * the BT audio route the operator is on stays put. Used when the
+     * operator flips the button-input protocol on the currently-
+     * connected primary AINA to "no buttons / on-screen only" —
+     * they still want the speakermic's HFP audio.
+     *
+     * Also used as the shared teardown step by [disconnectAina] and
+     * the respawn-reader path (see [connectAina]) so all three call
+     * sites drop the same reader fields and clear the same held-PTT
+     * sources.
+     */
+    fun disconnectAinaReaderOnly() {
+        ainaBle?.disconnect()
+        ainaBle = null
+        ainaSpp?.disconnect()
+        ainaSpp = null
+        // dispose() rather than disconnect() — see the analogous
+        // block in [disconnectExternalButton] for the rationale.
+        prymeBle?.dispose()
+        prymeBle = null
+        // Mirror [disconnectExternalButton]: if the operator (or a wholesale
         // BT-adapter-off cascade) is tearing us down mid-burst, drop any
         // held button state from the primary source so the OR-gate can
         // see an empty set and TxController.stop() runs. Idempotent
@@ -1440,14 +1597,7 @@ class VoicePlant(
             pttDispatcher.forgetSource(PttSource.AINA_V2)
             pttDispatcher.forgetSource(PttSource.PRYME_BLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "forgetSource on primary disconnect threw", t)
-        }
-        // Notify the plugin so the UI dot can clear and the listener
-        // chain (incl. any future reconnect attempts) sees the drop.
-        try {
-            callbacks.onAinaConnectionChanged(false)
-        } catch (t: Throwable) {
-            Log.w(TAG, "onAinaConnectionChanged(false) on disconnect threw", t)
+            Log.w(TAG, "forgetSource on primary reader teardown threw", t)
         }
     }
 
@@ -1517,7 +1667,7 @@ class VoicePlant(
     // Per-source button-handler factory for the primary input. Captures
     // [source] so PttDispatcher's OR-gate can distinguish concurrent
     // presses from different physical buttons (primary AINA + screen
-    // PTT, primary AINA + secondary handlebar puck, etc.). MFB
+    // PTT, primary AINA + external handlebar puck, etc.). MFB
     // (Voice Responder's multifunction call button) fires on RELEASE
     // only — single tap toggles the call state: answer if currently
     // ringing, hang up if currently active. Press-down is ignored so
@@ -1534,20 +1684,20 @@ class VoicePlant(
             }
         }
 
-    // Secondary input handler factory. Hard-locked to slot 0 (primary
-    // channel) and ignores PTTS / PTTE / MFB because the typical
-    // secondary-button use case is a motorcyclist's handlebar puck:
-    // "let me key the main channel from a second physical button I
-    // already have on the bike." Anything more nuanced (a real second
-    // input with full per-channel/emergency capability) is a separate
-    // redesign — out of scope for the "low-risk multi-PTT" the user
-    // asked for.
-    private fun secondaryAinaEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
+    // External-button input handler factory. Hard-locked to slot 0
+    // (primary channel) and ignores PTTS / PTTE / MFB because the
+    // typical external-button use case is a motorcyclist's handlebar
+    // puck: "let me key the main channel from a second physical button
+    // I already have on the bike." Anything more nuanced (a real
+    // second input with full per-channel/emergency capability) is a
+    // separate redesign — out of scope for the "low-risk multi-PTT"
+    // the user asked for.
+    private fun externalButtonEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
         { btn, down ->
-            Log.i(TAG, "secondary AINA button $btn down=$down source=$source")
+            Log.i(TAG, "external button $btn down=$down source=$source")
             when (btn) {
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
-                else -> { /* secondary input does not drive PTTS/PTTE/MFB */ }
+                else -> { /* external button does not drive PTTS/PTTE/MFB */ }
             }
         }
 
@@ -1614,7 +1764,7 @@ class VoicePlant(
         } catch (_: Throwable) {
         }
         try {
-            disconnectAinaSecondary()
+            disconnectExternalButton()
         } catch (_: Throwable) {
         }
         try {
@@ -1665,5 +1815,11 @@ class VoicePlant(
 
     companion object {
         private const val TAG = "XvVoicePlant"
+
+        // Operator-facing message for the cellular-call PTT gate. Kept
+        // short and imperative — a Toast has ~2-3 seconds of attention
+        // and needs to say what to do, not just what happened.
+        internal const val CELLULAR_BLOCK_TOAST_MSG =
+            "Cellular call active — hang up before XV PTT"
     }
 }

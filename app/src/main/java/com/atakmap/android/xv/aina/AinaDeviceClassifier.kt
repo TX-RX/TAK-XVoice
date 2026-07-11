@@ -139,6 +139,28 @@ object AinaDeviceClassifier {
             ),
         )
 
+    // Choose the auto-connect candidate for the PRIMARY slot from a
+    // ranked device list. Primary is where XV routes speakermic audio;
+    // BLE_HID pucks (Pryme BT-PTT and similar HID-over-GATT buttons)
+    // have no speaker / mic and belong in the SECONDARY slot alongside
+    // the on-screen PTT, so we filter them out here even when they're
+    // the only currently-"available" device.
+    //
+    // BLE_HID availability is hard-coded true in listBondedAinaDevices
+    // (there's no comm-device signal we can query for a HID puck), so
+    // without this filter a bonded-but-off Pryme wins auto-pick whenever
+    // the operator's AINA is powered down at plugin load. Reported by
+    // operator 2026-07-10.
+    //
+    // Expects [ranked] to already be sorted by [rankForPicker]. Returns
+    // null if no non-BLE_HID device is currently available — the caller
+    // should NOT fall back to picking a BLE_HID (the operator explicitly
+    // does not want the button-only puck driving primary audio).
+    fun pickPrimary(ranked: List<AinaDeviceInfo>): AinaDeviceInfo? =
+        ranked.firstOrNull {
+            it.available && it.buttonProtocol != AinaDeviceInfo.ButtonProtocol.BLE_HID
+        }
+
     private fun safeName(device: BluetoothDevice): String? =
         try {
             device.name

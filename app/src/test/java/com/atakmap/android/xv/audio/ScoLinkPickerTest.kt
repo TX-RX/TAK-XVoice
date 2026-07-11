@@ -131,4 +131,158 @@ class ScoLinkPickerTest {
         assertEquals("XX:11", pick!!.mac)
         assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, pick.type)
     }
+
+    // ============================================================
+    // Two-input selector — "Audio device" override precedence
+    // ============================================================
+    //
+    // Regression coverage for the bug where a persisted primary AINA
+    // (preferredBtMacHint) silently swallowed the operator's explicit
+    // "Audio device" pick (outputBtOverrideMac). Design intent: the
+    // override wins absolutely when set + HFP-capable; the hint is the
+    // fallback (either no override at all, or an A2DP-only override).
+
+    @Test
+    fun `override wins over hint when both are set and override is HFP-capable`() {
+        // AINA on AA:BB… (has SCO), headphones on 11:22… (has SCO too —
+        // simulating an HFP-capable BT headset). The override must win.
+        val list =
+            listOf(
+                sco("AA:BB:CC:DD:EE:FF"), // hint (AINA)
+                sco("11:22:33:44:55:66"), // override (headphones)
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "11:22:33:44:55:66",
+                hintMac = "AA:BB:CC:DD:EE:FF",
+            )
+        assertEquals("11:22:33:44:55:66", result.pick!!.mac)
+        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, result.pick.type)
+        assertEquals(false, result.overrideMissed)
+    }
+
+    @Test
+    fun `override match is case-insensitive`() {
+        val list = listOf(sco("11:22:33:44:55:66"))
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "11:22:33:44:55:66".lowercase(),
+                hintMac = null,
+            )
+        assertEquals("11:22:33:44:55:66", result.pick!!.mac)
+        assertEquals(false, result.overrideMissed)
+    }
+
+    @Test
+    fun `only hint set — behaves like legacy single-arg selector (regression)`() {
+        // Regression coverage: an operator with a primary AINA and NO
+        // Audio-device override picked must still route to the AINA.
+        val list =
+            listOf(
+                sco("AA:BB:CC:DD:EE:FF"), // hint (AINA)
+                sco("99:99:99:99:99:99"), // some other BT
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = null,
+                hintMac = "AA:BB:CC:DD:EE:FF",
+            )
+        assertEquals("AA:BB:CC:DD:EE:FF", result.pick!!.mac)
+        assertEquals(false, result.overrideMissed)
+    }
+
+    @Test
+    fun `blank override treated like null — hint drives selection`() {
+        val list = listOf(sco("AA:BB:CC:DD:EE:FF"))
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "   ",
+                hintMac = "AA:BB:CC:DD:EE:FF",
+            )
+        assertEquals("AA:BB:CC:DD:EE:FF", result.pick!!.mac)
+        assertEquals(false, result.overrideMissed)
+    }
+
+    @Test
+    fun `override MAC absent from candidates — falls back to hint and flags miss`() {
+        // A2DP-only headphones don't advertise HFP → they don't appear
+        // in availableCommunicationDevices at all. Override MAC won't
+        // match any candidate. Fall back to the hint AINA and flag the
+        // miss so the production wrapper can log a warning.
+        val list =
+            listOf(
+                sco("AA:BB:CC:DD:EE:FF"), // hint (AINA)
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "11:22:33:44:55:66", // A2DP-only headphones
+                hintMac = "AA:BB:CC:DD:EE:FF",
+            )
+        assertEquals("AA:BB:CC:DD:EE:FF", result.pick!!.mac)
+        assertEquals(true, result.overrideMissed)
+    }
+
+    @Test
+    fun `override missed and no hint — falls through to first-SCO with miss flag`() {
+        // Operator set an Audio-device override, no primary AINA. The
+        // override isn't currently present. Fall through to whatever
+        // the single-arg selector picks with null hint (first SCO) so
+        // audio at least routes somewhere sane, and flag the miss.
+        val list =
+            listOf(
+                sco("77:77:77:77:77:77"),
+                sco("88:88:88:88:88:88"),
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "11:22:33:44:55:66",
+                hintMac = null,
+            )
+        assertEquals("77:77:77:77:77:77", result.pick!!.mac)
+        assertEquals(true, result.overrideMissed)
+    }
+
+    @Test
+    fun `override with A2DP-only match (both profiles absent) still returns A2DP`() {
+        // Some BT devices expose only A2DP as a comm device on certain
+        // handsets — the override should still match. Not the primary
+        // field case (A2DP normally isn't in availableCommunicationDevices)
+        // but keep behavior consistent with the single-arg selector.
+        val list = listOf(a2dp("11:22:33:44:55:66"))
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "11:22:33:44:55:66",
+                hintMac = null,
+            )
+        assertEquals("11:22:33:44:55:66", result.pick!!.mac)
+        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, result.pick.type)
+        assertEquals(false, result.overrideMissed)
+    }
+
+    @Test
+    fun `override prefers SCO over A2DP for the same MAC`() {
+        // Device advertises both profiles under the same MAC. Override
+        // must land on the SCO endpoint — TX needs SCO, and the single-
+        // arg selector applies the same rule.
+        val list =
+            listOf(
+                a2dp("11:22:33:44:55:66"),
+                sco("11:22:33:44:55:66"),
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "11:22:33:44:55:66",
+                hintMac = null,
+            )
+        assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, result.pick!!.type)
+        assertEquals(false, result.overrideMissed)
+    }
 }

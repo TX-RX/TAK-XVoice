@@ -80,17 +80,28 @@ interface IXvVoice {
     void disconnectAina();
     boolean isAinaConnected();
 
-    // SECONDARY PTT input — an additional bonded BT speakermic or
-    // BLE PTT button that drives slot 0 in parallel with the primary.
+    // Drop the primary AINA button reader ONLY — leave the audio
+    // route hint (preferredBtMacHint) and the connectedAinaMac in
+    // place. Used when the operator flips the button-input protocol
+    // on a currently-connected AINA to "no buttons / audio only":
+    // XV stops listening for button events (SPP / BLE / BLE-HID
+    // reader torn down) but the router still knows to prefer that
+    // device for BT audio. A full [disconnectAina] would clear the
+    // hint and randomize the BT audio pick on the next TX.
+    void disconnectAinaReaderOnly();
+
+    // EXTERNAL BUTTON PTT input — an optional BLE PTT puck (Pryme
+    // BT-PTT-Z, PTT-Z01, generic BLE-HID) whose button drives slot 0
+    // in parallel with the primary speakermic. Button-only role.
     // PttDispatcher's OR-gate keeps concurrent presses from cutting
     // each other off so a motorcyclist with an AINA helmet
     // speakermic + a handlebar Pryme puck can hold either button
-    // without one tearing the other's TX down. Secondary is hard-
-    // locked to slot 0; PTTS / PTTE / MFB on the secondary device
-    // are ignored.
-    void connectAinaSecondary(String mac, String name, String kind);
-    void disconnectAinaSecondary();
-    boolean isAinaSecondaryConnected();
+    // without one tearing the other's TX down. The external button
+    // is hard-locked to slot 0; PTTS / PTTE / MFB on the external
+    // device are ignored.
+    void connectExternalButton(String mac, String name, String kind);
+    void disconnectExternalButton();
+    boolean isExternalButtonConnected();
 
     // Samsung ruggedized-device Active Key PTT source. When enabled
     // AND the device is a Samsung Tab Active5 / XCover6 Pro / etc.
