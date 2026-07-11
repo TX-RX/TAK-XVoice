@@ -26,39 +26,21 @@ package com.atakmap.android.xv.aina
  * kinds ([AinaDeviceInfo.ButtonProtocol.SPP],
  * [AinaDeviceInfo.ButtonProtocol.BLE], [AinaDeviceInfo.ButtonProtocol.BLE_HID])
  * demands a reader.
+ *
+ * The AINA-specific "kind → hasReader" collapse lives here; the actual
+ * NO_OP / TEARDOWN_ONLY / RESPAWN decision matrix lives in the shared
+ * [PttReaderRespawnDecision] object so the External Button slot can
+ * reuse the same matrix without duplicating the truth table (see
+ * PR mirroring #35 for the External slot).
  */
 object AinaReaderKindResolver {
     /**
-     * What the caller should do with the currently-running reader in
-     * response to an operator kind flip.
+     * Historical alias for [PttReaderRespawnDecision.Decision]. Kept
+     * so existing call sites and tests continue to compile
+     * unchanged. New callers should reference the shared type
+     * directly.
      */
-    enum class Decision {
-        /**
-         * Nothing to do. Either the primary AINA isn't connected (so
-         * there's no live reader to worry about — the change is
-         * persist-only and takes effect on the next connect edge), or
-         * the new kind is functionally equivalent to the old kind
-         * (both "no reader" or both the same real reader kind).
-         */
-        NO_OP,
-
-        /**
-         * Tear the reader down but keep the audio route hint. Used
-         * when the operator flips from "SPP / BLE / BLE_HID" to
-         * "AUDIO_ONLY / UNKNOWN / null" — they still want the
-         * speakermic's HFP audio, they just don't want XV listening
-         * for button events on it.
-         */
-        TEARDOWN_ONLY,
-
-        /**
-         * Tear the current reader down AND spin up a new one under
-         * the new kind. Used for real-reader → real-reader flips
-         * (e.g. SPP → BLE when the operator manually corrects an
-         * SDP-cache misclassification).
-         */
-        RESPAWN,
-    }
+    typealias Decision = PttReaderRespawnDecision.Decision
 
     /**
      * Decide what to do given [currentKind] (the kind the running
@@ -67,31 +49,23 @@ object AinaReaderKindResolver {
      * primary AINA is currently connected — i.e. whether there IS a
      * live reader).
      *
-     * If [isConnected] is false, the decision is always [Decision.NO_OP]
-     * regardless of the kinds: the persistence write is the only side
-     * effect, and the next connect edge will pick up the new value via
-     * the existing per-MAC override path.
+     * If [isConnected] is false, the decision is always
+     * [PttReaderRespawnDecision.Decision.NO_OP] regardless of the
+     * kinds: the persistence write is the only side effect, and the
+     * next connect edge will pick up the new value via the existing
+     * per-MAC override path.
      */
     fun shouldRespawnReader(
         currentKind: AinaDeviceInfo.ButtonProtocol?,
         newKind: AinaDeviceInfo.ButtonProtocol?,
         isConnected: Boolean,
-    ): Decision {
-        if (!isConnected) return Decision.NO_OP
-        val currentHasReader = hasReader(currentKind)
-        val newHasReader = hasReader(newKind)
-        // "no reader → no reader" and identical reader kinds are both
-        // no-ops. Idempotent so a rapid toggle A → B → A doesn't churn
-        // the reader mid-tap.
-        if (!currentHasReader && !newHasReader) return Decision.NO_OP
-        if (currentKind == newKind) return Decision.NO_OP
-        // Live reader → "no reader": drop the reader, keep audio.
-        if (currentHasReader && !newHasReader) return Decision.TEARDOWN_ONLY
-        // Everything else (no reader → live, or live → different live)
-        // needs a fresh connect path so the SDP probe, retry logic,
-        // and callback wiring all get re-invoked.
-        return Decision.RESPAWN
-    }
+    ): PttReaderRespawnDecision.Decision =
+        PttReaderRespawnDecision.decide(
+            currentHasReader = hasReader(currentKind),
+            newHasReader = hasReader(newKind),
+            currentEqualsNew = currentKind == newKind,
+            isConnected = isConnected,
+        )
 
     /**
      * True iff the given kind demands a live button reader. Null +

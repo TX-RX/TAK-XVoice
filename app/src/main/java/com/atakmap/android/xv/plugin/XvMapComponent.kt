@@ -151,6 +151,18 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var reInitingReaderKind: Boolean = false
 
+    // Re-entry guard for [setSelectedExternalButtonInternal]. Same
+    // rationale as [reInitingReaderKind] but scoped to the External
+    // Button slot: the RESPAWN branch tears the old reader down
+    // (via voiceClient.disconnectExternalButton) and immediately
+    // re-attaches under the new MAC (via voiceClient.connectExternalButton),
+    // and we don't want a concurrent picker tap racing that sequence
+    // to double-teardown or leave a stale reader stitched to a
+    // disposed GATT client. Reset in a finally so an exception in
+    // the tear-down / respawn path doesn't wedge the guard on.
+    @Volatile
+    private var reInitingExternalButtonReader: Boolean = false
+
     // V2-AINA SDP-cache-gap probe — see [AinaProtocolProbe]. Lazily
     // constructed against the held plugin context.
     @Volatile
@@ -3065,36 +3077,167 @@ class XvMapComponent : AbstractMapComponent() {
     private fun ainaProbeFor(ctx: Context): com.atakmap.android.xv.aina.AinaProtocolProbe =
         ainaProbe ?: com.atakmap.android.xv.aina.AinaProtocolProbe(ctx).also { ainaProbe = it }
 
+    // Operator-driven External Button slot change (picker on-select,
+    // debug-intent MAC set, future automation). Persists the pick,
+    // then dispatches through [ExternalButtonReaderResolver] to decide
+    // whether the currently-running reader (if any) needs to be torn
+    // down and / or respawned under the new MAC.
+    //
+    // Field bug this closes: on 2026-07-11 (Pixel 9 Pro, Pryme
+    // BT-PTT-Z puck) the picker showed the puck as "Connected" but
+    // physical button presses did NOT reach XvVoicePlant — no
+    // `external button PTT down=true` events. Only after toggling
+    // the picker to "(none)" and then re-assigning the puck did
+    // events start dispatching. Same class of reader-lifecycle race
+    // PR #35 fixed for the primary AINA (button-protocol change on
+    // a connected device did not respawn the reader). Mirrors that
+    // fix by routing every operator-driven MAC change through the
+    // shared [PttReaderRespawnDecision] matrix and calling the same
+    // teardown → connect sequence the primary AINA path uses. See
+    // [ExternalButtonReaderResolver] for the pure decision.
+    //
+    // Reentry guarded because the tear-down + respawn is not atomic
+    // across the AIDL boundary — a concurrent picker tap racing the
+    // sequence could double-teardown or leave a stale reader stitched
+    // to a disposed GATT client.
     @SuppressWarnings("MissingPermission")
     private fun setSelectedExternalButtonInternal(mac: String?) {
-        settings.persistExternalButtonMac(mac)
-        if (mac.isNullOrBlank()) {
-            voiceClient?.ifBound { it.disconnectExternalButton() }
-            lastExternalButtonMac = null
-            lastExternalButtonConnected = false
-            settings.persistExternalButtonKind(null)
+        // Guarded against reentry from a picker tap racing an
+        // in-flight tear-down + respawn on the External Button slot.
+        // Same shape as [setAinaButtonProtocolInternal]'s
+        // [reInitingReaderKind] guard.
+        if (reInitingExternalButtonReader) {
+            Log.i(
+                TAG,
+                "setSelectedExternalButtonInternal: reader re-init already in flight — dropping " +
+                    "request for mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
+            )
             return
         }
-        // Refuse silently if it collides with the primary — picker
-        // already filters it out, but defend in depth.
-        val primary = settings.persistedAinaMac()
-        if (primary != null && primary.equals(mac, ignoreCase = true)) {
-            Log.w(TAG, "setSelectedExternalButtonInternal: $mac collides with primary — ignored")
-            settings.persistExternalButtonMac(null)
-            return
+        // Normalise inputs before persist so the primary-collision
+        // check and the resolver's MAC comparison see the same
+        // string the picker offered up.
+        val normalizedNewMac = mac?.trim()?.takeIf { it.isNotBlank() }
+        // Refuse silently if the picked MAC collides with the
+        // primary — picker already filters it out, but defend in
+        // depth. Do this BEFORE persisting so we don't clobber a
+        // valid external-button pick with a bad one.
+        if (normalizedNewMac != null) {
+            val primary = settings.persistedAinaMac()
+            if (primary != null && primary.equals(normalizedNewMac, ignoreCase = true)) {
+                Log.w(
+                    TAG,
+                    "setSelectedExternalButtonInternal: ${com.atakmap.android.xv.aina.redactMac(normalizedNewMac)} " +
+                        "collides with primary — ignored",
+                )
+                // Clear any prior external-button pick to avoid a
+                // stale MAC pointing at the primary.
+                settings.persistExternalButtonMac(null)
+                return
+            }
         }
-        val kind = resolveConnectKind(mac)
-        Log.i(TAG, "setSelectedExternalButtonInternal: connecting $mac as kind=$kind")
-        settings.persistExternalButtonKind(kind)
-        lastExternalButtonMac = mac
-        voiceClient?.ifBound { it.connectExternalButton(mac, null, kind) }
-        // No service-side state-edge callback for the external button
-        // yet — optimistically cache "connected" so the UI shows
-        // progress. A future commit could thread an
-        // onExternalButtonConnectionChanged through the AIDL listener;
-        // for now the operator sees the picker status flip green on
-        // successful connect.
-        lastExternalButtonConnected = true
+        // Persist the pick. If the resolver decides NO_OP below, this
+        // is the only side effect — the next connect edge picks it up.
+        settings.persistExternalButtonMac(normalizedNewMac)
+
+        // Resolver inputs: [lastExternalButtonMac] is the MAC the
+        // plugin last handed to the service (source of truth for
+        // "what reader is currently running"), [normalizedNewMac] is
+        // the operator's new pick, and [isConnected] is
+        // [lastExternalButtonConnected] — the optimistic-cache flag
+        // set on connectExternalButton and cleared on disconnect.
+        val currentMac = lastExternalButtonMac
+        val isConnected = lastExternalButtonConnected
+        val decision =
+            com.atakmap.android.xv.aina.ExternalButtonReaderResolver.shouldRespawnReader(
+                currentMac = currentMac,
+                newMac = normalizedNewMac,
+                isConnected = isConnected,
+            )
+        Log.i(
+            TAG,
+            "setSelectedExternalButtonInternal: currentMac=${com.atakmap.android.xv.aina.redactMac(currentMac)} " +
+                "newMac=${com.atakmap.android.xv.aina.redactMac(normalizedNewMac)} " +
+                "isConnected=$isConnected → $decision",
+        )
+        when (decision) {
+            com.atakmap.android.xv.aina.PttReaderRespawnDecision.Decision.NO_OP -> {
+                // Persist-only path. If the operator picked (none) on
+                // an already-disconnected slot, still clear the kind
+                // so the next auto-connect doesn't try to reuse a
+                // stale kind string. If the operator picked the SAME
+                // MAC as the running reader, leave the kind persistence
+                // alone.
+                if (normalizedNewMac == null) {
+                    settings.persistExternalButtonKind(null)
+                }
+                return
+            }
+            com.atakmap.android.xv.aina.PttReaderRespawnDecision.Decision.TEARDOWN_ONLY -> {
+                // Operator picked (none) on a live reader. Tear down
+                // the reader and clear plugin-side bookkeeping. The
+                // External Button slot has no audio path, so unlike
+                // the primary AINA's TEARDOWN_ONLY there's nothing
+                // to preserve — a full [disconnectExternalButton] on
+                // the service is exactly right.
+                reInitingExternalButtonReader = true
+                try {
+                    voiceClient?.ifBound { it.disconnectExternalButton() }
+                    lastExternalButtonMac = null
+                    lastExternalButtonConnected = false
+                    settings.persistExternalButtonKind(null)
+                } finally {
+                    reInitingExternalButtonReader = false
+                }
+                return
+            }
+            com.atakmap.android.xv.aina.PttReaderRespawnDecision.Decision.RESPAWN -> {
+                // New MAC OR "no reader → live reader" transition on
+                // an already-connected slot. Resolve kind fresh (in
+                // case the operator scanned in a new BLE PTT device
+                // between config edits) and re-attach. VoicePlant's
+                // [connectExternalButton] already calls
+                // [disconnectExternalButton] at its entry point so
+                // we don't need a manual teardown here — one AIDL
+                // round-trip handles both edges. Guard covers the
+                // window between the plugin's persistExternalButtonKind
+                // and the service's reader flip so a concurrent
+                // config change can't race it.
+                //
+                // Precondition: RESPAWN implies newMac is non-null
+                // (the "live → no reader" flip lands in TEARDOWN_ONLY
+                // above; the "no reader → no reader" flip lands in
+                // NO_OP). Guarding with !! to make the contract
+                // explicit; a null here would be a decision-matrix
+                // bug worth surfacing loudly.
+                val newMac = requireNotNull(normalizedNewMac) {
+                    "ExternalButtonReaderResolver returned RESPAWN with null newMac"
+                }
+                val kind = resolveConnectKind(newMac)
+                reInitingExternalButtonReader = true
+                try {
+                    Log.i(
+                        TAG,
+                        "setSelectedExternalButtonInternal: connecting ${com.atakmap.android.xv.aina.redactMac(newMac)} " +
+                            "as kind=$kind",
+                    )
+                    settings.persistExternalButtonKind(kind)
+                    lastExternalButtonMac = newMac
+                    voiceClient?.ifBound { it.connectExternalButton(newMac, null, kind) }
+                    // No service-side state-edge callback for the
+                    // external button yet — optimistically cache
+                    // "connected" so the UI shows progress. A future
+                    // commit could thread an
+                    // onExternalButtonConnectionChanged through the
+                    // AIDL listener; for now the operator sees the
+                    // picker status flip green on successful connect.
+                    lastExternalButtonConnected = true
+                } finally {
+                    reInitingExternalButtonReader = false
+                }
+                return
+            }
+        }
     }
 
     // Shared MAC-format check for the scan-and-pick flow's primary /
