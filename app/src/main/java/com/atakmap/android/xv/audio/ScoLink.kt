@@ -189,49 +189,84 @@ class ScoLink(
             // and, if that fails, open the system output switcher so the
             // operator can pick manually. On SUCCESS, re-read the comm
             // devices briefly — if the override now appears, pin to it
-            // instead of the fallback. See [handleOverrideMissed] for
+            // instead of the fallback. See [handleTargetMissed] for
             // the decision tree.
-            val pinned = handleOverrideMissed(override)
+            val pinned = handleTargetMissed(override, isHint = false)
+            if (pinned != null) return pinned
+        } else if (result.hintMissed && override.isNullOrBlank() && !hint.isNullOrBlank()) {
+            // No explicit override — Auto path. The hint (primary AINA)
+            // is set but not currently a comm device. Field 2026-07-11:
+            // Pixel + AINA APTT + Shokz OpenMove both HFP-connected;
+            // OpenMove is the OS's active HFP and
+            // [AudioManager.availableCommunicationDevices] only returns
+            // OpenMove. Without a nudge, [pickBtCommDeviceFromCandidates]
+            // falls through to "first BT SCO" = OpenMove and audio routes
+            // to the wrong device. Same reflection → switcher fallback
+            // path as the override case, just against the hint MAC and
+            // with hint-side toast wording.
+            Log.w(
+                TAG,
+                "preferredBtMacHint ${com.atakmap.android.xv.aina.redactMac(hint)} not available " +
+                    "as comm device — attempting active-HFP nudge for primary speakermic",
+            )
+            val pinned = handleTargetMissed(hint, isHint = true)
             if (pinned != null) return pinned
         }
         return result.pick?.audioDevice as AudioDeviceInfo?
     }
 
     // ============================================================
-    // Override-unreachable handling (feat/bt-active-device-controller)
+    // Target-unreachable handling (feat/bt-active-device-controller +
+    // feat/bt-active-device-nudge-primary-hint)
     // ============================================================
     //
     // Timestamp of the last system output-switcher launch, ms since
-    // boot. Rate-limits the Intent so a stuck-out-of-range override
-    // + repeated PTT presses doesn't yank the system panel over ATAK
-    // every burst. See [SWITCHER_COOLDOWN_MS].
+    // boot. Rate-limits the Intent so a stuck-out-of-range target
+    // (either override or primary AINA hint) + repeated PTT presses
+    // doesn't yank the system panel over ATAK every burst. The
+    // cooldown is shared across both entry points — one switcher
+    // launch per 30 s regardless of which target triggered it. See
+    // [SWITCHER_COOLDOWN_MS].
     @Volatile
     private var lastSwitcherLaunchMs: Long = 0L
 
     /**
-     * Called from [pickBtCommDevice] when the override MAC is set but
-     * not in the currently-available comm-device list. Wraps the pure
-     * [decideOverrideAction] state machine and executes the resulting
-     * action:
+     * Called from [pickBtCommDevice] when the effective target MAC —
+     * either the operator's explicit "Audio device" override, or the
+     * primary AINA hint set by connectAinaInternal — is not currently a
+     * comm device in [AudioManager.availableCommunicationDevices]. Wraps
+     * the pure [decideOverrideAction] state machine and executes the
+     * resulting action:
      *
      *   - `PIN_DIRECT` never happens here (we're already inside the
      *     "miss" branch), but the enum includes it for the outer
      *     re-poll after a successful reflection.
-     *   - `TRY_REFLECTION`: call [BtActiveDeviceController.trySetActive].
-     *     On SUCCESS, poll [AudioManager.availableCommunicationDevices]
-     *     briefly and re-pin to the override if it now appears.
+     *   - `TRY_REFLECTION`: call [BtActiveDeviceController.trySetActive]
+     *     against [targetMac]. On SUCCESS, poll
+     *     [AudioManager.availableCommunicationDevices] briefly and
+     *     re-pin to [targetMac] if it now appears.
      *   - `LAUNCH_SWITCHER`: fire the media-output panel intent + a
      *     one-time toast so the operator knows what happened. Falls
-     *     through to `null` — the caller keeps the hint pin.
-     *   - `PIN_HINT`: no-op; caller keeps the hint pin. This is the
-     *     silent path taken while the cooldown is running.
+     *     through to `null` — the caller keeps the hint / auto pick.
+     *   - `PIN_HINT`: no-op; caller keeps the hint / auto pick. This
+     *     is the silent path taken while the cooldown is running.
      *
-     * Returns the override AudioDeviceInfo when reflection succeeded
-     * fast enough for the OS to re-enumerate — the caller pins to it
+     * @param targetMac The MAC we want to make the active HFP device.
+     * @param isHint    True when [targetMac] came from the AINA hint
+     *                  (Auto path). False when it came from the
+     *                  explicit override. Only affects the operator-
+     *                  facing toast wording — the reflection + switcher
+     *                  path itself is identical.
+     *
+     * Returns the target AudioDeviceInfo when reflection succeeded fast
+     * enough for the OS to re-enumerate — the caller pins to it
      * directly. Returns null when the caller should fall back to the
-     * hint / speaker.
+     * hint / auto chain.
      */
-    private fun handleOverrideMissed(overrideMac: String): AudioDeviceInfo? {
+    private fun handleTargetMissed(
+        targetMac: String,
+        isHint: Boolean,
+    ): AudioDeviceInfo? {
         val availableMacs =
             try {
                 audioManager.availableCommunicationDevices
@@ -240,17 +275,24 @@ class ScoLink(
             } catch (_: Throwable) {
                 emptySet()
             }
+        // Pass BOTH override and hint to the pure decision so the state
+        // machine sees the same view of the world as the caller. In the
+        // hint-side entry [targetMac] equals `hint` and `override` is
+        // null; in the override-side entry [targetMac] equals `override`
+        // and `hint` is passed through for completeness. The decision
+        // function resolves the effective target the same way we did.
+        val override = outputOverrideMac()
         val hint = preferredBtMac()
         // Peek at our per-MAC record of the last reflection outcome. We
         // maintain [lastReflectionByMac] alongside BtActiveDeviceController's
         // own cache because [decideOverrideAction] wants a nullable
         // "never tried this session" signal — the controller's cache
         // doesn't expose null vs. cached-but-uninteresting cleanly.
-        val cached = lastReflectionByMac[overrideMac.uppercase()]
+        val cached = lastReflectionByMac[targetMac.uppercase()]
         val nowMs = android.os.SystemClock.elapsedRealtime()
         val action =
             decideOverrideAction(
-                overrideMac = overrideMac,
+                overrideMac = override,
                 hintMac = hint,
                 availableMacs = availableMacs,
                 reflectionCached = cached,
@@ -260,25 +302,25 @@ class ScoLink(
             )
         Log.i(
             TAG,
-            "handleOverrideMissed(${com.atakmap.android.xv.aina.redactMac(overrideMac)}) → $action" +
+            "handleTargetMissed(${com.atakmap.android.xv.aina.redactMac(targetMac)}, isHint=$isHint) → $action" +
                 " (cached=${cached?.javaClass?.simpleName ?: "none"})",
         )
         return when (action) {
             OverrideRoutingAction.PIN_DIRECT -> null // structurally impossible here; caller path stands
             OverrideRoutingAction.PIN_HINT -> null
             OverrideRoutingAction.TRY_REFLECTION -> {
-                val result = BtActiveDeviceController.trySetActive(context, overrideMac)
-                lastReflectionByMac[overrideMac.uppercase()] = result
+                val result = BtActiveDeviceController.trySetActive(context, targetMac)
+                lastReflectionByMac[targetMac.uppercase()] = result
                 if (result is BtActiveDeviceController.TrySetActiveResult.Success) {
                     // Wait briefly for the OS to re-enumerate. 25 ms
                     // polls × 8 = ~200 ms budget, same shape as the
                     // startCommDevice readiness poll.
-                    val rePin = pollForOverrideAvailability(overrideMac)
+                    val rePin = pollForOverrideAvailability(targetMac)
                     if (rePin != null) {
                         Log.i(
                             TAG,
-                            "active HFP switched via reflection — pinning override " +
-                                com.atakmap.android.xv.aina.redactMac(overrideMac),
+                            "active HFP switched via reflection — pinning target " +
+                                com.atakmap.android.xv.aina.redactMac(targetMac),
                         )
                         return rePin
                     }
@@ -286,16 +328,16 @@ class ScoLink(
                     // move the device into the available list. Fall
                     // through to the switcher so the operator can
                     // complete the swap.
-                    Log.i(TAG, "reflection SUCCESS but override still absent — opening switcher")
-                    launchSwitcherIfPermitted(overrideMac, nowMs)
+                    Log.i(TAG, "reflection SUCCESS but target still absent — opening switcher")
+                    launchSwitcherIfPermitted(targetMac, nowMs, isHint)
                     return null
                 }
                 Log.d(TAG, "reflection non-success (${result.javaClass.simpleName}) — will consider switcher")
-                launchSwitcherIfPermitted(overrideMac, nowMs)
+                launchSwitcherIfPermitted(targetMac, nowMs, isHint)
                 null
             }
             OverrideRoutingAction.LAUNCH_SWITCHER -> {
-                launchSwitcherIfPermitted(overrideMac, nowMs)
+                launchSwitcherIfPermitted(targetMac, nowMs, isHint)
                 null
             }
         }
@@ -310,13 +352,13 @@ class ScoLink(
     private val lastReflectionByMac: MutableMap<String, BtActiveDeviceController.TrySetActiveResult> =
         java.util.Collections.synchronizedMap(HashMap())
 
-    private fun pollForOverrideAvailability(overrideMac: String): AudioDeviceInfo? {
-        val overrideUpper = overrideMac.uppercase()
+    private fun pollForOverrideAvailability(targetMac: String): AudioDeviceInfo? {
+        val targetUpper = targetMac.uppercase()
         val deadline = System.nanoTime() + POST_SET_ACTIVE_POLL_BUDGET_MS * 1_000_000L
         while (System.nanoTime() < deadline) {
             try {
                 val devs = audioManager.availableCommunicationDevices
-                val hit = devs.firstOrNull { macOf(it).equals(overrideUpper, ignoreCase = true) }
+                val hit = devs.firstOrNull { macOf(it).equals(targetUpper, ignoreCase = true) }
                 if (hit != null) return hit
             } catch (_: Throwable) {
             }
@@ -331,8 +373,9 @@ class ScoLink(
     }
 
     private fun launchSwitcherIfPermitted(
-        overrideMac: String,
+        targetMac: String,
         nowMs: Long,
+        isHint: Boolean,
     ) {
         if (nowMs - lastSwitcherLaunchMs < SWITCHER_COOLDOWN_MS) {
             Log.d(
@@ -343,7 +386,6 @@ class ScoLink(
             return
         }
         lastSwitcherLaunchMs = nowMs
-        val name = overrideDisplayName()
         // Toast on the main thread. Uses the device's display name
         // (from AudioRouter.availableBtOutputs) rather than the raw
         // MAC per CLAUDE.md sensitive-content rules. When the name
@@ -352,11 +394,26 @@ class ScoLink(
         // rather than fall back to the redacted MAC — a redacted MAC
         // in a Toast is worse UX than "system requires manual
         // selection" with no name.
+        //
+        // Wording differs slightly by target source. The override case
+        // is the explicit-picker path — operator picked a device and
+        // it's not reachable. The hint case is the Auto path with a
+        // primary AINA — operator didn't pick anything explicitly but
+        // the primary speakermic isn't where the OS is routing audio.
+        val name = overrideDisplayName()
         val msg =
-            if (!name.isNullOrBlank()) {
-                "Route override to $name: system requires manual selection. Opening switcher…"
+            if (isHint) {
+                if (!name.isNullOrBlank()) {
+                    "Primary speakermic ($name) not active — opening switcher to fix"
+                } else {
+                    "Primary speakermic (AINA) not active — opening switcher to fix"
+                }
             } else {
-                "Route override: system requires manual selection. Opening switcher…"
+                if (!name.isNullOrBlank()) {
+                    "Route override to $name: system requires manual selection. Opening switcher…"
+                } else {
+                    "Route override: system requires manual selection. Opening switcher…"
+                }
             }
         mainHandler.post {
             try {
@@ -364,14 +421,14 @@ class ScoLink(
                     .makeText(context, msg, android.widget.Toast.LENGTH_LONG)
                     .show()
             } catch (t: Throwable) {
-                Log.w(TAG, "override-unreachable toast threw", t)
+                Log.w(TAG, "target-unreachable toast threw", t)
             }
         }
         val launched = AudioRouter.launchSystemOutputSwitcher(context)
         Log.i(
             TAG,
-            "opened system output switcher for override " +
-                "${com.atakmap.android.xv.aina.redactMac(overrideMac)} launched=$launched",
+            "opened system output switcher for target " +
+                "${com.atakmap.android.xv.aina.redactMac(targetMac)} (isHint=$isHint) launched=$launched",
         )
     }
 
@@ -793,11 +850,18 @@ class ScoLink(
          * Outcome of the two-input selector [pickBtCommDeviceWithOverride].
          * [overrideMissed] is true when the caller passed an [overrideMac]
          * that didn't match any BT candidate — the production wrapper
-         * uses this signal to emit the fall-back warning log.
+         * uses this signal to emit the fall-back warning log and enter
+         * the active-HFP-nudge path. [hintMissed] is true when the
+         * override was null / blank AND a non-blank [hintMac] failed to
+         * match any BT candidate — the extension to the nudge path
+         * added 2026-07-11 for the Auto + primary-AINA + secondary-BT
+         * field scenario. Both flags are mutually exclusive: if
+         * [overrideMissed] fires the code never consults the hint side.
          */
         internal data class Selection(
             val pick: Candidate?,
             val overrideMissed: Boolean,
+            val hintMissed: Boolean = false,
         )
 
         /**
@@ -810,7 +874,11 @@ class ScoLink(
          *      single-arg selector on [hintMac], and flag the miss so
          *      the caller can log a warning.
          *   3. [overrideMac] null/blank → single-arg selector on
-         *      [hintMac] (legacy behavior).
+         *      [hintMac]. When [hintMac] is non-blank but doesn't
+         *      match any BT candidate, flag [Selection.hintMissed]
+         *      so the caller can attempt the active-HFP nudge for
+         *      the primary speakermic (Auto path — 2026-07-11 field
+         *      extension).
          *
          * Split out from [pickBtCommDevice] so tests can pin every
          * precedence branch without standing up AudioManager. See the
@@ -824,9 +892,25 @@ class ScoLink(
             hintMac: String?,
         ): Selection {
             if (overrideMac.isNullOrBlank()) {
+                val pick = pickBtCommDeviceFromCandidates(candidates, hintMac)
+                // Hint-missed only fires when the operator has a hint
+                // set (primary AINA MAC pushed by connectAinaInternal)
+                // AND that MAC didn't match any BT candidate. Blank
+                // hint = no speakermic paired at all; there's no
+                // primary target to nudge toward.
+                val hintMissed =
+                    !hintMac.isNullOrBlank() &&
+                        candidates.none {
+                            it.mac.equals(hintMac, ignoreCase = true) &&
+                                (
+                                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                                    )
+                        }
                 return Selection(
-                    pick = pickBtCommDeviceFromCandidates(candidates, hintMac),
+                    pick = pick,
                     overrideMissed = false,
+                    hintMissed = hintMissed,
                 )
             }
             // Override set — try to match it first. Use the same

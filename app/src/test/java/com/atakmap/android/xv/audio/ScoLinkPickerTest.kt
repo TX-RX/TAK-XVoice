@@ -285,4 +285,120 @@ class ScoLinkPickerTest {
         assertEquals(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, result.pick!!.type)
         assertEquals(false, result.overrideMissed)
     }
+
+    // ============================================================
+    // hintMissed flag (2026-07-11 extension — Auto + primary AINA)
+    // ============================================================
+    //
+    // Regression coverage for the field observation where Auto + primary
+    // AINA + a secondary BT headset (Shokz OpenMove) resulted in audio
+    // routing to the headset instead of the AINA. The selector still
+    // returns the fallback pick (whatever the single-arg selector picks
+    // from the candidate list) but the caller uses [hintMissed] to
+    // decide whether to run the active-HFP-nudge state machine against
+    // the hint MAC.
+
+    @Test
+    fun `no override, hint present in candidates — hintMissed false`() {
+        // Baseline: hint is set AND matches a BT candidate. No nudge
+        // needed; the caller pins directly to the hint.
+        val list =
+            listOf(
+                sco("AA:BB:CC:DD:EE:FF"), // hint (AINA)
+                sco("11:22:33:44:55:66"), // OpenMove
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = null,
+                hintMac = "AA:BB:CC:DD:EE:FF",
+            )
+        assertEquals("AA:BB:CC:DD:EE:FF", result.pick!!.mac)
+        assertEquals(false, result.overrideMissed)
+        assertEquals(false, result.hintMissed)
+    }
+
+    @Test
+    fun `no override, hint missing from candidates — hintMissed true`() {
+        // Field 2026-07-11: Auto path with primary AINA set. The AINA
+        // MAC isn't in the candidate list because the OS's active HFP
+        // is a different device (Shokz OpenMove). The selector still
+        // returns the OpenMove SCO as a fallback pick — the caller uses
+        // [hintMissed] to fire the active-HFP nudge against the AINA
+        // MAC before returning that fallback.
+        val list =
+            listOf(
+                sco("11:22:33:44:55:66"), // OpenMove — the only comm device
+            )
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = null,
+                hintMac = "AA:BB:CC:DD:EE:FF", // AINA — not in candidates
+            )
+        assertEquals("11:22:33:44:55:66", result.pick!!.mac)
+        assertEquals(false, result.overrideMissed)
+        assertEquals(true, result.hintMissed)
+    }
+
+    @Test
+    fun `no override, null hint — hintMissed false (nothing to nudge toward)`() {
+        // No hint = no primary AINA paired. Nothing to nudge; the flag
+        // stays false and the caller's existing hint / auto chain stands.
+        val list = listOf(sco("11:22:33:44:55:66"))
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = null,
+                hintMac = null,
+            )
+        assertEquals("11:22:33:44:55:66", result.pick!!.mac)
+        assertEquals(false, result.overrideMissed)
+        assertEquals(false, result.hintMissed)
+    }
+
+    @Test
+    fun `no override, blank hint — hintMissed false`() {
+        val list = listOf(sco("11:22:33:44:55:66"))
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = null,
+                hintMac = "   ",
+            )
+        assertEquals(false, result.hintMissed)
+    }
+
+    @Test
+    fun `no override, hint absent, empty candidates — hintMissed true, pick null`() {
+        // No BT at all — but the operator still has a hint set. The flag
+        // fires so the caller can attempt the nudge even when there's
+        // nothing to fall back to (the nudge itself is a no-op with no
+        // candidates present; the caller still gets accurate state).
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = emptyList(),
+                overrideMac = null,
+                hintMac = "AA:BB:CC:DD:EE:FF",
+            )
+        assertNull(result.pick)
+        assertEquals(true, result.hintMissed)
+    }
+
+    @Test
+    fun `override missed does not also set hintMissed`() {
+        // The two flags are mutually exclusive. When the override is
+        // set-but-missed, the caller enters the override-side of the
+        // nudge; hintMissed stays false regardless of whether the hint
+        // matches or not.
+        val list = listOf(sco("77:77:77:77:77:77")) // neither override nor hint
+        val result =
+            ScoLink.pickBtCommDeviceWithOverride(
+                candidates = list,
+                overrideMac = "AA:BB:CC:DD:EE:FF",
+                hintMac = "11:22:33:44:55:66",
+            )
+        assertEquals(true, result.overrideMissed)
+        assertEquals(false, result.hintMissed)
+    }
 }
