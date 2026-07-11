@@ -572,6 +572,89 @@
                     android:layout_marginTop="4dp"
                     android:visibility="gone"/>
 
+                <!-- Sonim ruggedized-device dedicated PTT side button
+                     toggle. Visible ONLY on Sonim XP10 / XP9900 and
+                     XP-family peers — the row is hidden (`View.GONE`)
+                     at inflate time on every other device via
+                     XvDropDownReceiver.wireSonimPttButtonSwitch, which
+                     consults `SonimHardwareButtons.isSupported(context)`.
+                     Non-Sonim operators never see this row. Default OFF;
+                     the operator opts in explicitly. -->
+                <LinearLayout
+                    android:id="@+id/xv_row_sonim_ptt_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Use Sonim PTT button as PTT"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_sonim_ptt_button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/xv_label_sonim_ptt_button_help"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Use the dedicated PTT side button on your Sonim ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end. Turn OFF to restore the button's default Sonim behaviour."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone"/>
+
+                <!-- Sonim ruggedized-device dedicated Emergency / SOS
+                     button toggle. Same gate as the PTT-button row
+                     above. Currently a plain additional PTT source; a
+                     future PR may promote it to fire an emergency CoT
+                     event or SOS broadcast without changing this row. -->
+                <LinearLayout
+                    android:id="@+id/xv_row_sonim_emergency_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Use Sonim Emergency button as PTT"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_sonim_emergency_button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/xv_label_sonim_emergency_button_help"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Use the dedicated red Emergency / SOS button on your Sonim ruggedized device as an additional PTT source. For now, press to talk; release to end. A future update may add an emergency CoT event or SOS broadcast."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone"/>
+
                 <!-- Section header: Audio device -->
                 <TextView
                     android:layout_width="match_parent"
