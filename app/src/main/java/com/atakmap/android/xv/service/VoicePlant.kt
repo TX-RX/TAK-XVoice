@@ -393,21 +393,21 @@ class VoicePlant(
 
     @Volatile private var prymeBle: PrymeBleReader? = null
 
-    // Secondary PTT slot (e.g. a Pryme handlebar puck for motorcyclists
-    // who already wear an AINA speakermic). Independent connect /
-    // disconnect surface so the operator can pair both a speakermic
-    // AND a secondary button without one tearing the other down.
-    // PttDispatcher's OR-gate keeps concurrent presses from cutting
-    // each other off — see [PttDispatcher.down]. Secondary input is
-    // hard-locked to slot 0 (primary channel) and ignores PTTS/PTTE
-    // because the typical motorcyclist use case is "talk on the main
-    // channel without taking a hand off the bar" — not a full second
-    // input device with its own emergency button.
-    @Volatile private var ainaSecondarySpp: AinaSppReader? = null
+    // External-button PTT slot (e.g. a Pryme handlebar puck for
+    // motorcyclists who already wear an AINA speakermic). Independent
+    // connect / disconnect surface so the operator can pair both a
+    // speakermic AND an external button without one tearing the other
+    // down. PttDispatcher's OR-gate keeps concurrent presses from
+    // cutting each other off — see [PttDispatcher.down]. The external
+    // button is hard-locked to slot 0 (primary channel) and ignores
+    // PTTS/PTTE because the typical motorcyclist use case is "talk on
+    // the main channel without taking a hand off the bar" — not a full
+    // second input device with its own emergency button.
+    @Volatile private var externalButtonSpp: AinaSppReader? = null
 
-    @Volatile private var ainaSecondaryBle: AinaBleReader? = null
+    @Volatile private var externalButtonBle: AinaBleReader? = null
 
-    @Volatile private var prymeSecondaryBle: PrymeBleReader? = null
+    @Volatile private var externalButtonPrymeBle: PrymeBleReader? = null
 
     // MAC of the currently-connected AINA (or null when none). Used by
     // the BOND_STATE_CHANGED receiver to detect "the operator just
@@ -1345,30 +1345,30 @@ class VoicePlant(
     }
 
     /**
-     * Connect a SECONDARY AINA / Pryme / BLE PTT input. Use case:
-     * motorcyclist with an AINA V2 helmet speakermic AND a Pryme
-     * BLE PTT puck mounted on the handlebar — they need both to be
-     * able to key VS1 without one tearing the other down. Hard-
-     * locked to slot 0 (primary channel) and ignores PTTS/PTTE
-     * because the typical handlebar-button use case is "talk on
-     * the main channel"; a real second-channel split / emergency
-     * input would be its own redesign. Independent disconnect via
-     * [disconnectAinaSecondary] so the operator can swap the
-     * secondary independently of the primary.
+     * Connect an EXTERNAL BUTTON PTT input. Use case: motorcyclist
+     * with an AINA V2 helmet speakermic AND a Pryme BLE PTT puck
+     * mounted on the handlebar — they need both to be able to key
+     * VS1 without one tearing the other down. Hard-locked to slot 0
+     * (primary channel) and ignores PTTS/PTTE because the typical
+     * handlebar-button use case is "talk on the main channel"; a
+     * real second-channel split / emergency input would be its own
+     * redesign. Independent disconnect via [disconnectExternalButton]
+     * so the operator can swap the external button independently of
+     * the primary.
      */
-    fun connectAinaSecondary(
+    fun connectExternalButton(
         mac: String?,
         name: String?,
         kind: String?,
     ) {
         Log.i(
             TAG,
-            "connectAinaSecondary kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
+            "connectExternalButton kind=$kind mac=${com.atakmap.android.xv.aina.redactMac(mac)}",
         )
-        disconnectAinaSecondary()
+        disconnectExternalButton()
         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
         if (adapter == null) {
-            Log.w(TAG, "connectAinaSecondary: no Bluetooth adapter")
+            Log.w(TAG, "connectExternalButton: no Bluetooth adapter")
             return
         }
         val device =
@@ -1384,11 +1384,11 @@ class VoicePlant(
                     null
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "connectAinaSecondary: resolve threw", t)
+                Log.w(TAG, "connectExternalButton: resolve threw", t)
                 null
             }
         if (device == null) {
-            Log.w(TAG, "connectAinaSecondary: no device for mac=$mac name=$name")
+            Log.w(TAG, "connectExternalButton: no device for mac=$mac name=$name")
             return
         }
         val resolvedKind =
@@ -1403,14 +1403,15 @@ class VoicePlant(
                 kind
             }
         // Mirror the primary path's per-source disconnect handling —
-        // when the secondary transport drops mid-TX, forget the held
-        // button so the burst can terminate. See the field-bug note in
-        // [connectAina] above; the same failure mode applies to a
-        // handlebar Pryme puck as to a helmet AINA.
+        // when the external-button transport drops mid-TX, forget the
+        // held button so the burst can terminate. See the field-bug
+        // note in [connectAina] above; the same failure mode applies
+        // to a handlebar Pryme puck as to a helmet AINA.
         val onConn: (source: PttSource, up: Boolean) -> Unit = { source, up ->
-            Log.i(TAG, "Secondary AINA connection up=$up source=$source")
-            // Secondary doesn't drive the AINA-connected dot in the UI
-            // (that's the primary's indicator). Logged only.
+            Log.i(TAG, "External button connection up=$up source=$source")
+            // External button doesn't drive the AINA-connected dot in
+            // the UI (that's the primary speakermic's indicator).
+            // Logged only.
             if (!up) {
                 releaseStuckPttOnTransportDrop(source)
             }
@@ -1420,41 +1421,41 @@ class VoicePlant(
                 val r =
                     AinaSppReader(
                         context,
-                        secondaryAinaEvent(PttSource.AINA_V1),
+                        externalButtonEvent(PttSource.AINA_V1),
                         { up -> onConn(PttSource.AINA_V1, up) },
                     )
-                ainaSecondarySpp = r
+                externalButtonSpp = r
                 r.connect(device)
             }
             "v2", "ble" -> {
                 val r =
                     AinaBleReader(
                         context,
-                        secondaryAinaEvent(PttSource.AINA_V2),
+                        externalButtonEvent(PttSource.AINA_V2),
                         { up -> onConn(PttSource.AINA_V2, up) },
                     )
-                ainaSecondaryBle = r
+                externalButtonBle = r
                 r.connect(device)
             }
             "ble-hid", "hid" -> {
                 val r =
                     PrymeBleReader(
                         context,
-                        secondaryAinaEvent(PttSource.PRYME_BLE),
+                        externalButtonEvent(PttSource.PRYME_BLE),
                         { up -> onConn(PttSource.PRYME_BLE, up) },
                     )
-                prymeSecondaryBle = r
+                externalButtonPrymeBle = r
                 r.connect(device)
             }
-            else -> Log.w(TAG, "connectAinaSecondary: unknown kind '$resolvedKind'")
+            else -> Log.w(TAG, "connectExternalButton: unknown kind '$resolvedKind'")
         }
     }
 
-    fun disconnectAinaSecondary() {
-        ainaSecondaryBle?.disconnect()
-        ainaSecondaryBle = null
-        ainaSecondarySpp?.disconnect()
-        ainaSecondarySpp = null
+    fun disconnectExternalButton() {
+        externalButtonBle?.disconnect()
+        externalButtonBle = null
+        externalButtonSpp?.disconnect()
+        externalButtonSpp = null
         // dispose() (not just disconnect()) so any late GATT callback
         // still queued behind the OS's binder cannot fire back into
         // VoicePlant after we swap in a fresh reader — otherwise a
@@ -1463,24 +1464,24 @@ class VoicePlant(
         // duplicate-disconnect-suppression: dispose() sets a sticky
         // flag on BitmaskGattPttReader that short-circuits both the
         // connection-state and button-event dispatch paths.
-        prymeSecondaryBle?.dispose()
-        prymeSecondaryBle = null
-        // Clear any held-source bookkeeping the secondary left behind
-        // mid-burst — otherwise the OR-gate would think a press is
-        // still in flight on a now-disconnected source.
+        externalButtonPrymeBle?.dispose()
+        externalButtonPrymeBle = null
+        // Clear any held-source bookkeeping the external button left
+        // behind mid-burst — otherwise the OR-gate would think a press
+        // is still in flight on a now-disconnected source.
         try {
-            // Multiple sources might match; clear all the secondary
-            // ones to be safe. Idempotent inside PttDispatcher.
+            // Multiple sources might match; clear all the external-
+            // button ones to be safe. Idempotent inside PttDispatcher.
             pttDispatcher.forgetSource(PttSource.AINA_V1)
             pttDispatcher.forgetSource(PttSource.AINA_V2)
             pttDispatcher.forgetSource(PttSource.PRYME_BLE)
         } catch (t: Throwable) {
-            Log.w(TAG, "forgetSource on secondary disconnect threw", t)
+            Log.w(TAG, "forgetSource on external-button disconnect threw", t)
         }
     }
 
-    fun isAinaSecondaryConnected(): Boolean =
-        ainaSecondaryBle != null || ainaSecondarySpp != null || prymeSecondaryBle != null
+    fun isExternalButtonConnected(): Boolean =
+        externalButtonBle != null || externalButtonSpp != null || externalButtonPrymeBle != null
 
     fun disconnectAina() {
         ainaBle?.disconnect()
@@ -1488,14 +1489,14 @@ class VoicePlant(
         ainaSpp?.disconnect()
         ainaSpp = null
         // dispose() rather than disconnect() — see the analogous
-        // block in [disconnectAinaSecondary] for the rationale.
+        // block in [disconnectExternalButton] for the rationale.
         prymeBle?.dispose()
         prymeBle = null
         // Drop the BT routing hint — no AINA selected means no implicit
         // BT preference. Operator's explicit override (if any) still wins.
         router.preferredBtMacHint = null
         connectedAinaMac = null
-        // Mirror [disconnectAinaSecondary]: if the operator (or a wholesale
+        // Mirror [disconnectExternalButton]: if the operator (or a wholesale
         // BT-adapter-off cascade) is tearing us down mid-burst, drop any
         // held button state from the primary source so the OR-gate can
         // see an empty set and TxController.stop() runs. Idempotent
@@ -1582,7 +1583,7 @@ class VoicePlant(
     // Per-source button-handler factory for the primary input. Captures
     // [source] so PttDispatcher's OR-gate can distinguish concurrent
     // presses from different physical buttons (primary AINA + screen
-    // PTT, primary AINA + secondary handlebar puck, etc.). MFB
+    // PTT, primary AINA + external handlebar puck, etc.). MFB
     // (Voice Responder's multifunction call button) fires on RELEASE
     // only — single tap toggles the call state: answer if currently
     // ringing, hang up if currently active. Press-down is ignored so
@@ -1599,20 +1600,20 @@ class VoicePlant(
             }
         }
 
-    // Secondary input handler factory. Hard-locked to slot 0 (primary
-    // channel) and ignores PTTS / PTTE / MFB because the typical
-    // secondary-button use case is a motorcyclist's handlebar puck:
-    // "let me key the main channel from a second physical button I
-    // already have on the bike." Anything more nuanced (a real second
-    // input with full per-channel/emergency capability) is a separate
-    // redesign — out of scope for the "low-risk multi-PTT" the user
-    // asked for.
-    private fun secondaryAinaEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
+    // External-button input handler factory. Hard-locked to slot 0
+    // (primary channel) and ignores PTTS / PTTE / MFB because the
+    // typical external-button use case is a motorcyclist's handlebar
+    // puck: "let me key the main channel from a second physical button
+    // I already have on the bike." Anything more nuanced (a real
+    // second input with full per-channel/emergency capability) is a
+    // separate redesign — out of scope for the "low-risk multi-PTT"
+    // the user asked for.
+    private fun externalButtonEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
         { btn, down ->
-            Log.i(TAG, "secondary AINA button $btn down=$down source=$source")
+            Log.i(TAG, "external button $btn down=$down source=$source")
             when (btn) {
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
-                else -> { /* secondary input does not drive PTTS/PTTE/MFB */ }
+                else -> { /* external button does not drive PTTS/PTTE/MFB */ }
             }
         }
 
@@ -1679,7 +1680,7 @@ class VoicePlant(
         } catch (_: Throwable) {
         }
         try {
-            disconnectAinaSecondary()
+            disconnectExternalButton()
         } catch (_: Throwable) {
         }
         try {

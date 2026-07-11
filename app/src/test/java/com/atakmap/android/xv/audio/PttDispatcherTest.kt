@@ -285,9 +285,9 @@ class PttDispatcherTest {
 
     @Test
     fun `OR-gate — forgetSource on one of multiple held sources keeps TX engaged`() {
-        // Concurrent burst: the secondary AINA disconnects mid-press
-        // while the operator's on-screen PTT is still held. TX must
-        // stay engaged on the surviving source.
+        // Concurrent burst: the external-button AINA disconnects
+        // mid-press while the operator's on-screen PTT is still held.
+        // TX must stay engaged on the surviving source.
         val d = buildDispatcher()
         d.down(slot = 0, source = PttSource.AINA_V1)
         d.down(slot = 0, source = PttSource.ON_SCREEN)
