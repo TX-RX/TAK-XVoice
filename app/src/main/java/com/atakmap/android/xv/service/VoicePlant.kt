@@ -56,11 +56,66 @@ import com.atakmap.android.xv.ptt.SonimPttButtonReader
 class VoicePlant(
     private val context: Context,
     private val callbacks: Callbacks,
+    // Probe: does XV have a live self-managed Telecom Connection right
+    // now? Injected so unit tests can drive the "own call vs external
+    // call" branch of [cellularCallStateFromAudioMode] without a real
+    // Telecom registry or Robolectric. Defaults to reading
+    // [ActiveCallRegistry.hasActiveCall], which flips true the moment
+    // XvConnectionService registers a fresh XvConnection and flips
+    // back to false when XvConnection.onDestroy / teardownLocal fires
+    // — driven by the TELECOM_END_DEBOUNCE_MS runnable in
+    // XvVoiceService. That means the flag stays true across the whole
+    // 8 s post-activity wind-down of a burst (so mid-burst PTT
+    // presses do not self-gate) and only drops after Telecom has
+    // actually torn our connection down (so a fresh cellular call
+    // arriving after the debounce ends is correctly seen as
+    // external).
+    //
+    // Why we need this: on modern Pixel / Samsung / Motorola handsets
+    // with VoLTE cellular (the default on every major US carrier),
+    // the OS uses MODE_IN_COMMUNICATION for the *real* cellular call
+    // — the same audio mode XV's own self-managed Telecom call uses,
+    // and the same mode any other VoIP app (Signal, WhatsApp,
+    // Discord, Meet) uses. AudioManager.getMode() alone cannot tell
+    // "we placed this call" from "the cellular stack / another VoIP
+    // app placed this call". Combining getMode() with a lookup of
+    // our own connection state disambiguates: same MODE_IN_COMMUNICATION
+    // reading means IDLE when it's our call (do not self-gate) and
+    // OFFHOOK when it's theirs (block the accident-prone on-screen
+    // PTT so we do not auto-hold their call by placing our own on
+    // top). Field evidence for the ambiguity: Pixel 9 Pro / API 35,
+    // 2026-07-11 — a VoLTE voicemail call put the device in
+    // MODE_IN_COMMUNICATION; the old getMode()-only mapping treated
+    // that as IDLE, allowed the on-screen PTT, and let XV's Telecom
+    // call auto-hold the operator's live cellular call.
+    private val xvHasActiveTelecomCallProvider: () -> Boolean = {
+        try {
+            com.atakmap.android.xv.telecom.ActiveCallRegistry
+                .hasActiveCall()
+        } catch (t: Throwable) {
+            // Registry is a plain object with a volatile field read —
+            // it does not throw in practice. Belt-and-suspenders:
+            // treat "we don't know" as "we have no call", so a
+            // MODE_IN_COMMUNICATION reading maps to OFFHOOK and the
+            // on-screen PTT is blocked. That fails safe for the
+            // exact bug this gate exists to prevent — auto-holding
+            // an external call — at the cost of a spurious block on
+            // our own call, which is recoverable (release, press
+            // again, timing settles).
+            android.util.Log.w(
+                TAG,
+                "xvHasActiveTelecomCallProvider: unexpected throw — treating as no active call",
+                t,
+            )
+            false
+        }
+    },
     // Cellular-call state probe for the pttDown gate. Injected so unit
     // tests can drive OFFHOOK / RINGING / IDLE without touching a real
-    // AudioManager. Defaults to reading AudioManager.getMode() and
-    // mapping the audio-mode constant to a TelephonyManager call-state
-    // constant via [cellularCallStateFromAudioMode].
+    // AudioManager. Defaults to reading AudioManager.getMode() +
+    // [xvHasActiveTelecomCallProvider] and mapping the pair to a
+    // TelephonyManager call-state constant via
+    // [cellularCallStateFromAudioMode].
     //
     // Why AudioManager and not TelephonyManager: the original wire-up
     // used TelephonyManager.getCallState() on the assumption that the
@@ -72,9 +127,9 @@ class VoicePlant(
     // that itself throws + logs a stack trace on every press makes the
     // audio hot-path more expensive AND buys no benefit (we never see
     // OFFHOOK). AudioManager.getMode() requires no permission at any
-    // API level and returns MODE_IN_CALL / MODE_RINGTONE for the exact
-    // states we want to gate on. XV's own audio-plant code already
-    // reads audioManager.mode extensively (AudioControllerImpl,
+    // API level and returns MODE_IN_CALL / MODE_RINGTONE / MODE_IN_COMMUNICATION
+    // for the states we want to gate on. XV's own audio-plant code
+    // already reads audioManager.mode extensively (AudioControllerImpl,
     // ScoLink, TptPlayer) — this is just one more reader.
     //
     // Belt-and-suspenders: a defensive catch on Throwable still returns
@@ -87,7 +142,8 @@ class VoicePlant(
                 context.getSystemService(Context.AUDIO_SERVICE)
                     as? AudioManager
             cellularCallStateFromAudioMode(
-                am?.mode ?: AudioManager.MODE_NORMAL,
+                audioMode = am?.mode ?: AudioManager.MODE_NORMAL,
+                xvHasActiveTelecomCall = xvHasActiveTelecomCallProvider(),
             )
         } catch (t: Throwable) {
             android.util.Log.w(
