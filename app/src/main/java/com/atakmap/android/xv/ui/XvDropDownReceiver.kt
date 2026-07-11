@@ -280,6 +280,16 @@ class XvDropDownReceiver(
 
         fun setSamsungActiveKeyEnabled(enabled: Boolean) {}
 
+        // True when the XV accessibility service for background Active Key
+        // PTT is currently enabled (as reported by AccessibilityManager).
+        // Read-only from the Controller's perspective — the operator must
+        // grant / revoke the permission via the system Accessibility dialog.
+        fun samsungActiveKeyBgServiceEnabled(): Boolean = false
+
+        // Launch the system Accessibility settings page so the operator
+        // can enable or disable the XV accessibility service.
+        fun openAccessibilitySettings() {}
+
         // ---- Sonim ruggedized-device dedicated hardware buttons ----
         // True only when the current device is a Sonim ruggedized
         // model (XP10 / XP9900 and XP-family peers) that carries the
@@ -1501,6 +1511,7 @@ class XvDropDownReceiver(
         wireBlePttScanButton(v)
         wireAutoConnectBtSwitch(v)
         wireSamsungActiveKeySwitch(v)
+        wireSamsungActiveKeyBgSwitch(v)
         wireSonimPttButtonSwitch(v)
         wireSonimEmergencyButtonSwitch(v)
         wireBtAudioOverridePicker(v)
@@ -1938,6 +1949,39 @@ class XvDropDownReceiver(
         sw.setOnCheckedChangeListener { _, isChecked ->
             controller.setSamsungActiveKeyEnabled(isChecked)
         }
+    }
+
+    // Samsung Active Key background PTT toggle (Accessibility service).
+    // Only visible on Samsung ruggedized hardware — same isSupported()
+    // gate as the row above.  The toggle reflects whether the XV
+    // accessibility service is currently enabled (via AccessibilityManager)
+    // and is read-only in the traditional sense: tapping it opens the
+    // system Accessibility settings page rather than toggling directly,
+    // because Android does not allow apps to enable / disable accessibility
+    // services programmatically.  The switch read-state updates on each
+    // inflateSettings call so it stays in sync after the operator returns
+    // from the system settings page.
+    private fun wireSamsungActiveKeyBgSwitch(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_samsung_active_key_bg) ?: return
+        val help = v.findViewById<View>(R.id.xv_label_samsung_active_key_bg_help)
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_samsung_active_key_bg) ?: return
+        val supported = controller.samsungActiveKeySupported()
+        if (!supported) {
+            row.visibility = View.GONE
+            help?.visibility = View.GONE
+            return
+        }
+        row.visibility = View.VISIBLE
+        help?.visibility = View.VISIBLE
+        // Reflect current OS-level enabled state — no listener that
+        // would try to set it programmatically (Android disallows that).
+        sw.setOnCheckedChangeListener(null)
+        sw.isChecked = controller.samsungActiveKeyBgServiceEnabled()
+        // Any tap on the row or the switch opens the system Accessibility
+        // settings so the operator can enable / disable the service there.
+        val openSettings = View.OnClickListener { controller.openAccessibilitySettings() }
+        row.setOnClickListener(openSettings)
+        sw.setOnClickListener(openSettings)
     }
 
     // Sonim ruggedized-device dedicated PTT side button toggle. The

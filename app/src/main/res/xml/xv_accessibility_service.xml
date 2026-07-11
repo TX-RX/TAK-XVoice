@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Accessibility service descriptor for SamsungActiveKeyAccessibilityService.
+
+    This service exists for one purpose only: intercepting the Samsung
+    Active Key (keyCode 1015) via onKeyEvent so PTT works while ATAK is
+    in the background on Samsung ruggedized hardware (Tab Active5,
+    XCover6 Pro / 7, Tab Active4 Pro, Tab Active3).
+
+    Scope is intentionally the narrowest possible:
+      - accessibilityEventTypes="typeNone"  → subscribes to ZERO UI events
+      - canRetrieveWindowContent="false"    → never reads screen content
+      - flagRequestFilterKeyEvents only     → sole flag; grants onKeyEvent
+
+    The service does NOT observe typed text, viewed windows, app data,
+    or any other accessibility information.  Only KEY_CODE_PTT (1015)
+    is ever acted on; all other keycodes are passed through untouched.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeNone"
+    android:accessibilityFlags="flagRequestFilterKeyEvents"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/xv_accessibility_service_description"
+    android:settingsActivity="com.atakmap.android.xv.plugin.PermissionRequestActivity"/>

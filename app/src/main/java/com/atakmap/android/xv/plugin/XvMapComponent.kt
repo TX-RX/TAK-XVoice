@@ -2283,6 +2283,23 @@ class XvMapComponent : AbstractMapComponent() {
                 if (enabled) startSamsungActiveKeyForeground() else stopSamsungActiveKeyForeground()
             }
 
+            override fun samsungActiveKeyBgServiceEnabled(): Boolean {
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return false
+                return isSamsungActiveKeyAccessibilityServiceEnabled(ctx)
+            }
+
+            override fun openAccessibilitySettings() {
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return
+                try {
+                    val intent = android.content.Intent(
+                        android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS,
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ctx.startActivity(intent)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "openAccessibilitySettings: startActivity threw", t)
+                }
+            }
+
             override fun sonimHardwareButtonsSupported(): Boolean {
                 val ctx = heldMapView?.context ?: heldPluginContext ?: return false
                 return com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)
@@ -2648,6 +2665,37 @@ class XvMapComponent : AbstractMapComponent() {
             voiceClient?.ifBound { it.notifySamsungActiveKeyEdge(false) }
         } catch (t: Throwable) {
             Log.w(TAG, "defensive notifySamsungActiveKeyEdge(false) threw", t)
+        }
+    }
+
+    /**
+     * Returns true when the [SamsungActiveKeyAccessibilityService] is
+     * currently listed in the system's enabled-accessibility-services
+     * set. Uses [android.view.accessibility.AccessibilityManager] so
+     * the check reflects the actual OS-level state rather than any
+     * XV-side persisted flag.
+     *
+     * Safe to call on any thread; [AccessibilityManager] is thread-safe.
+     */
+    private fun isSamsungActiveKeyAccessibilityServiceEnabled(context: android.content.Context): Boolean {
+        return try {
+            val am = context.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE)
+                as? android.view.accessibility.AccessibilityManager
+                ?: return false
+            val enabled = am.getEnabledAccessibilityServiceList(
+                android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK,
+            )
+            val targetComponent =
+                com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.COMPONENT_NAME
+            enabled.any { info ->
+                info.resolveInfo?.serviceInfo?.let { si ->
+                    "${si.packageName}/${si.name}" == targetComponent ||
+                        "${si.packageName}/.${si.name.removePrefix(si.packageName + ".")}" == targetComponent
+                } ?: false
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "isSamsungActiveKeyAccessibilityServiceEnabled: query threw", t)
+            false
         }
     }
 

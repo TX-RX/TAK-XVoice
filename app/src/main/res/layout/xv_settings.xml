@@ -572,6 +572,54 @@
                     android:layout_marginTop="4dp"
                     android:visibility="gone"/>
 
+                <!-- Background Active Key PTT via Accessibility service.
+                     Visible ONLY on Samsung ruggedized hardware (same
+                     isSupported() gate as the row above).  When enabled,
+                     the Samsung Active Key fires PTT even while ATAK is
+                     backgrounded.  Requires the operator to grant XV the
+                     Accessibility permission via the system settings
+                     dialog — cannot be enabled programmatically.
+                     The button deep-links to the system Accessibility
+                     settings page; the toggle reflects whether the
+                     service is currently enabled (read-only — toggling
+                     navigates to OS settings rather than toggling in-
+                     place, because the OS permission cannot be granted
+                     or revoked by the app). -->
+                <LinearLayout
+                    android:id="@+id/xv_row_samsung_active_key_bg"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Use Active Key while ATAK is in the background"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_samsung_active_key_bg"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/xv_label_samsung_active_key_bg_help"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Requires granting XV the Accessibility permission so the Active Key fires PTT while ATAK is in the background. Does NOT read screen content, typed text, or any other app data — only the Active Key button is intercepted. Tap the toggle to open Android Accessibility Settings to enable or disable the XV service."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone"/>
+
                 <!-- Sonim ruggedized-device dedicated PTT side button
                      toggle. Visible ONLY on Sonim XP10 / XP9900 and
                      XP-family peers — the row is hidden (`View.GONE`)
