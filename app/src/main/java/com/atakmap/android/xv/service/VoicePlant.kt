@@ -1335,7 +1335,15 @@ class VoicePlant(
         ainaSecondaryBle = null
         ainaSecondarySpp?.disconnect()
         ainaSecondarySpp = null
-        prymeSecondaryBle?.disconnect()
+        // dispose() (not just disconnect()) so any late GATT callback
+        // still queued behind the OS's binder cannot fire back into
+        // VoicePlant after we swap in a fresh reader — otherwise a
+        // stale up=false from the OLD PrymeBleReader can echo through
+        // and log-spam / confuse mid-TX state. See fix/reader-
+        // duplicate-disconnect-suppression: dispose() sets a sticky
+        // flag on BitmaskGattPttReader that short-circuits both the
+        // connection-state and button-event dispatch paths.
+        prymeSecondaryBle?.dispose()
         prymeSecondaryBle = null
         // Clear any held-source bookkeeping the secondary left behind
         // mid-burst — otherwise the OR-gate would think a press is
@@ -1359,7 +1367,9 @@ class VoicePlant(
         ainaBle = null
         ainaSpp?.disconnect()
         ainaSpp = null
-        prymeBle?.disconnect()
+        // dispose() rather than disconnect() — see the analogous
+        // block in [disconnectAinaSecondary] for the rationale.
+        prymeBle?.dispose()
         prymeBle = null
         // Drop the BT routing hint — no AINA selected means no implicit
         // BT preference. Operator's explicit override (if any) still wins.
