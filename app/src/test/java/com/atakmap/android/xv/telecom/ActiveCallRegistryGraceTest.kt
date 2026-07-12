@@ -159,4 +159,46 @@ class ActiveCallRegistryGraceTest {
         // "why is this still blocked?" threshold.
         assertEquals(3_000L, ActiveCallRegistry.RECENT_OWN_CALL_GRACE_MS)
     }
+
+    // ============================================================
+    // hasHadOwnCallInProcess — signal for the ghost-purge guard
+    // ============================================================
+
+    @Test
+    fun `hasHadOwnCallInProcess is false on fresh sentinel-zero state`() {
+        // The @Before hook resets the timestamp to zero — matching the
+        // state of the singleton on a fresh service-process load
+        // (Kotlin object initializes to zero). The
+        // XvVoiceService.shouldGhostPurgeBeforePlaceCall guard relies
+        // on this reader to distinguish "first PTT ever" from "we've
+        // already placed and ended a call" — the first case must NOT
+        // pay the extra Telecom roundtrip.
+        assertFalse(ActiveCallRegistry.hasHadOwnCallInProcess())
+    }
+
+    @Test
+    fun `hasHadOwnCallInProcess is true after a teardown timestamp is stamped`() {
+        // Any non-zero stamp counts — the exact value is irrelevant to
+        // the boolean signal. Ordering: this is what
+        // ActiveCallRegistry.unregister() does synchronously the
+        // moment the last own call teardown lands (via
+        // SystemClock.elapsedRealtime()).
+        ActiveCallRegistry.setLastOwnCallEndedAtMsForTest(1L)
+        assertTrue(ActiveCallRegistry.hasHadOwnCallInProcess())
+    }
+
+    @Test
+    fun `hasHadOwnCallInProcess flips back to false only via explicit reset`() {
+        // The stamp is not zeroed on re-register — a subsequent call
+        // going ACTIVE does not clear the "has had one before" flag.
+        // The ghost-purge guard depends on the flag NOT resetting when
+        // a fresh call comes up; otherwise a rapid PTT cycle could see
+        // the signal drop and lose its protection between calls.
+        ActiveCallRegistry.setLastOwnCallEndedAtMsForTest(2_000L)
+        assertTrue(ActiveCallRegistry.hasHadOwnCallInProcess())
+        // The only way back to false is an explicit test reset (or a
+        // fresh process, which reinitializes the object).
+        ActiveCallRegistry.setLastOwnCallEndedAtMsForTest(0L)
+        assertFalse(ActiveCallRegistry.hasHadOwnCallInProcess())
+    }
 }
