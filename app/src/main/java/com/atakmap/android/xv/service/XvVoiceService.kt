@@ -78,6 +78,16 @@ class XvVoiceService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Bring the file-backed diagnostic logger up BEFORE anything
+        // else so subsequent init events land in the field-post-mortem
+        // file. Safe to call more than once — subsequent init()s are
+        // no-ops. See DiagnosticLogger KDoc for the field-motivating
+        // 2026-07-12 rollover incident.
+        com.atakmap.android.xv.util.DiagnosticLogger.init(this)
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onCreate — pid=${Process.myPid()} uid=${Process.myUid()}",
+        )
         Log.i(TAG, "onCreate (XV voice plant starting in pid=${Process.myPid()} uid=${Process.myUid()})")
         resolveAuthorizedUids()
         NotificationChannels.ensureAll(this)
@@ -460,6 +470,10 @@ class XvVoiceService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy — releasing voice plant")
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — releasing voice plant",
+        )
         releaseVolumeKeyCapture()
         telecomHandler.removeCallbacks(pendingEndRunnable)
         // Cancel the watchdog BEFORE removing externalTeardownListener
@@ -515,6 +529,11 @@ class XvVoiceService : Service() {
         }
         plant = null
         listeners.kill()
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — complete, flushing diagnostic log",
+        )
+        com.atakmap.android.xv.util.DiagnosticLogger.flush()
         super.onDestroy()
     }
 
@@ -968,6 +987,15 @@ class XvVoiceService : Service() {
             }
 
             override fun onPttBlockedByCellularCall(reason: String) {
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    severity = 'W',
+                    message = "PTT blocked by cellular gate: $reason",
+                )
+                com.atakmap.android.xv.util.DiagnosticLogger.stateSnapshot(
+                    context = this@XvVoiceService,
+                    reason = "cellular-gate-block",
+                )
                 fanOut { it.onPttBlockedByCellularCall(reason) }
             }
 
@@ -1288,6 +1316,10 @@ class XvVoiceService : Service() {
                 .activeConnection()
         if (existing != null) {
             Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection")
+            com.atakmap.android.xv.util.DiagnosticLogger.event(
+                tag = "XvVoiceSvc",
+                message = "placeCall tag='$tag' — REUSING existing XvConnection",
+            )
             try {
                 existing.setActiveSession()
             } catch (t: Throwable) {
@@ -1297,6 +1329,10 @@ class XvVoiceService : Service() {
         }
 
         Log.i(TAG, "placeTelecomCallInternal tag=$tag")
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "placeCall tag='$tag' — NEW Telecom call attempt",
+        )
         com.atakmap.android.xv.telecom.XvPhoneAccount
             .register(this)
         val tm =
