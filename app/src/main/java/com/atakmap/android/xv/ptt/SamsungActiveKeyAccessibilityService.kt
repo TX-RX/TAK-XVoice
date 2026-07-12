@@ -93,14 +93,16 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
     private var held: Boolean = false
 
     /**
-     * Empty implementation — XV subscribes to zero UI events.
+     * Empty implementation — XV discards every event unconditionally.
      * The method must be present because `AccessibilityService` declares
-     * it `abstract`, but the service descriptor's `typeNone` flag means
-     * the system will never invoke it with real event data.
+     * it `abstract`. The service descriptor subscribes to
+     * `typeWindowStateChanged` (the minimum AAPT accepts; `typeNone`/`0`
+     * is rejected at build time), but no event data is used here.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        // Intentionally empty.  typeNone in xv_accessibility_service.xml
-        // means no UI events are delivered here.
+        // Intentionally empty.  typeWindowStateChanged in
+        // xv_accessibility_service.xml is the nominal subscription required
+        // by AAPT; all dispatched events are discarded.
     }
 
     /**
