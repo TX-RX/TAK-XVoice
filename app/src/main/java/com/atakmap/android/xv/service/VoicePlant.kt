@@ -142,9 +142,33 @@ class VoicePlant(
             val am =
                 context.getSystemService(Context.AUDIO_SERVICE)
                     as? AudioManager
+            // Post-teardown grace: after our own Telecom call
+            // unregisters, AudioManager.getMode() can lag on the
+            // MODE_IN_COMMUNICATION → MODE_NORMAL transition for up
+            // to ~1.4 s on Pixel 9 Pro / API 35 (field observation
+            // 2026-07-11 14:47). In that window
+            // xvHasActiveTelecomCallProvider() returns false but
+            // the mode still reads IN_COMMUNICATION, which without
+            // this grace would resolve to CALL_STATE_OFFHOOK and
+            // block the operator's legitimate follow-up press with
+            // a spurious "Cellular call active" toast. OR the grace
+            // check into the own-call signal so the disambiguation
+            // stays "ours" for RECENT_OWN_CALL_GRACE_MS after our
+            // registry entry drops. External calls still resolve
+            // correctly because they never registered — the grace
+            // stamp only advances on our OWN teardown.
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            val xvOwnCallOrGrace =
+                xvHasActiveTelecomCallProvider() ||
+                    com.atakmap.android.xv.telecom.ActiveCallRegistry
+                        .withinRecentCallGrace(
+                            nowMs = nowMs,
+                            graceMs = com.atakmap.android.xv.telecom.ActiveCallRegistry
+                                .RECENT_OWN_CALL_GRACE_MS,
+                        )
             cellularCallStateFromAudioMode(
                 audioMode = am?.mode ?: AudioManager.MODE_NORMAL,
-                xvHasActiveTelecomCall = xvHasActiveTelecomCallProvider(),
+                xvHasActiveTelecomCall = xvOwnCallOrGrace,
             )
         } catch (t: Throwable) {
             android.util.Log.w(

@@ -3,6 +3,7 @@ package com.atakmap.android.xv.telecom
 import android.content.Context
 import android.telecom.CallAudioState
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 
 // Per-process holder for the live XvConnection. The plugin and the
 // XvConnectionService run in DIFFERENT processes (different UIDs), so
@@ -19,8 +20,39 @@ import android.util.Log
 internal object ActiveCallRegistry {
     private const val TAG = "XvCallReg"
 
+    /**
+     * Post-teardown grace window (milliseconds) after our own Telecom
+     * call is unregistered — see [withinRecentCallGrace] for the full
+     * rationale. Sized to cover the observed ~1.4 s window on Pixel 9
+     * Pro / API 35 during which `AudioManager.getMode()` still reports
+     * `MODE_IN_COMMUNICATION` after the call ends, plus a safety
+     * margin for slower devices (Samsung Tab5, Sonim ruggedized).
+     */
+    const val RECENT_OWN_CALL_GRACE_MS: Long = 3_000L
+
     @Volatile
     private var activeConnection: XvConnection? = null
+
+    // Wall-clock (elapsedRealtime) timestamp of the most recent
+    // transition from "own call active" → "own call ended". Zero
+    // means we have never had an own call in this process lifetime
+    // (or the registry has never been unregistered from). Read by
+    // [withinRecentCallGrace] to paper over a race between our own
+    // call ending and AudioManager.getMode() catching up.
+    //
+    // Field observation 2026-07-11 (Pixel 9 Pro / API 35): after
+    // XvVoiceService tore down its self-managed Telecom call, the
+    // registry unregistered synchronously (hasActiveCall() → false)
+    // but AudioManager.getMode() kept reporting MODE_IN_COMMUNICATION
+    // for ~1.4 s while the audio HAL wound down to MODE_NORMAL. In
+    // that window, PttCellularGate saw IN_COMMUNICATION + no own
+    // call → CALL_STATE_OFFHOOK → BLOCK_CELLULAR_CALL and blocked
+    // legitimate operator PTT presses with the "Cellular call
+    // active" toast. The grace window causes the gate to treat that
+    // stale IN_COMMUNICATION reading as still-ours for a bounded
+    // interval after teardown, restoring correct behavior.
+    @Volatile
+    private var lastOwnCallEndedAtMs: Long = 0L
 
     // Application context, set by XvVoiceService.onCreate. Used by
     // XvConnection to broadcast ANSWER/DECLINE/HANGUP intents from the
@@ -86,12 +118,78 @@ internal object ActiveCallRegistry {
     fun unregister(connection: XvConnection) {
         if (activeConnection === connection) {
             activeConnection = null
+            // Stamp the moment our own call transitioned to ended so
+            // [withinRecentCallGrace] can hide the ~1.4 s
+            // MODE_IN_COMMUNICATION tail from the cellular gate. Use
+            // elapsedRealtime for monotonicity; PttCellularGate reads
+            // the same clock via [VoicePlant.nowMsProvider], so the
+            // two are directly comparable.
+            lastOwnCallEndedAtMs = android.os.SystemClock.elapsedRealtime()
         }
     }
 
     fun activeConnection(): XvConnection? = activeConnection
 
     fun hasActiveCall(): Boolean = activeConnection != null
+
+    /**
+     * True when the caller's [nowMs] is within [graceMs] of the last
+     * own-call teardown timestamp — i.e. we recently had a self-
+     * managed Telecom call and the audio HAL's `MODE_IN_COMMUNICATION`
+     * → `MODE_NORMAL` transition may still be in flight. The
+     * `PttCellularGate` provider ORs this into its `hasActiveCall`
+     * signal so a stale `MODE_IN_COMMUNICATION` reading during that
+     * tail is still resolved as OUR call (IDLE) rather than
+     * misclassified as an external cellular call (OFFHOOK).
+     *
+     * Returns false if we have never had an own call in this process
+     * lifetime (sentinel zero — no prior teardown to base the grace
+     * on). This preserves the block-all-sources policy for external
+     * calls that come in before XV has ever placed its own call.
+     *
+     * Comparison is inclusive at both boundaries — exactly-at-
+     * teardown and exactly-at-grace-expiry both count as "within" —
+     * so a caller passing `nowMs == lastOwnCallEndedAtMs + graceMs`
+     * still sees `true`. Wallclock skew is not a concern because
+     * both endpoints come from `SystemClock.elapsedRealtime()`.
+     */
+    fun withinRecentCallGrace(
+        nowMs: Long,
+        graceMs: Long,
+    ): Boolean {
+        val endedAt = lastOwnCallEndedAtMs
+        if (endedAt <= 0L) return false
+        val elapsed = nowMs - endedAt
+        // elapsed < 0 can happen if a caller passes a nowMs sample
+        // taken before the unregister() stamp landed (thread ordering
+        // on the volatile field). Treat as "within" — we know a
+        // teardown occurred and the caller's read raced it.
+        if (elapsed < 0L) return true
+        return elapsed <= graceMs
+    }
+
+    /**
+     * Test-only: force the "last own-call ended at" timestamp to a
+     * deterministic value so the grace-window unit test can drive
+     * boundary cases without instantiating a real
+     * [android.telecom.Connection] (which requires Robolectric).
+     * Zero clears the stamp — restoring the "never had an own call"
+     * state.
+     */
+    @VisibleForTesting
+    fun setLastOwnCallEndedAtMsForTest(value: Long) {
+        lastOwnCallEndedAtMs = value
+    }
+
+    /**
+     * Test-only: read the last-teardown timestamp so tests can
+     * assert the [unregister] side effect landed. Kept separate from
+     * the setter so production callers cannot accidentally reach
+     * for it — the grace decision must go through
+     * [withinRecentCallGrace].
+     */
+    @VisibleForTesting
+    fun lastOwnCallEndedAtMsForTest(): Long = lastOwnCallEndedAtMs
 
     fun fanOutRouteChange(state: CallAudioState?) {
         for (l in routeListeners) {

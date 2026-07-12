@@ -13,6 +13,7 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.atakmap.android.xv.aina.AinaDeviceClassifier
+import com.atakmap.android.xv.aina.AinaDeviceInfo
 
 /**
  * Wires [AinaA2dpController] into the BT-device lifecycle so AINA-class
@@ -46,8 +47,23 @@ import com.atakmap.android.xv.aina.AinaDeviceClassifier
 class AinaA2dpWiring(
     private val context: Context,
     private val controller: AinaA2dpController,
+    // Whether this device is a plausible speakermic (broad AINA-class
+    // filter used to gate the forbid path). Kept as an injected predicate
+    // so unit tests can stub the classifier.
     private val isAina: (BluetoothDevice) -> Boolean =
         { AinaDeviceClassifier.isPlausibleSpeakermic(it) },
+    // Button-protocol classifier used to narrow the forbid path further.
+    // BLE_HID pucks (Pryme BT-PTT-Z et al.) match the broad plausible-
+    // speakermic name/UUID filter but have NO A2DP profile at all —
+    // firing the reflective setConnectionPolicy(FORBIDDEN) against them
+    // is a no-op on the OK path and, on the Pixel 14+ platform-refused
+    // path, posts an "AINA media routing not blocked. Disable 'Media
+    // audio'" operator notification for a device that has no media
+    // routing to begin with. Injected for the same testability reason
+    // as [isAina]. Reported by operator 2026-07-11 against a Pryme
+    // BT-PTT-Z on a Pixel 9 Pro.
+    private val buttonProtocolOf: (BluetoothDevice) -> AinaDeviceInfo.ButtonProtocol =
+        { AinaDeviceClassifier.classifyButtonProtocol(it) },
     private val notificationManager: NotificationManager? =
         context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager,
     private val audioManager: AudioManager? =
@@ -76,6 +92,25 @@ class AinaA2dpWiring(
     override fun onDeviceConnected(device: BluetoothDevice) {
         val mac = device.address ?: return
         if (!isAina(device)) return
+        // BLE_HID short-circuit — see [buttonProtocolOf] KDoc for why.
+        // Any classifier throw is treated as UNKNOWN so the forbid path
+        // is preserved on the safe side (better a spurious no-op forbid
+        // on a UNKNOWN device than a missed forbid on a real AINA whose
+        // UUID cache momentarily errored out).
+        val protocol =
+            try {
+                buttonProtocolOf(device)
+            } catch (t: Throwable) {
+                Log.w(TAG, "buttonProtocolOf threw for $mac — treating as UNKNOWN", t)
+                AinaDeviceInfo.ButtonProtocol.UNKNOWN
+            }
+        if (protocol == AinaDeviceInfo.ButtonProtocol.BLE_HID) {
+            Log.d(
+                TAG,
+                "onDeviceConnected: $mac is BLE_HID (no A2DP profile) — skipping forbid path",
+            )
+            return
+        }
         if (!forbiddenOnce.add(mac)) {
             Log.d(TAG, "onDeviceConnected: $mac already forbidden this lifetime — skipping")
             return
