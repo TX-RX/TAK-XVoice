@@ -1703,25 +1703,48 @@ class TxController(
         //      click at TX-stop — same shape, opposite end of the
         //      burst. See [shouldDropStartFrame].
 
-        // Extra PRIMING → TPT delay on the cold-SCO path. 200 ms was
-        // selected to cover the observed AOC underrun window (86 frames
-        // ≈ 30 ms of the underrun itself, plus ~150 ms of pipeline-
-        // recovery margin so subsequent TX frames land against a
-        // stabilized uplink). Tunable — smaller values leave residual
-        // underrun in the TPT-to-TX transition; larger values are
-        // perceived by the operator as PTT sluggishness.
-        internal const val COLD_SCO_TPT_HOLD_MS: Long = 200L
+        // Extra PRIMING → TPT delay on the cold-SCO path.
+        //
+        // Original tuning 2026-07-08: 200 ms — chosen against the
+        // observed AOC "[AMixMODEM] uplink underrun for 86 frames"
+        // window (~30 ms of literal underrun + ~150 ms pipeline
+        // recovery margin).
+        //
+        // Field observation 2026-07-11 (TPP validation, Pixel 9 Pro
+        // with AINA V1): peer still heard garbled audio ("screech")
+        // at the head of the first cold-SCO transmission. 200 ms
+        // covers the underrun burst itself but leaves the modem/pipe
+        // in a settling phase during the TPT→TX transition — real
+        // mic frames land against a still-stabilizing uplink and
+        // encode to Opus screech at the peer. Widened to 300 ms to
+        // give the pipeline a full 100 ms of additional post-
+        // underrun margin. Perceptible latency cost: +100 ms of
+        // "waiting for the beep" on a cold burst; warm-SCO bursts
+        // (the common case in an active session) are unaffected.
+        //
+        // Tunable — smaller values leave residual underrun in the
+        // TPT-to-TX transition; larger values are perceived as PTT
+        // sluggishness.
+        internal const val COLD_SCO_TPT_HOLD_MS: Long = 300L
 
         // Number of leading TX frames to silently discard on the cold-
-        // SCO path. Each frame is 20 ms of PCM. N=3 = 60 ms of dropped
-        // leading edge, which covers the tail of the AOC underrun
-        // burst without eating meaningful speech content (typical
-        // human reaction time from TPT-audible to first phoneme is
-        // 250-400 ms).
+        // SCO path. Each frame is 20 ms of PCM.
+        //
+        // Original tuning 2026-07-08: N=3 (60 ms). Covered the
+        // literal underrun burst well and left the TPT→speech
+        // ramp intact.
+        //
+        // Field observation 2026-07-11: with the widened 300 ms
+        // cold-SCO hold above, the first-frame-post-transition
+        // window is quieter but the SILK encoder still catches a
+        // few frames of "not-yet-clean" mic before it locks in. N=6
+        // = 120 ms of dropped leading edge, still well inside the
+        // typical 250-400 ms human reaction time from TPT-audible
+        // to first phoneme, so operator speech is not eaten.
         //
         // Set to 0 to disable the drop entirely (useful for A/B
         // comparison or for platforms without the AOC modem behavior).
-        internal const val COLD_SCO_START_DROP_FRAMES: Int = 3
+        internal const val COLD_SCO_START_DROP_FRAMES: Int = 6
 
         /**
          * Extra time to hold PRIMING → TPT so the SCO uplink modem
