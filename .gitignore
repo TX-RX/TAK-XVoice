@@ -68,6 +68,15 @@ hs_err_pid*
 # archive task also excludes them so they don't ship to the build
 # pipeline.
 diagnostics/
+# Peer-side audio captures pulled off Mumble desktop / OBS / recorder
+# rigs for AEC / NS / cold-SCO tuning. File names embed the real TAK
+# server hostname + operator callsign (e.g.
+# Mumble-<timestamp>-<server>-<callsign>VS1.mp3) — those are exactly
+# the sensitive-content categories the repo policy forbids in commits,
+# so the whole folder is opaque to git and never surfaced. Store all
+# peer recordings under .audio/<date-slug>/ so day-of-session
+# processing has a predictable location.
+.audio/
 
 # ---------- Kotlin compiler caches ----------
 .kotlin/
