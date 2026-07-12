@@ -8,7 +8,15 @@
     XCover6 Pro / 7, Tab Active4 Pro, Tab Active3).
 
     Scope is intentionally the narrowest possible:
-      - accessibilityEventTypes="typeNone"  → subscribes to ZERO UI events
+      - accessibilityEventTypes="typeWindowStateChanged" → nominal
+        subscription. AAPT rejects both "typeNone" and "0" as
+        incompatible with the flag attribute; a single benign type
+        satisfies the schema. The service's onAccessibilityEvent
+        implementation ignores every dispatched event — only
+        onKeyEvent does actual work — so subscribing to
+        typeWindowStateChanged has no runtime cost or privacy
+        implication beyond a no-op callback that returns
+        immediately.
       - canRetrieveWindowContent="false"    → never reads screen content
       - flagRequestFilterKeyEvents only     → sole flag; grants onKeyEvent
 
@@ -17,7 +25,7 @@
     is ever acted on; all other keycodes are passed through untouched.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeNone"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFlags="flagRequestFilterKeyEvents"
     android:canRetrieveWindowContent="false"
     android:description="@string/xv_accessibility_service_description"
