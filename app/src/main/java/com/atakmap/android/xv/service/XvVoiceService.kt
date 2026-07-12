@@ -78,6 +78,16 @@ class XvVoiceService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Bring the file-backed diagnostic logger up BEFORE anything
+        // else so subsequent init events land in the field-post-mortem
+        // file. Safe to call more than once — subsequent init()s are
+        // no-ops. See DiagnosticLogger KDoc for the field-motivating
+        // 2026-07-12 rollover incident.
+        com.atakmap.android.xv.util.DiagnosticLogger.init(this)
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onCreate — pid=${Process.myPid()} uid=${Process.myUid()}",
+        )
         Log.i(TAG, "onCreate (XV voice plant starting in pid=${Process.myPid()} uid=${Process.myUid()})")
         resolveAuthorizedUids()
         NotificationChannels.ensureAll(this)
@@ -495,6 +505,10 @@ class XvVoiceService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy — releasing voice plant")
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — releasing voice plant",
+        )
         releaseVolumeKeyCapture()
         telecomHandler.removeCallbacks(pendingEndRunnable)
         // Cancel the watchdog BEFORE removing externalTeardownListener
@@ -550,6 +564,11 @@ class XvVoiceService : Service() {
         }
         plant = null
         listeners.kill()
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — complete, flushing diagnostic log",
+        )
+        com.atakmap.android.xv.util.DiagnosticLogger.flush()
         super.onDestroy()
     }
 
@@ -1003,6 +1022,15 @@ class XvVoiceService : Service() {
             }
 
             override fun onPttBlockedByCellularCall(reason: String) {
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    severity = 'W',
+                    message = "PTT blocked by cellular gate: $reason",
+                )
+                com.atakmap.android.xv.util.DiagnosticLogger.stateSnapshot(
+                    context = this@XvVoiceService,
+                    reason = "cellular-gate-block",
+                )
                 fanOut { it.onPttBlockedByCellularCall(reason) }
             }
 
@@ -1323,6 +1351,10 @@ class XvVoiceService : Service() {
                 .activeConnection()
         if (existing != null) {
             Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection")
+            com.atakmap.android.xv.util.DiagnosticLogger.event(
+                tag = "XvVoiceSvc",
+                message = "placeCall tag='$tag' — REUSING existing XvConnection",
+            )
             try {
                 existing.setActiveSession()
             } catch (t: Throwable) {
@@ -1332,24 +1364,10 @@ class XvVoiceService : Service() {
         }
 
         Log.i(TAG, "placeTelecomCallInternal tag=$tag")
-        // Targeted ghost-purge (issue #66 item #1): if a previous own
-        // call has already existed in this process (indicated by
-        // [com.atakmap.android.xv.telecom.ActiveCallRegistry.hasHadOwnCallInProcess]
-        // returning true — checked via [shouldGhostPurgeBeforePlaceCall]),
-        // Telecom may still hold a stale TC@N under our PhoneAccount
-        // even though our synchronous registry says no live connection
-        // exists. Unregistering + re-registering the PhoneAccount tells
-        // Telecom to drop those ghost calls before we attempt a fresh
-        // [TelecomManager.placeCall]; without this, the system
-        // arbitration fires "Hang up XV to place a new call" and the
-        // operator's PTT press produces no TX. Cheap (a couple of
-        // Telecom framework roundtrips) and safe even when no ghost is
-        // present — the register call is idempotent.
-        //
-        // We gate on "there has been an own call in this process" so
-        // the very first PTT press in a fresh process doesn't pay the
-        // cost — [purgeGhostSelfManagedCallsOnFreshProcess] already
-        // handled that window in onCreate.
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "placeCall tag='$tag' — NEW Telecom call attempt",
+        )
         if (shouldGhostPurgeBeforePlaceCall(
                 hasActiveConnection =
                 com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall(),
@@ -1362,6 +1380,11 @@ class XvVoiceService : Service() {
                 TAG,
                 "placeTelecomCallInternal: no active connection but this process has ended one " +
                     "before — purging any Telecom-side ghost calls under our PhoneAccount",
+            )
+            com.atakmap.android.xv.util.DiagnosticLogger.event(
+                tag = "XvVoiceSvc",
+                severity = 'W',
+                message = "ghost-purge: unregister+register PhoneAccount before placeCall (issue #66 defensive)",
             )
             purgeGhostSelfManagedCallsBeforePlaceCall()
         } else {
