@@ -4513,16 +4513,37 @@ class XvMapComponent : AbstractMapComponent() {
         // against full hardware settle time.
         private const val CALL_WARMUP_DELAY_MS = 300L
 
-        // Debounce for the STATE_ON auto-reconnect pass. 800 ms
-        // coalesces the OEM double-fire of STATE_ON that happens on
-        // some stacks, and gives BluetoothProfile proxies + the
-        // bonded-devices cache a moment to bind before we ask the
-        // AINA / External Button readers to attach against them.
-        // Shorter windows produced NullPointerExceptions inside the
-        // profile-proxy path on field-observed 2026-07-11 traces;
-        // 800 ms was the smallest value that produced clean attach
-        // on cold-adapter-warmup with all readers active.
-        private const val BT_STATE_ON_RECONNECT_DELAY_MS = 800L
+        // Debounce for the STATE_ON auto-reconnect pass.
+        //
+        // Original 2026-07-11 morning tuning: 800 ms — coalesces the
+        // OEM double-fire of STATE_ON on some stacks and lets
+        // BluetoothProfile proxies bind.
+        //
+        // Field capture 2026-07-11 evening (Pixel 9 Pro / API 35 with
+        // AINA V1 as primary): 800 ms fires autoConnectAina BEFORE
+        // the AINA finishes its post-STATE_ON SDP publication. The
+        // bonded-devices list has the AINA but the "reachable"
+        // predicate returns false (SDP not yet re-published), so
+        // autoConnectAina bails with "N bonded candidate(s) but no
+        // available speakermic — waiting for a speakermic to come
+        // up". Nothing re-triggers autoConnect, so the reader stays
+        // unspawned until the operator manually touches the picker.
+        // Observed: OS-level BT reconnect completed at ~4-5 s after
+        // STATE_ON (log: `XvAudioRouter: added: BT_SCO(APTT316782)`
+        // at 20:39:54 vs STATE_ON at 20:39:49).
+        //
+        // 3000 ms gives a safety margin over the observed 4-5 s
+        // ceiling. Perceptible cost: an extra 2.2 s between BT-on
+        // and PTT working — still a huge win over "never" until
+        // manual picker touch, which was the reported field
+        // experience.
+        //
+        // Post-freeze follow-up: replace the fixed delay with a
+        // BluetoothDevice.ACTION_ACL_CONNECTED receiver targeted at
+        // the saved AINA / External Button MACs so we react to the
+        // actual reachability signal instead of a worst-case wall
+        // clock guess.
+        private const val BT_STATE_ON_RECONNECT_DELAY_MS = 3000L
 
         // Persistent default for VX-compat handshake. HYBRID is the current
         // operational default: it makes XV "callable" from VX clients via
