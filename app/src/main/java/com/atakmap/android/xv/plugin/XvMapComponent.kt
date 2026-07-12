@@ -510,6 +510,34 @@ class XvMapComponent : AbstractMapComponent() {
     private val selfSuppressedBySlot = java.util.concurrent.ConcurrentHashMap<Int, Boolean>()
     private var debugReceiver: DebugReceiver? = null
     private var showReceiver: BroadcastReceiver? = null
+
+    // BluetoothAdapter STATE_ON receiver — re-runs the auto-connect
+    // paths for AINA + External Button when the operator toggles BT
+    // back on (or after a device reboot completes and BT settles).
+    // Field-observed 2026-07-11: after a BT off → on cycle, XV sat
+    // idle indefinitely waiting for someone to nudge reconnect —
+    // operator saw the speakermic + external button appear "connected"
+    // in system Bluetooth but neither delivered PTT events to XV until
+    // a picker touch or app restart forced the auto-connect flow.
+    // XvVoiceService handles the OFF direction (releaseAllBtSourcedPtt
+    // on STATE_TURNING_OFF); this handles the ON direction.
+    private var btAdapterStateReceiver: BroadcastReceiver? = null
+    private val autoReconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // Debounce: some OEM BT stacks fire ACTION_STATE_CHANGED with
+    // STATE_ON more than once as adapter init completes. Also gives
+    // the profile proxies + bond cache a moment to settle before we
+    // ask the readers to attach.
+    private val autoReconnectRunnable =
+        Runnable {
+            try {
+                Log.i(TAG, "BT STATE_ON — re-running auto-connect for AINA + External Button")
+                autoConnectAina()
+                autoConnectExternalButton()
+            } catch (t: Throwable) {
+                Log.w(TAG, "auto-reconnect on BT STATE_ON threw", t)
+            }
+        }
     private var activeTransport: VoiceTransport? = null
 
     // Host string of the currently-running Mumble transport, or null when
@@ -1125,6 +1153,46 @@ class XvMapComponent : AbstractMapComponent() {
             AtakBroadcast.DocumentedIntentFilter(XvTool.SHOW_XV, "Show XV's main panel"),
         )
 
+        btAdapterStateReceiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    ctx: Context,
+                    intent: Intent,
+                ) {
+                    if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                    val state =
+                        intent.getIntExtra(
+                            BluetoothAdapter.EXTRA_STATE,
+                            BluetoothAdapter.ERROR,
+                        )
+                    if (state != BluetoothAdapter.STATE_ON) return
+                    // Debounce: coalesce repeated STATE_ON broadcasts
+                    // (OEM stack quirk) into a single reconnect pass,
+                    // and give profile proxies + bond cache ~800 ms
+                    // to settle before the readers try to attach.
+                    autoReconnectHandler.removeCallbacks(autoReconnectRunnable)
+                    autoReconnectHandler.postDelayed(autoReconnectRunnable, BT_STATE_ON_RECONNECT_DELAY_MS)
+                }
+            }
+        try {
+            // Explicit RECEIVER_NOT_EXPORTED — on API 34+ (target 34
+            // here), registering a 2-arg receiver for a system
+            // broadcast without a flag throws SecurityException.
+            // Field-observed 2026-07-11: the flag-less call was
+            // silently caught by our try/catch and the receiver
+            // never registered, so STATE_ON never triggered the
+            // auto-reconnect path.
+            androidx.core.content.ContextCompat.registerReceiver(
+                pluginContext,
+                btAdapterStateReceiver!!,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            Log.i(TAG, "btAdapterStateReceiver registered — will auto-reconnect readers on STATE_ON")
+        } catch (t: Throwable) {
+            Log.w(TAG, "registerReceiver(btAdapterStateReceiver) threw", t)
+        }
+
         // XV-native peer discovery via CoT detail. Publishes a `<__xv>`
         // element on our self-CoT and listens for the same element on
         // others' CoT to build a registry of XV-callable peers.
@@ -1321,6 +1389,15 @@ class XvMapComponent : AbstractMapComponent() {
             } catch (_: IllegalArgumentException) {
             }
         }
+        btAdapterStateReceiver?.let {
+            try {
+                context.unregisterReceiver(it)
+            } catch (_: IllegalArgumentException) {
+                // Not registered — attach-fail path or double-detach; ignore.
+            }
+        }
+        autoReconnectHandler.removeCallbacks(autoReconnectRunnable)
+        btAdapterStateReceiver = null
         showReceiver = null
         debugReceiver = null
         // End any active Telecom call + unregister our PhoneAccount
@@ -4435,6 +4512,38 @@ class XvMapComponent : AbstractMapComponent() {
         // realtime-ready pipeline. 300ms balances perceptible-snap
         // against full hardware settle time.
         private const val CALL_WARMUP_DELAY_MS = 300L
+
+        // Debounce for the STATE_ON auto-reconnect pass.
+        //
+        // Original 2026-07-11 morning tuning: 800 ms — coalesces the
+        // OEM double-fire of STATE_ON on some stacks and lets
+        // BluetoothProfile proxies bind.
+        //
+        // Field capture 2026-07-11 evening (Pixel 9 Pro / API 35 with
+        // AINA V1 as primary): 800 ms fires autoConnectAina BEFORE
+        // the AINA finishes its post-STATE_ON SDP publication. The
+        // bonded-devices list has the AINA but the "reachable"
+        // predicate returns false (SDP not yet re-published), so
+        // autoConnectAina bails with "N bonded candidate(s) but no
+        // available speakermic — waiting for a speakermic to come
+        // up". Nothing re-triggers autoConnect, so the reader stays
+        // unspawned until the operator manually touches the picker.
+        // Observed: OS-level BT reconnect completed at ~4-5 s after
+        // STATE_ON (log: `XvAudioRouter: added: BT_SCO(APTT316782)`
+        // at 20:39:54 vs STATE_ON at 20:39:49).
+        //
+        // 3000 ms gives a safety margin over the observed 4-5 s
+        // ceiling. Perceptible cost: an extra 2.2 s between BT-on
+        // and PTT working — still a huge win over "never" until
+        // manual picker touch, which was the reported field
+        // experience.
+        //
+        // Post-freeze follow-up: replace the fixed delay with a
+        // BluetoothDevice.ACTION_ACL_CONNECTED receiver targeted at
+        // the saved AINA / External Button MACs so we react to the
+        // actual reachability signal instead of a worst-case wall
+        // clock guess.
+        private const val BT_STATE_ON_RECONNECT_DELAY_MS = 3000L
 
         // Persistent default for VX-compat handshake. HYBRID is the current
         // operational default: it makes XV "callable" from VX clients via
