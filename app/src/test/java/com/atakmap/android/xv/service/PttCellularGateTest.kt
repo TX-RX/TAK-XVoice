@@ -18,13 +18,24 @@ class PttCellularGateTest {
     // ============================================================
     // shouldGateForCellularCall — decision function
     //
-    // Source-scoped policy (2026-07-10 revision): the gate ONLY
-    // applies to PttSource.ON_SCREEN. Every other source — every
-    // hardware button (AINA V1/V2, Pryme MFB, and any future
-    // BT-HID / gpio input) and the DEBUG intent path — bypasses
-    // the gate and returns ALLOW even during OFFHOOK / RINGING.
-    // The screen-tap path stays blocked because a stray finger
-    // during a phone call should not auto-hold the call.
+    // Block-all-sources policy (2026-07-11 revision — supersedes
+    // both the original "block everything" position from
+    // 2026-07-10 21:00 and the source-scoped "on-screen only"
+    // position from 2026-07-10 22:00): EVERY PttSource blocks
+    // during an active cellular call (OFFHOOK / RINGING). Phone
+    // calls are the #1 priority on the device — nothing XV does
+    // should silently interrupt or auto-hold a live call
+    // regardless of which button fired the PTT.
+    //
+    // Field observation 2026-07-11 that drove the revision: a
+    // hardware AINA button press during a cellular voicemail call
+    // auto-held the call via Android's Telecom second-self-managed-
+    // call arbitration. The press was unintentional — the previous
+    // "hardware = deliberate intent" assumption was too generous.
+    // The [source] parameter is retained (rather than removed) so
+    // logging can still name the button that would have fired, and
+    // so a future need to reintroduce per-source behaviour does not
+    // have to reshape the gate API.
     // ============================================================
 
     @Test
@@ -63,74 +74,78 @@ class PttCellularGateTest {
         assertEquals(PttGate.ALLOW, shouldGateForCellularCall(Int.MAX_VALUE, PttSource.ON_SCREEN))
     }
 
-    // --- Hardware sources bypass the gate entirely ---------------
+    // --- Hardware sources are ALSO blocked (block-all-sources policy) ---
 
     @Test
-    fun `AINA V1 hardware bypasses gate during OFFHOOK`() {
-        // Hardware button presses represent deliberate operator
-        // intent. Tactical scenarios may require an operator to
-        // key up mid-call; blocking a hardware press would
-        // surprise-block a deliberate transmission attempt.
+    fun `AINA V1 hardware blocks during OFFHOOK`() {
+        // 2026-07-11 revision: hardware presses no longer bypass the
+        // gate. A live cellular call is authoritative; every PTT
+        // source — including the operator's BT speakermic button —
+        // must be blocked so XV does not auto-hold the call by
+        // placing its own self-managed Telecom call on top.
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.AINA_V1),
         )
     }
 
     @Test
-    fun `AINA V1 hardware bypasses gate during RINGING`() {
+    fun `AINA V1 hardware blocks during RINGING`() {
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_RINGING,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.AINA_V1),
         )
     }
 
     @Test
-    fun `AINA V2 hardware bypasses gate during OFFHOOK`() {
+    fun `AINA V2 hardware blocks during OFFHOOK`() {
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.AINA_V2),
         )
     }
 
     @Test
-    fun `AINA V2 hardware bypasses gate during RINGING`() {
+    fun `AINA V2 hardware blocks during RINGING`() {
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_RINGING,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.AINA_V2),
         )
     }
 
     @Test
-    fun `Pryme BLE hardware bypasses gate during OFFHOOK`() {
+    fun `Pryme BLE hardware blocks during OFFHOOK`() {
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.PRYME_BLE),
         )
     }
 
     @Test
-    fun `Pryme BLE hardware bypasses gate during RINGING`() {
+    fun `Pryme BLE hardware blocks during RINGING`() {
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_RINGING,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.PRYME_BLE),
         )
     }
 
     @Test
-    fun `DEBUG source bypasses gate during OFFHOOK`() {
-        // DEBUG originates from adb / dev tooling, not from a
-        // stray touch. Keep the debug path usable during a call.
+    fun `DEBUG source blocks during OFFHOOK`() {
+        // DEBUG originates from adb / dev tooling. Under the
+        // block-all-sources policy it is blocked too so unit /
+        // integration tests observe the same behavior operators
+        // see in the field — no accidental "works from adb, fails
+        // from a button" divergence.
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, PttSource.DEBUG),
         )
     }
 
     @Test
-    fun `DEBUG source bypasses gate during RINGING`() {
+    fun `DEBUG source blocks during RINGING`() {
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_RINGING,
             shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, PttSource.DEBUG),
         )
     }
@@ -153,29 +168,50 @@ class PttCellularGateTest {
     }
 
     @Test
-    fun `every non-screen source bypasses gate during OFFHOOK`() {
+    fun `every source blocks during OFFHOOK`() {
         // Data-driven complement to the enum-by-enum tests above.
-        // Any hardware source added in the future automatically
-        // gets the ALLOW-during-call treatment; the only source
-        // that stays blocked is ON_SCREEN.
+        // Under the block-all-sources policy EVERY PttSource —
+        // including any future BT-HID / gpio / vendor-specific
+        // input — must return BLOCK_CELLULAR_CALL during an
+        // active cellular call. No ON_SCREEN skip: the on-screen
+        // path is blocked the same way as everything else.
         for (src in PttSource.values()) {
-            if (src == PttSource.ON_SCREEN) continue
             assertEquals(
-                "$src must bypass OFFHOOK gate",
-                PttGate.ALLOW,
+                "$src must BLOCK during OFFHOOK",
+                PttGate.BLOCK_CELLULAR_CALL,
                 shouldGateForCellularCall(TelephonyManager.CALL_STATE_OFFHOOK, src),
             )
         }
     }
 
     @Test
-    fun `every non-screen source bypasses gate during RINGING`() {
+    fun `every source blocks during RINGING`() {
         for (src in PttSource.values()) {
-            if (src == PttSource.ON_SCREEN) continue
             assertEquals(
-                "$src must bypass RINGING gate",
-                PttGate.ALLOW,
+                "$src must BLOCK during RINGING",
+                PttGate.BLOCK_CELLULAR_RINGING,
                 shouldGateForCellularCall(TelephonyManager.CALL_STATE_RINGING, src),
+            )
+        }
+    }
+
+    @Test
+    fun `unknown call-state fails open to ALLOW for every source`() {
+        // Fail-open policy applies uniformly across sources: any
+        // unrecognized call-state value must ALLOW regardless of
+        // which button fired the PTT. Silent lockouts on
+        // unrecognized state codes are worse than the auto-hold
+        // bug the gate exists to fix.
+        for (src in PttSource.values()) {
+            assertEquals(
+                "-1 + $src must ALLOW (fail-open)",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(-1, src),
+            )
+            assertEquals(
+                "Int.MAX_VALUE + $src must ALLOW (fail-open)",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(Int.MAX_VALUE, src),
             )
         }
     }
@@ -476,15 +512,17 @@ class PttCellularGateTest {
     }
 
     @Test
-    fun `AudioManager MODE_IN_CALL does not gate an AINA hardware press`() {
-        // Full-pipeline complement of the source-scope policy: even
-        // when the cellular stack has claimed MODE_IN_CALL, a
-        // hardware button press is deliberate operator intent and
-        // must transmit. XV's Telecom call will still auto-hold the
-        // cellular call as a side effect — but that side effect is
-        // now the operator's choice, not an accident.
+    fun `AudioManager MODE_IN_CALL blocks an AINA hardware press`() {
+        // Full-pipeline complement of the block-all-sources policy
+        // (2026-07-11 revision): even a hardware AINA button press
+        // is blocked when the cellular stack has claimed
+        // MODE_IN_CALL. The prior "hardware = deliberate intent"
+        // carve-out was retired after a field observation showed
+        // an unintentional hardware press auto-holding a live
+        // voicemail call. Phone calls are the #1 priority; every
+        // PTT source defers to them.
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(
                 cellularCallStateFromAudioMode(
                     audioMode = AudioManager.MODE_IN_CALL,
@@ -496,21 +534,166 @@ class PttCellularGateTest {
     }
 
     @Test
-    fun `AudioManager MODE_IN_COMMUNICATION VoLTE does not gate an AINA hardware press`() {
-        // Same source-scope policy but for the VoLTE case: a hardware
-        // key-up during an active VoLTE call is deliberate operator
-        // intent (tactical scenarios routinely require key-up during
-        // an active phone call). The hardware source bypasses the
-        // gate even though the state resolution correctly identifies
-        // the call as external.
+    fun `AudioManager MODE_IN_COMMUNICATION VoLTE blocks an AINA hardware press`() {
+        // Same block-all-sources policy but for the VoLTE case: a
+        // hardware key-up during an active VoLTE call is blocked
+        // for the same reason as MODE_IN_CALL — the state
+        // resolution correctly identifies the call as external,
+        // and every PTT source (including hardware) defers to a
+        // live cellular call.
         assertEquals(
-            PttGate.ALLOW,
+            PttGate.BLOCK_CELLULAR_CALL,
             shouldGateForCellularCall(
                 cellularCallStateFromAudioMode(
                     audioMode = AudioManager.MODE_IN_COMMUNICATION,
                     xvHasActiveTelecomCall = false,
                 ),
                 PttSource.AINA_V2,
+            ),
+        )
+    }
+
+    // ============================================================
+    // Post-teardown grace window — VoicePlant closure semantics
+    //
+    // These tests model the OR that the `cellularCallStateProvider`
+    // closure in VoicePlant performs before calling
+    // [cellularCallStateFromAudioMode]:
+    //
+    //   val xvOwnCallOrGrace =
+    //       registry.hasActiveCall() ||
+    //       registry.withinRecentCallGrace(nowMs, RECENT_OWN_CALL_GRACE_MS)
+    //
+    // The pure gate function's contract does not change — it still
+    // receives a single Boolean "own call?" input. The disambiguation
+    // between "call is literally active" and "call was recently
+    // active" happens at the caller level. The tests here lock in
+    // the round-trip through the pure functions so a future refactor
+    // that alters the pure gate's Boolean contract does not silently
+    // regress the grace path.
+    //
+    // Field trace 2026-07-11 14:47 (Pixel 9 Pro / API 35):
+    //   14:47:14.722 XV Telecom externally torn down → registry
+    //                unregister → hasActiveCall = false
+    //   14:47:14.765 AudioManager.getMode() still IN_COMMUNICATION
+    //   14:47:16.126 AudioManager.getMode() finally NORMAL
+    // The ~1.4 s window between 14.722 and 16.126 is where operator
+    // PTT presses were being falsely blocked.
+    // ============================================================
+
+    @Test
+    fun `IN_COMMUNICATION during post-teardown grace resolves as own call — ALLOW`() {
+        // hasActiveCall=false (registry already unregistered), but
+        // withinGrace=true (audio mode still catching up). The
+        // provider closure ORs them; the pure gate sees "own call =
+        // true", maps IN_COMMUNICATION → IDLE, and the gate ALLOWs.
+        // This is the scenario the fix restores from the field
+        // regression.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.ALLOW,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `IN_COMMUNICATION after grace expired still blocks external call — BLOCK`() {
+        // Both hasActiveCall and withinGrace are false — grace
+        // window has elapsed and no fresh own call exists. This is
+        // an actual external call (VoLTE cellular, other VoIP app)
+        // and the block-all-sources policy must still fire.
+        val withinGrace = false
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_CALL,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `grace window covers every PTT source during audio-HAL tail`() {
+        // The grace does not carve out per-source behaviour — if the
+        // OR resolves to "still ours" the whole gate treats the mode
+        // as IDLE for every source. A hardware AINA press, on-screen
+        // tap, Pryme puck, and DEBUG intent all ALLOW during the
+        // tail, matching operator intent that mid-burst / just-
+        // -after-burst presses should not lock out.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        for (src in PttSource.values()) {
+            assertEquals(
+                "$src must ALLOW during post-teardown grace",
+                PttGate.ALLOW,
+                shouldGateForCellularCall(
+                    cellularCallStateFromAudioMode(
+                        audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                        xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                    ),
+                    src,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `grace window does not unlock a legacy MODE_IN_CALL cellular call`() {
+        // Belt-and-suspenders: the grace only papers over the
+        // MODE_IN_COMMUNICATION ambiguity. If the audio HAL reports
+        // MODE_IN_CALL — the legacy CSFB / non-VoLTE path that XV
+        // NEVER enters itself — the gate must still block regardless
+        // of the grace, because MODE_IN_CALL is unambiguously an
+        // external cellular call. The pure mapping already handles
+        // this (MODE_IN_CALL → OFFHOOK independent of the own-call
+        // flag), but locking it in here defends against a future
+        // refactor that might route the flag through more broadly.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_CALL,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_CALL,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
+            ),
+        )
+    }
+
+    @Test
+    fun `grace window does not unlock MODE_RINGTONE`() {
+        // Same rationale as MODE_IN_CALL — MODE_RINGTONE is
+        // unambiguously an incoming external call. The grace only
+        // exists to hide the IN_COMMUNICATION tail from misclassifying
+        // an own-call teardown as external.
+        val withinGrace = true
+        val hasActiveCall = false
+        val xvOwnCallOrGrace = hasActiveCall || withinGrace
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_RINGING,
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_RINGTONE,
+                    xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                ),
+                PttSource.ON_SCREEN,
             ),
         )
     }

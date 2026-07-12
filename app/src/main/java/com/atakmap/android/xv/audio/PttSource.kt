@@ -60,3 +60,25 @@ enum class PttSource(val dropsTrailingClick: Boolean) {
         val DEFAULT: PttSource = ON_SCREEN
     }
 }
+
+// Human-readable log prefix per PTT source. Used by [VoicePlant]'s
+// primary-AINA and external-button handler factories so a Pryme puck
+// wired into the External Button slot doesn't get logged as
+// "primary AINA button" (which it isn't). Pure function — no state,
+// no side effects — so it can be unit-tested in isolation.
+//
+// The `when` is exhaustive over the enum today. If a future enum value
+// is added without a matching branch here, the Kotlin compiler will
+// flag it and the operator will pick a real label rather than
+// shipping a misleading default.
+fun logPrefixForPttSource(source: PttSource): String =
+    when (source) {
+        PttSource.ON_SCREEN -> "on-screen PTT"
+        PttSource.AINA_V1 -> "primary AINA V1 button"
+        PttSource.AINA_V2 -> "primary AINA V2 button"
+        PttSource.PRYME_BLE -> "external button"
+        PttSource.SAMSUNG_ACTIVE_KEY -> "Samsung Active Key"
+        PttSource.SONIM_PTT -> "Sonim PTT"
+        PttSource.SONIM_EMERGENCY -> "Sonim Emergency"
+        PttSource.DEBUG -> "debug PTT"
+    }

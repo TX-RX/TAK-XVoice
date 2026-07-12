@@ -30,6 +30,7 @@ import com.atakmap.android.xv.audio.StatusTones
 import com.atakmap.android.xv.audio.TptPlayer
 import com.atakmap.android.xv.audio.TptTone
 import com.atakmap.android.xv.audio.TxController
+import com.atakmap.android.xv.audio.logPrefixForPttSource
 import com.atakmap.android.xv.ptt.SamsungActiveKeyReader
 import com.atakmap.android.xv.ptt.SonimEmergencyButtonReader
 import com.atakmap.android.xv.ptt.SonimPttButtonReader
@@ -141,9 +142,33 @@ class VoicePlant(
             val am =
                 context.getSystemService(Context.AUDIO_SERVICE)
                     as? AudioManager
+            // Post-teardown grace: after our own Telecom call
+            // unregisters, AudioManager.getMode() can lag on the
+            // MODE_IN_COMMUNICATION → MODE_NORMAL transition for up
+            // to ~1.4 s on Pixel 9 Pro / API 35 (field observation
+            // 2026-07-11 14:47). In that window
+            // xvHasActiveTelecomCallProvider() returns false but
+            // the mode still reads IN_COMMUNICATION, which without
+            // this grace would resolve to CALL_STATE_OFFHOOK and
+            // block the operator's legitimate follow-up press with
+            // a spurious "Cellular call active" toast. OR the grace
+            // check into the own-call signal so the disambiguation
+            // stays "ours" for RECENT_OWN_CALL_GRACE_MS after our
+            // registry entry drops. External calls still resolve
+            // correctly because they never registered — the grace
+            // stamp only advances on our OWN teardown.
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            val xvOwnCallOrGrace =
+                xvHasActiveTelecomCallProvider() ||
+                    com.atakmap.android.xv.telecom.ActiveCallRegistry
+                        .withinRecentCallGrace(
+                            nowMs = nowMs,
+                            graceMs = com.atakmap.android.xv.telecom.ActiveCallRegistry
+                                .RECENT_OWN_CALL_GRACE_MS,
+                        )
             cellularCallStateFromAudioMode(
                 audioMode = am?.mode ?: AudioManager.MODE_NORMAL,
-                xvHasActiveTelecomCall = xvHasActiveTelecomCallProvider(),
+                xvHasActiveTelecomCall = xvOwnCallOrGrace,
             )
         } catch (t: Throwable) {
             android.util.Log.w(
@@ -865,16 +890,16 @@ class VoicePlant(
         // placement below — the whole point is to avoid placing that
         // call while the cellular stack is busy.
         //
-        // Source-scoped (2026-07-10): the gate only fires for
-        // [PttSource.ON_SCREEN] taps. Hardware button sources
-        // (AINA V1/V2, Pryme MFB, and any future BT-HID hardware
-        // input) represent deliberate operator intent — a mid-call
-        // hardware key-up must not be surprise-blocked. The pure
-        // decision in [shouldGateForCellularCall] returns ALLOW for
-        // every non-screen source unconditionally; the fetch of
-        // cellState is still cheap and worth keeping outside the
-        // branch so the INFO log below can name the actual telephony
-        // state that was bypassed.
+        // Blocks EVERY source (2026-07-11 revision — supersedes
+        // both the original "block everything" (2026-07-10 21:00)
+        // and the source-scoped "on-screen only" (2026-07-10 22:00)
+        // positions). Phone calls are the #1 priority on the device
+        // regardless of which button initiated the PTT. Field
+        // observation 2026-07-11: a hardware AINA press during a
+        // cellular voicemail call auto-held the call because the
+        // source-scoped policy allowed hardware through. The
+        // "hardware = intentional" assumption was too generous.
+        // See [shouldGateForCellularCall] for the pure decision.
         val cellState = cellularCallStateProvider()
         val gate = shouldGateForCellularCall(cellState, source)
         if (gate != PttGate.ALLOW) {
@@ -894,20 +919,6 @@ class VoicePlant(
                 )
             }
             return
-        } else {
-            // Log at INFO so an operator reading a post-mortem logcat
-            // understands why the "cellular call active" toast did NOT
-            // fire for a hardware press during a call. Expected
-            // behavior — deliberate hardware intent bypasses the
-            // fidget-guard. Only log when the cellular stack actually
-            // was in one of the states we would have gated on for an
-            // on-screen tap; the IDLE case is not interesting.
-            val cellActive =
-                cellState == android.telephony.TelephonyManager.CALL_STATE_OFFHOOK ||
-                    cellState == android.telephony.TelephonyManager.CALL_STATE_RINGING
-            if (source != PttSource.ON_SCREEN && cellActive) {
-                Log.i(TAG, "cellular call active but source=$source is hardware — allowing PTT")
-            }
         }
         // Pre-set the comm device for our route preference BEFORE
         // anything else. Two consumers need this assertion:
@@ -1873,7 +1884,7 @@ class VoicePlant(
     // there's no risk of half-press accidental dispatch.
     private fun primaryAinaEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
         { btn, down ->
-            Log.i(TAG, "primary AINA button $btn down=$down source=$source")
+            Log.i(TAG, "${logPrefixForPttSource(source)} $btn down=$down source=$source")
             when (btn) {
                 AinaButton.PTTE -> callbacks.onEmergencyButton(down)
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
@@ -1893,7 +1904,7 @@ class VoicePlant(
     // the user asked for.
     private fun externalButtonEvent(source: PttSource): (AinaButton, Boolean) -> Unit =
         { btn, down ->
-            Log.i(TAG, "external button $btn down=$down source=$source")
+            Log.i(TAG, "${logPrefixForPttSource(source)} $btn down=$down source=$source")
             when (btn) {
                 AinaButton.PTT -> if (down) pttDown(0, source) else pttUp(0, source)
                 else -> { /* external button does not drive PTTS/PTTE/MFB */ }

@@ -175,10 +175,42 @@ class XvVoiceService : Service() {
         }
     }
 
+    // Dedup guard state for the adapter-state broadcast — see
+    // [shouldReactToAdapterState] for the mapping. Updated only from
+    // [btAdapterStateReceiver.onReceive] which runs on the main thread,
+    // but marked @Volatile as belt-and-suspenders so a hypothetical
+    // OEM stack that dispatches the broadcast on a worker thread does
+    // not race on the read.
+    @Volatile
+    private var lastAdapterStateSeen: Int = android.bluetooth.BluetoothAdapter.ERROR
+
+    @Volatile
+    private var lastAdapterStateReactedAtMs: Long = 0L
+
     // Fires on `BluetoothAdapter.ACTION_STATE_CHANGED`. On
     // `STATE_TURNING_OFF` we cascade a PTT release across all BT-sourced
     // inputs — see the registration site in onCreate for the field bug
     // this closes.
+    //
+    // Field bug 2026-07-11 (Samsung Tab5): the same STATE_TURNING_OFF
+    // broadcast arrived twice ~116 ms apart, driving two identical
+    // releaseAllBtSourcedPtt() calls and two identical WARN lines in
+    // logcat (12:44:03.888 and 12:44:04.004). The underlying cause is
+    // Samsung's BT stack double-firing ACTION_STATE_CHANGED for
+    // STATE_TURNING_OFF — a known behavior on some OEM builds. The
+    // cascade itself is idempotent (forgetSource on an already-forgotten
+    // slot is a no-op), so this is not a correctness bug, but it is
+    // log noise the operator has to filter through when triaging a
+    // BT-off cascade.
+    //
+    // We dedup by remembering the last observed state + the last time
+    // we reacted to it, and short-circuiting when the same state arrives
+    // inside [ADAPTER_STATE_DEDUP_WINDOW_MS]. We deliberately do NOT try
+    // to prevent the double registration itself — there is only one
+    // registration in this service; the double-fire is an OS behavior
+    // outside our control. Dedupping the response makes us resilient to
+    // future OEM builds that add or remove the double-fire behavior
+    // without needing to change the receiver plumbing.
     private val btAdapterStateReceiver =
         object : android.content.BroadcastReceiver() {
             override fun onReceive(
@@ -196,6 +228,26 @@ class XvVoiceService : Service() {
                 ) {
                     return
                 }
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                val prevState = lastAdapterStateSeen
+                val prevReactedMs = lastAdapterStateReactedAtMs
+                if (!shouldReactToAdapterState(
+                        newState = state,
+                        lastState = prevState,
+                        nowMs = nowMs,
+                        lastReactedMs = prevReactedMs,
+                        thresholdMs = ADAPTER_STATE_DEDUP_WINDOW_MS,
+                    )
+                ) {
+                    Log.d(
+                        TAG,
+                        "BluetoothAdapter state=$state repeated within " +
+                            "${nowMs - prevReactedMs}ms — dedupped",
+                    )
+                    return
+                }
+                lastAdapterStateSeen = state
+                lastAdapterStateReactedAtMs = nowMs
                 Log.w(
                     TAG,
                     "BluetoothAdapter state=$state — cascading BT-sourced PTT release",
@@ -1935,5 +1987,49 @@ class XvVoiceService : Service() {
         // onBind/onRebind cancels the timer; onDestroy also cancels
         // (the timer's own stopSelf is what got us there).
         private const val ORPHAN_GRACE_MS: Long = 30_000L
+
+        // Dedup window for the BluetoothAdapter ACTION_STATE_CHANGED
+        // broadcast — see [btAdapterStateReceiver] KDoc for the field
+        // bug. 500 ms comfortably brackets the observed 116 ms
+        // double-fire gap on Samsung Tab5 without swallowing a genuine
+        // re-fire from a real second BT-off event (operators do not
+        // toggle BT off twice inside half a second).
+        internal const val ADAPTER_STATE_DEDUP_WINDOW_MS: Long = 500L
+
+        /**
+         * Pure decision function for the STATE_TURNING_OFF / STATE_OFF
+         * dedup guard. Extracted from [btAdapterStateReceiver] so it can
+         * be unit-tested without standing up a Robolectric BroadcastReceiver.
+         *
+         * @param newState the state just extracted from the broadcast.
+         * @param lastState the previously-observed state, or
+         *     [android.bluetooth.BluetoothAdapter.ERROR] on first call.
+         * @param nowMs elapsed-realtime clock at the moment of receipt.
+         * @param lastReactedMs elapsed-realtime clock at the moment we
+         *     last reacted (0 on first call).
+         * @param thresholdMs dedup window in ms; identical repeats within
+         *     this window are ignored.
+         *
+         * Behavior:
+         *  - First observation of any state (lastState is ERROR) - react.
+         *  - Different state than last - react (real state transition,
+         *    e.g. STATE_TURNING_OFF followed by STATE_OFF is normal and
+         *    both deserve their own cascade attempt).
+         *  - Same state observed after threshold - react (probably a
+         *    genuine re-fire from a real second BT-off event).
+         *  - Same state observed within threshold - do NOT react (the
+         *    OS double-fire case we are guarding against).
+         */
+        internal fun shouldReactToAdapterState(
+            newState: Int,
+            lastState: Int,
+            nowMs: Long,
+            lastReactedMs: Long,
+            thresholdMs: Long,
+        ): Boolean {
+            if (lastState == android.bluetooth.BluetoothAdapter.ERROR) return true
+            if (newState != lastState) return true
+            return (nowMs - lastReactedMs) >= thresholdMs
+        }
     }
 }
