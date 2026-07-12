@@ -561,6 +561,16 @@ class XvMapComponent : AbstractMapComponent() {
         intent: Intent,
         mapView: MapView,
     ) {
+        // Early banner so the first 5 s of logcat makes it immediately
+        // obvious whether MapComponent.onCreate ever ran — triage aid
+        // when only XvMumble/XvVoiceSvc appear in logcat (MapComponent
+        // silent = plugin never loaded or crashed before this line).
+        Log.i(
+            TAG,
+            "XV ${com.atakmap.android.xv.BuildConfig.VERSION_NAME} " +
+                "MapComponent.onCreate — pid=${android.os.Process.myPid()}",
+        )
+
         // ATAK plugin quirk: context.applicationContext is NULL in the
         // plugin loader environment (no plugin Application is
         // instantiated). Use the passed-in `context` directly — it's the
@@ -2535,12 +2545,81 @@ class XvMapComponent : AbstractMapComponent() {
             return
         }
         Log.i(TAG, "autoStartSamsungActiveKey: enabling Samsung Active Key PTT")
+        // One-shot conflict check: warn the operator if another plugin's
+        // accessibility service may intercept KEYCODE 1015 before XV's
+        // foreground KeyEvent reader sees it. The Android a11y framework
+        // dispatches key events to registered services SEQUENTIALLY — the
+        // first service that consumes the event wins; later services (and
+        // our non-a11y OnKeyListener) never receive it.
+        warnIfCompetingA11yServiceInterceptsSamsungKey(ctx)
         voiceClient?.setPersistent("samsungActiveKey") { it.setSamsungActiveKeyEnabled(true) }
         // Also start the foreground-KeyEvent fallback. Required on
         // Tab Active5-class firmware that doesn't emit HARD_KEY_REPORT;
         // harmless additive path on firmware that does (dispatcher's
         // OR-gate collapses duplicate edges by source).
         startSamsungActiveKeyForeground()
+    }
+
+    /**
+     * One-shot diagnostic: check whether another plugin's accessibility
+     * service is registered that may intercept KEYCODE 1015 (the Samsung
+     * Active Key) before XV's [com.atakmap.android.xv.ptt.SamsungActiveKeyForegroundReader]
+     * OnKeyListener receives it. If one is found, log a WARNING and show
+     * a Toast so the operator can resolve the conflict without pulling
+     * logcat.
+     *
+     * Root cause: Android's AccessibilityManagerService dispatches
+     * KeyEvents to registered a11y services SEQUENTIALLY. A service whose
+     * `onKeyEvent` returns `true` (consumed) stops dispatch — the next
+     * service in the chain, and our MapView OnKeyListener, never see the
+     * event. Confirmed field-reproduced on Samsung Tab Active5 with GBR VX
+     * plugin loaded alongside XV; the GBR VX `HardwareButtonAccessibilityService`
+     * consumed every KEYCODE 1015 before XV could.
+     *
+     * Short-term fix for the operator: disable the competing a11y service
+     * in Settings → Accessibility → Installed Services. XV cannot prevent
+     * another app from registering an a11y service that intercepts first.
+     */
+    private fun warnIfCompetingA11yServiceInterceptsSamsungKey(ctx: Context) {
+        val am =
+            ctx.getSystemService(Context.ACCESSIBILITY_SERVICE)
+                as? android.view.accessibility.AccessibilityManager
+                ?: return
+        val enabled =
+            am.getEnabledAccessibilityServiceList(
+                android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK,
+            )
+        val xvPkg = heldPluginContext?.packageName
+        val competing =
+            enabled.filter { info ->
+                val svcClass = info.resolveInfo?.serviceInfo?.name ?: ""
+                val svcPkg = info.resolveInfo?.serviceInfo?.packageName ?: ""
+                // Exclude our own package (XV currently has no
+                // AccessibilityService, but guard for future changes).
+                svcPkg != xvPkg &&
+                    // Match any a11y service whose class name contains
+                    // "HardwareButton" — the pattern common to PTT plugins
+                    // that intercept hardware keys. The field-observed
+                    // conflict (GBR VX) uses exactly this class name.
+                    svcClass.contains("HardwareButton", ignoreCase = true)
+            }
+        if (competing.isEmpty()) return
+        val names =
+            competing.joinToString(", ") {
+                it.resolveInfo?.serviceInfo?.run { "$packageName/$name" } ?: "unknown"
+            }
+        Log.w(
+            TAG,
+            "Samsung Active Key conflict: accessibility service(s) may intercept " +
+                "KEYCODE 1015 before XV's foreground reader — $names. " +
+                "Operator fix: Settings → Accessibility → disable the conflicting service.",
+        )
+        Toast.makeText(
+            ctx,
+            "XV: another app's accessibility service may block the Samsung Active Key. " +
+                "Check Settings → Accessibility → Installed Services.",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     // Start the service-side Sonim button broadcast receivers AND the

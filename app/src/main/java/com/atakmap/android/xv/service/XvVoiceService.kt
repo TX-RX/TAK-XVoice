@@ -1305,6 +1305,40 @@ class XvVoiceService : Service() {
             Log.w(TAG, "TelecomManager unavailable")
             return
         }
+        // Telecom-desync guard: our in-process registry says no active
+        // call, but Telecom may still hold a stale call for our
+        // PhoneAccount (race between XvConnection.destroy() clearing
+        // the registry and Telecom settling the DisconnectCause).
+        // Without this, placeCall() below hits Telecom's arbitration
+        // logic and the system fires a "Hang up XV first" toast while
+        // refusing the new call. Field-observed: TC@N stacked ACTIVE
+        // for 138+ seconds per dumpsys telecom on Pixel 9 Pro and
+        // Sonim XP9900.
+        val telecomReportsCall =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // API 31+: precise self-managed-only check avoids false
+                // positives from concurrent cellular calls.
+                tm.isInSelfManagedCall
+            } else {
+                // Pre-API 31: includes cellular calls; acceptable since
+                // PttCellularGate already blocks PTT during cellular.
+                tm.isInCall
+            }
+        if (telecomReportsCall) {
+            Log.w(
+                TAG,
+                "placeTelecomCallInternal: Telecom reports active call but " +
+                    "ActiveCallRegistry is empty — registry/Telecom desync. " +
+                    "Forcing PhoneAccount reset to clear stale TC state before placeCall.",
+            )
+            // Unregistering the PhoneAccount causes Telecom to
+            // terminate all calls under it, clearing the stale entry.
+            // Re-register immediately so the subsequent placeCall()
+            // finds the account.
+            com.atakmap.android.xv.telecom.XvPhoneAccount.unregister(this)
+            com.atakmap.android.xv.telecom.XvPhoneAccount.register(this)
+        }
+
         val uri =
             com.atakmap.android.xv.telecom.XvPhoneAccount
                 .callUri(tag)
