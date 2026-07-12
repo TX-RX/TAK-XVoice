@@ -33,10 +33,11 @@ import com.atakmap.android.xv.util.SamsungActiveKey
  *
  * Tight scoping — what this service does NOT do:
  *
- * - `onAccessibilityEvent` body is intentionally empty — XV subscribes
- *   to **zero** UI events (`accessibilityEventTypes = typeNone` in the
- *   descriptor XML).  The service body never reads screen content,
- *   typed text, viewed windows, or any other accessibility data.
+ * - `onAccessibilityEvent` body is intentionally empty — all dispatched
+ *   events are discarded.  The descriptor uses `typeWindowStateChanged`
+ *   (the minimum AAPT accepts; `typeNone`/`0` is rejected at build time)
+ *   but the service body never reads screen content, typed text, viewed
+ *   windows, or any other accessibility data.
  * - `canRetrieveWindowContent = false` in the XML descriptor.
  * - Only `flagRequestFilterKeyEvents` is declared — the narrowest flag
  *   set that grants `onKeyEvent`.

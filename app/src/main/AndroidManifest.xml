@@ -230,8 +230,8 @@
              exported=true is required by the framework (the system binder
              crosses UIDs); the permission is the real enforcement.
 
-             The service subscribes to ZERO UI events (typeNone in
-             xv_accessibility_service.xml) and never reads screen content
+             The service discards all dispatched events (typeWindowStateChanged
+             in xv_accessibility_service.xml, the minimum AAPT accepts) and never reads screen content
              or typed text.  Only KEY_CODE_PTT (1015) is acted on in
              onKeyEvent; all other keycodes are passed through untouched.
 

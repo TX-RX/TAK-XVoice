@@ -6,7 +6,7 @@
          entry.  Deliberately states what the service does AND does not
          do so operators can make an informed decision.  The OS-generated
          prompt ("can observe your actions") is outside XV's control and
-         does not reflect the typeNone / no-window-content configuration;
+         does not reflect the typeWindowStateChanged / no-window-content configuration;
          this string is the accurate per-app description alongside it. -->
     <string name="xv_accessibility_service_description">Intercepts the Samsung Active Key button (keyCode 1015) to enable Push-to-Talk while ATAK is in the background. Does not read screen content, typed text, viewed windows, or any other app data.</string>
 </resources>
