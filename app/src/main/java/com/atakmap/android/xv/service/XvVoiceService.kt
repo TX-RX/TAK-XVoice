@@ -1311,9 +1311,9 @@ class XvVoiceService : Service() {
         // the registry and Telecom settling the DisconnectCause).
         // Without this, placeCall() below hits Telecom's arbitration
         // logic and the system fires a "Hang up XV first" toast while
-        // refusing the new call. Field-observed: TC@N stacked ACTIVE
-        // for 138+ seconds per dumpsys telecom on Pixel 9 Pro and
-        // Sonim XP9900.
+        // refusing the new call. Field-observed: Telecom connection
+        // entries stacked ACTIVE for 138+ seconds per dumpsys telecom
+        // on Pixel 9 Pro and Sonim XP9900.
         val telecomReportsCall =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // API 31+: precise self-managed-only check avoids false
