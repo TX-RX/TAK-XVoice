@@ -124,7 +124,7 @@ class SonimPttButtonReader(
                         // Missing or unknown state values are ignored with
                         // a warning so a malformed broadcast doesn't strand
                         // the OR-gate in a stuck-down condition.
-                        val state = intent.getIntExtra(SonimHardwareButtons.MCX_EXTRA_STATE, -1)
+                        val state = intent.getIntExtra(SonimHardwareButtons.MCX_EXTRA_STATE, SonimHardwareButtons.MCX_STATE_UNKNOWN)
                         when (state) {
                             SonimHardwareButtons.MCX_STATE_PRESSED -> {
                                 Log.i(TAG, "Sonim PTT DOWN (broadcast, MCX state=1)")

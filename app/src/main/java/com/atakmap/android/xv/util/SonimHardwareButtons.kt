@@ -179,6 +179,14 @@ object SonimHardwareButtons {
     const val MCX_STATE_RELEASED: Int = 0
 
     /**
+     * Sentinel returned by [android.content.Intent.getIntExtra] when
+     * the [MCX_EXTRA_STATE] extra is absent from an [ACTION_MCX_KEY]
+     * broadcast. Any value other than [MCX_STATE_PRESSED] or
+     * [MCX_STATE_RELEASED] is treated as unknown and ignored.
+     */
+    const val MCX_STATE_UNKNOWN: Int = -1
+
+    /**
      * Best-effort primary KeyEvent code for the Sonim PTT side button.
      * `KEYCODE_HEADSETHOOK` (79) is the most commonly reported Sonim
      * PTT keycode across community references — chosen as the primary
