@@ -657,7 +657,7 @@
                     android:id="@+id/xv_label_sonim_ptt_button_help"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Use the dedicated PTT side button on your Sonim ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end. Turn OFF to restore the button's default Sonim behaviour."
+                    android:text="Use the dedicated PTT side button on your Sonim ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end.\n\nRequired setup: go to Settings → System → Buttons (Programmable keys) → PTT key → set to No Action. AT&amp;T carrier XP9900 ships with AT&amp;T Dispatch Hub claiming the PTT key by default — unassign it first or the broadcasts will not reach XV."
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="4dp"

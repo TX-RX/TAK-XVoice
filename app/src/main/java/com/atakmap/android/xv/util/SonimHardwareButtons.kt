@@ -21,15 +21,23 @@ import android.view.KeyEvent
  *      target app in Settings → Programmable keys. This path is
  *      backgrounded-safe. Sonim device intents (well-documented on
  *      Sonim SDK / community reference sites):
- *        - PTT press / release:
+ *        - PTT press / release (classic Sonim-namespaced):
  *            `com.sonim.intent.action.PTT_KEY_DOWN`
  *            `com.sonim.intent.action.PTT_KEY_UP`
+ *        - PTT press / release (MCX / MCPTT mode, AT&T carrier firmware):
+ *            `com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY`
+ *            Uses a `"state"` integer extra: 1 = pressed, 0 = released.
+ *            First observed on XP9900 (AT&T carrier, Android 12) where
+ *            the Sonim SDK policy engine checks for this action rather
+ *            than the classic `PTT_KEY_DOWN` / `PTT_KEY_UP` strings.
  *        - SOS press / release:
  *            `android.intent.action.SOS.down`
  *            `android.intent.action.SOS.up`
- *      The PTT_KEY intents are the Sonim-namespaced actions; the SOS
- *      broadcast reuses the Android-style `.down` / `.up` convention
- *      that other ruggedized OEMs also emit.
+ *      `SonimPttButtonReader` registers for all three PTT actions so
+ *      both classic and MCX-mode firmware work without separate code
+ *      paths. `PttDispatcher`'s source-based OR-gate prevents double-
+ *      fire if a firmware emits more than one of the three actions for
+ *      a single physical press.
  *
  *   2) **Plain [KeyEvent]s** delivered to the foreground activity via
  *      `PhoneWindowManager.interceptKeyTq` → `InputDispatcher`. This
@@ -86,6 +94,17 @@ import android.view.KeyEvent
  *   - Sonim SPCC overview (confirms the SDK is optional and buttons
  *     have a programmable API, not an SDK-only path):
  *     https://developer.firstnet.com/firstnet/apis-sdks/sonim-spcc
+ *   - On-device validation (XP9900 AT&T carrier, Android 12, 2026-07-11):
+ *     Confirmed `Build.MODEL = XP9900`, `Build.BRAND = Sonim`,
+ *     `Build.MANUFACTURER = Sonimtech`. AT&T carrier firmware activates
+ *     the MCX/MCPTT policy engine — PTT button fires under
+ *     `com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY` with
+ *     a `"state"` extra (1 = pressed, 0 = released) rather than the
+ *     classic Sonim-namespaced `PTT_KEY_DOWN` / `PTT_KEY_UP` actions.
+ *     `isSupported()` correctly returns `true` (BRAND check catches
+ *     `Sonimtech` manufacturer via the OR path). Prerequisite: operator
+ *     must set Settings → System → Buttons (Programmable keys) → PTT
+ *     key → No Action to release the button from AT&T Dispatch Hub.
  *
  * ---
  *
@@ -127,9 +146,37 @@ object SonimHardwareButtons {
     /** Broadcast action fired when the SOS button is released. */
     const val ACTION_SOS_UP: String = "android.intent.action.SOS.up"
 
-    // ============================================================
-    // KeyEvent surface (foreground fallback)
-    // ============================================================
+    /**
+     * MCX / MCPTT broadcast action for the PTT side button on
+     * carrier-branded Sonim firmware (AT&T XP9900, Android 12). Used
+     * by the Sonim SDK policy engine on MCPTT-mode handsets instead of
+     * (or in addition to) the classic [ACTION_PTT_KEY_DOWN] /
+     * [ACTION_PTT_KEY_UP] pair. Unlike the classic actions, this is a
+     * single action that carries a [MCX_EXTRA_STATE] integer extra
+     * indicating the button edge: [MCX_STATE_PRESSED] on press,
+     * [MCX_STATE_RELEASED] on release.
+     *
+     * `SonimPttButtonReader` registers for this action alongside the
+     * classic Sonim actions so the PTT button works on both firmware
+     * variants. `PttDispatcher`'s source-based OR-gate prevents double-
+     * fire if a firmware happens to emit both forms for the same press.
+     */
+    const val ACTION_MCX_KEY: String =
+        "com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY"
+
+    /**
+     * Intent extra key carried with [ACTION_MCX_KEY] broadcasts.
+     * Integer value: [MCX_STATE_PRESSED] when the button is pressed,
+     * [MCX_STATE_RELEASED] when the button is released. If the extra
+     * is absent the broadcast is ignored (treated as malformed).
+     */
+    const val MCX_EXTRA_STATE: String = "state"
+
+    /** [MCX_EXTRA_STATE] value indicating the PTT button was pressed. */
+    const val MCX_STATE_PRESSED: Int = 1
+
+    /** [MCX_EXTRA_STATE] value indicating the PTT button was released. */
+    const val MCX_STATE_RELEASED: Int = 0
 
     /**
      * Best-effort primary KeyEvent code for the Sonim PTT side button.
@@ -189,13 +236,13 @@ object SonimHardwareButtons {
         listOf(
             // XP10 — commercial model number XP9900. Regional variants
             // (AT&T / Verizon / T-Mobile / global) share the XP9900
-            // prefix in Build.MODEL.
+            // prefix in Build.MODEL. Confirmed on-device: AT&T carrier
+            // XP9900 (Android 12) reports `Build.MODEL = "XP9900"`.
             "XP9900",
-            // Alternative Build.MODEL forms we've seen referenced in
-            // Sonim documentation; include so a firmware quirk that
-            // reports "XP10" or "XP10-A" instead of "XP9900" still
-            // lights up the toggle. TODO: verify on-device which
-            // form the shipping XP10 firmware actually reports.
+            // Alternative Build.MODEL form observed in Sonim
+            // documentation and some community references. Keep as
+            // belt-and-suspenders in case a firmware variant reports
+            // "XP10" rather than "XP9900" in Build.MODEL.
             "XP10",
         )
 
@@ -210,9 +257,10 @@ object SonimHardwareButtons {
      * The check is intentionally lenient — matches on
      * [android.os.Build.MANUFACTURER] `equals "sonim"` OR
      * [android.os.Build.BRAND] `equals "sonim"` AND a model prefix
-     * from the allow-list. Empirically Sonim firmware reports both
-     * `MANUFACTURER` and `BRAND` as `sonim` (lowercase), but be
-     * defensive.
+     * from the allow-list. On-device validation (XP9900 AT&T, Android
+     * 12) confirmed `BRAND = "Sonim"` and `MANUFACTURER = "Sonimtech"`.
+     * The OR-gate via BRAND means `Sonimtech` is handled without a
+     * separate manufacturer entry.
      *
      * [context] is accepted for symmetry with the Android-runtime
      * shape and future extension (a Sonim system feature flag, if

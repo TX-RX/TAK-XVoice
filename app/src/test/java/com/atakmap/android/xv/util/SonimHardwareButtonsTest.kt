@@ -95,6 +95,25 @@ class SonimHardwareButtonsTest {
     }
 
     @Test
+    fun `Sonimtech manufacturer with Sonim brand (AT&T XP9900) still matches`() {
+        // On-device confirmed (XP9900 AT&T carrier, Android 12):
+        //   Build.MANUFACTURER = "Sonimtech"
+        //   Build.BRAND       = "Sonim"
+        //   Build.MODEL       = "XP9900"
+        // The manufacturer check does NOT match "Sonimtech" against
+        // "sonim", but the OR-gate falls through to the brand check
+        // which does. isSupported() must return true.
+        assertTrue(
+            SonimHardwareButtons.isSupportedInternal(
+                manufacturer = "Sonimtech",
+                brand = "Sonim",
+                model = "XP9900",
+                features = emptySet(),
+            ),
+        )
+    }
+
+    @Test
     fun `mixed-case manufacturer still matches`() {
         // Build.MANUFACTURER is empirically all-lowercase "sonim" on
         // real hardware, but be tolerant of a future firmware quirk.
