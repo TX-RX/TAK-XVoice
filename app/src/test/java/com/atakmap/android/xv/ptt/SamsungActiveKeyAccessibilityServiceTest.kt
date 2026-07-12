@@ -183,7 +183,7 @@ class SamsungActiveKeyAccessibilityServiceTest {
     fun `COMPONENT_NAME package matches XV application ID`() {
         val cn = SamsungActiveKeyAccessibilityService.COMPONENT_NAME
         val pkg = cn.substringBefore('/')
-        assertEquals("com.atakmap.android.xv", pkg)
+        assertEquals(com.atakmap.android.xv.BuildConfig.APPLICATION_ID, pkg)
     }
 
     // ---- Key code constant sanity ----

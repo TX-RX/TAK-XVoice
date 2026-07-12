@@ -1979,9 +1979,15 @@ class XvDropDownReceiver(
         sw.isChecked = controller.samsungActiveKeyBgServiceEnabled()
         // Any tap on the row or the switch opens the system Accessibility
         // settings so the operator can enable / disable the service there.
-        val openSettings = View.OnClickListener { controller.openAccessibilitySettings() }
-        row.setOnClickListener(openSettings)
-        sw.setOnClickListener(openSettings)
+        // Reset the switch to the current OS-reported value before launching
+        // Settings — a Switch tap briefly toggles the visual state before
+        // the click listener fires, so we must correct it immediately to
+        // avoid showing a misleading checked state while Settings opens.
+        row.setOnClickListener { controller.openAccessibilitySettings() }
+        sw.setOnClickListener {
+            sw.isChecked = controller.samsungActiveKeyBgServiceEnabled()
+            controller.openAccessibilitySettings()
+        }
     }
 
     // Sonim ruggedized-device dedicated PTT side button toggle. The

@@ -2689,8 +2689,7 @@ class XvMapComponent : AbstractMapComponent() {
                 com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.COMPONENT_NAME
             enabled.any { info ->
                 info.resolveInfo?.serviceInfo?.let { si ->
-                    "${si.packageName}/${si.name}" == targetComponent ||
-                        "${si.packageName}/.${si.name.removePrefix(si.packageName + ".")}" == targetComponent
+                    android.content.ComponentName(si.packageName, si.name).flattenToString() == targetComponent
                 } ?: false
             }
         } catch (t: Throwable) {

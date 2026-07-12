@@ -196,7 +196,17 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
          * currently enabled via
          * [android.view.accessibility.AccessibilityManager.getEnabledAccessibilityServiceList].
          * Format matches [android.content.ComponentName.flattenToString].
+         *
+         * Uses [com.atakmap.android.xv.BuildConfig.APPLICATION_ID] (the
+         * APK's runtime package name, `com.atakmap.android.xv.plugin`)
+         * rather than the source namespace (`com.atakmap.android.xv`) so
+         * that the string matches what [android.view.accessibility.AccessibilityManager]
+         * actually returns for enabled services.
          */
-        const val COMPONENT_NAME = "com.atakmap.android.xv/.ptt.SamsungActiveKeyAccessibilityService"
+        val COMPONENT_NAME: String =
+            android.content.ComponentName(
+                com.atakmap.android.xv.BuildConfig.APPLICATION_ID,
+                SamsungActiveKeyAccessibilityService::class.java.name,
+            ).flattenToString()
     }
 }
