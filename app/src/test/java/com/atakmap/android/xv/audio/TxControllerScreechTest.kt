@@ -12,27 +12,21 @@ import org.junit.Test
  *
  * Field complaint: on the first TX after install — when AINA SCO hadn't
  * yet bound — the operator's first transmission produced loud screech
- * on the receiving peer. Root cause traced through logcat:
+ * on the receiving peer. Root cause: AudioRecord read from a not-yet-
+ * routed BT SCO source and returned stuck `-1`-fill frames (rms=1);
+ * those garbage frames reached Concentus' Opus encoder and tripped an
+ * AssertionError inside `Resampler.silk_resampler`, corrupting the SILK
+ * state so every subsequent real-speech frame encoded to garbage on the
+ * wire = screech on the peer.
  *
- *   1. Mic pre-arm fires before SCO is bound. AudioRecord reads from a
- *      not-yet-routed source and returns stuck `-1`-fill frames
- *      (rms=1, samples=[-1,-1,-1,-1,-1]).
- *   2. During state=TPT (past the 80ms skip), those garbage frames
- *      land in the TPT-overlap ring buffer.
- *   3. On TX start, the ring flushes into Concentus' Opus encoder. The
- *      first encode trips an AssertionError inside
- *      `Resampler.silk_resampler` on the pathological -1-fill input.
- *   4. The throw leaves the encoder's SILK state corrupt. Every
- *      subsequent live frame from real speech encodes against the
- *      corrupted state — garbage on the wire = screech on the peer.
- *
- * Two-line defense in TxController:
- *   - Gate the ring-buffer append on rms(frame) >= RING_BUFFER_MIN_RMS.
- *   - On encode failure, close + recreate the encoder via the factory
- *     so the next frame encodes against fresh state.
- *
- * These tests pin the contract of both lines so a future refactor of
- * the audio path can't silently re-introduce the regression.
+ * The original TPT-overlap ring buffer (and its RMS append gate) that
+ * carried those garbage frames into the encoder was removed outright
+ * 2026-05-21 — see TxController.onPcmFrame. The surviving defenses
+ * pinned here are:
+ *   - rms(): the pure amplitude helper, still used by the PRIMING
+ *     mic-alive gate (Part 1).
+ *   - Encoder reset on encode failure: close + recreate via the factory
+ *     so the next frame encodes against fresh state (Part 3).
  */
 class TxControllerScreechTest {
     // ============================================================
@@ -81,51 +75,6 @@ class TxControllerScreechTest {
         val maxAmp = ShortArray(480) { Short.MAX_VALUE }
         val r = TxController.rms(maxAmp)
         assertEquals(Short.MAX_VALUE.toInt(), r)
-    }
-
-    // ============================================================
-    // Part 2 — RMS threshold (RING_BUFFER_MIN_RMS) contract
-    // ============================================================
-
-    @Test
-    fun `threshold sits above the garbage rms but below speech rms`() {
-        val garbageRms = TxController.rms(ShortArray(480) { -1 })
-        val silenceRms = TxController.rms(ShortArray(480) { 0 })
-        // Both pathological / silent cases must fail the gate.
-        assertTrue(
-            "garbage rms=$garbageRms must be below threshold=${TxController.RING_BUFFER_MIN_RMS}",
-            garbageRms < TxController.RING_BUFFER_MIN_RMS,
-        )
-        assertTrue(
-            "silence rms=$silenceRms must be below threshold=${TxController.RING_BUFFER_MIN_RMS}",
-            silenceRms < TxController.RING_BUFFER_MIN_RMS,
-        )
-        // Real speech must pass.
-        val speech = ShortArray(480) { i -> (10_000.0 * kotlin.math.sin(i * 0.2)).toInt().toShort() }
-        val speechRms = TxController.rms(speech)
-        assertTrue(
-            "speech rms=$speechRms must be above threshold=${TxController.RING_BUFFER_MIN_RMS}",
-            speechRms >= TxController.RING_BUFFER_MIN_RMS,
-        )
-    }
-
-    @Test
-    fun `mic self-noise (rms ~5-20 in a quiet room) is correctly rejected`() {
-        // Real mic self-noise on a quiet AINA / built-in mic sits in
-        // the rms 5-20 range — well below speech but above the
-        // garbage pattern. The gate must still reject it because
-        // self-noise has no useful audio content for the operator
-        // and only inflates the buffered TPT-overlap window with
-        // pointless frames.
-        val selfNoise = ShortArray(480) { kotlin.random.Random.nextInt(-15, 16).toShort() }
-        val r = TxController.rms(selfNoise)
-        // self-noise rms is bounded above by 15 (uniform [-15,15] →
-        // rms ~= 8.7), well below the 50 threshold.
-        assertTrue("self-noise rms=$r should be < 30", r < 30)
-        assertTrue(
-            "self-noise rms=$r must be rejected by threshold=${TxController.RING_BUFFER_MIN_RMS}",
-            r < TxController.RING_BUFFER_MIN_RMS,
-        )
     }
 
     // ============================================================

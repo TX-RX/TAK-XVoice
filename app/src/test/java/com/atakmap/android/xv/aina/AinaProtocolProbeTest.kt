@@ -209,7 +209,7 @@ class AinaProtocolProbeTest {
 
     private fun mockBondedDevice(
         mac: String,
-        name: String = "APTT316782",
+        name: String = "APTT000000",
     ): BluetoothDevice {
         val dev = mockk<BluetoothDevice>(relaxed = true)
         every { dev.address } returns mac

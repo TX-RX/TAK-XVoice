@@ -272,4 +272,46 @@ class TxControllerColdScoWarmupTest {
             TxRoute.entries.map { it.name },
         )
     }
+
+    // ============================================================
+    // Part 4 — PRIMING gate selection keys off COLD SCO, not "SCO up"
+    //
+    // 2026-07-13 field repro: SCO was held WARM across a full session
+    // (the cool-down tail working as intended), yet every burst still
+    // used the 30-frame (~300 ms) cold gate because the selection was
+    // tied to "SCO connected." With bursty keying the operator released
+    // before TX started and ZERO frames went out. The gates must be
+    // slow ONLY for a cold acquire; warm-SCO and non-SCO get fast gates.
+    // ============================================================
+
+    @Test
+    fun `cold-SCO burst uses the ramp-tolerant gates`() {
+        assertEquals(30, TxController.primingMinFramesToConfirmAlive(coldSco = true))
+        assertEquals(200, TxController.primingRmsThreshold(coldSco = true))
+        assertEquals(1500L, TxController.primingTimeoutMs(coldSco = true))
+    }
+
+    @Test
+    fun `warm-SCO or non-SCO burst uses the fast gates`() {
+        // The regression guard: coldSco=false MUST select the fast
+        // gates so a warm-held-SCO key reaches the tone in ~50 ms
+        // (5 frames), not ~300 ms.
+        assertEquals(5, TxController.primingMinFramesToConfirmAlive(coldSco = false))
+        assertEquals(5, TxController.primingRmsThreshold(coldSco = false))
+        assertEquals(500L, TxController.primingTimeoutMs(coldSco = false))
+    }
+
+    @Test
+    fun `warm gates are strictly faster to confirm than cold gates`() {
+        // Intent invariant independent of the exact tuned values: a warm
+        // burst never waits longer than a cold one to declare mic-alive.
+        assertTrue(
+            TxController.primingMinFramesToConfirmAlive(coldSco = false) <
+                TxController.primingMinFramesToConfirmAlive(coldSco = true),
+        )
+        assertTrue(
+            TxController.primingTimeoutMs(coldSco = false) <
+                TxController.primingTimeoutMs(coldSco = true),
+        )
+    }
 }

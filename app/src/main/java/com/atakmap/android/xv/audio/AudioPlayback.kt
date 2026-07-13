@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
  *
  * The SCO link is async (~500-1500ms to come up). To avoid losing the first
  * syllable when transitioning IDLE → SCO, we buffer decoded PCM into a small
- * ring (~2s cap) during PENDING_SCO and drain it into the AudioTrack the
+ * ring (~4s cap, pendingBufferMaxSamples) during PENDING_SCO and drain it into the AudioTrack the
  * moment SCO connects. The buffer is ONLY active during the profile switch;
  * once Active, frames write straight through with zero added latency.
  *
@@ -72,7 +72,7 @@ class AudioPlayback(
     // across rapid RX bursts. When false, the manual focus path runs.
     private val telecomActive: () -> Boolean = { false },
     // Fires when AudioPlayback enters / exits the SCO_HOT hold state
-    // — i.e. when the SCO link will stay warm for ~5 s after RX
+    // — i.e. when the SCO link will stay warm for ~8 s (scoHoldMs) after RX
     // completes. TxController subscribes via VoicePlant and uses the
     // edge to allocate AudioCapture during the hold so the BT
     // chipset's mic data path has time to settle before the operator
@@ -394,9 +394,9 @@ class AudioPlayback(
         // Demand-based SCO. HFP-only BT routes need SCO before audio can
         // flow; non-SCO routes (A2DP, speaker, wired) bypass it entirely.
         // Cold-start incoming voice gets buffered into pendingBuffer for
-        // up to ~2s while SCO comes up; once ACTIVE, frames pass through
+        // up to ~4s while SCO comes up; once ACTIVE, frames pass through
         // with no added latency. After idleTimeoutMs of silence we drop
-        // to SCO_HOT, holding SCO for scoHoldMs (5s) so a follow-up
+        // to SCO_HOT, holding SCO for scoHoldMs (8s) so a follow-up
         // transmission resumes instantly. After that → IDLE.
         val btMode = btPolicy?.classify() ?: BtAudioMode.NONE
         val link = scoLink
@@ -700,7 +700,7 @@ class AudioPlayback(
             } catch (_: Throwable) {
             }
         }
-        // Hold audio focus through the SCO_HOT window (5s). If we
+        // Hold audio focus through the SCO_HOT window (8s, scoHoldMs). If we
         // released focus here, media apps would un-pause but SCO is
         // still up + mode is IN_COMMUNICATION → music routes through
         // SCO to the AINA. Keeping focus held means media stays
@@ -708,7 +708,7 @@ class AudioPlayback(
         // when SCO actually goes down (in teardown).
         state = State.SCO_HOT
         // Tell TxController to allocate AudioCapture now so the BT
-        // chipset's mic data path settles during the 5 s hold. Slow
+        // chipset's mic data path settles during the 8 s hold. Slow
         // chipsets (Duo+V1) need 1-3 s of mic-pumping before they
         // stop returning silent samples; doing that BEFORE PTT-down
         // means the operator's response press finishes PRIMING in

@@ -899,12 +899,6 @@ class XvMapComponent : AbstractMapComponent() {
                     ) {
                         currentChannelTag = null
                     }
-                    // L4 fix: tell the call bridge the call has ended
-                    // externally so its callActive flag flips back to
-                    // false. Without this, TxController + AudioPlayback
-                    // consult isCallActive() and stay-true blocks their
-                    // manual focus-fallback paths after a peer hangup.
-                    callBridge?.notifyExternallyEnded()
                     // Belt-and-suspenders UI refresh — the transport's
                     // rejoin-to-pre-call-channel will trigger
                     // onChannelChanged which already calls refreshNow,
@@ -1309,7 +1303,7 @@ class XvMapComponent : AbstractMapComponent() {
         want += Manifest.permission.RECORD_AUDIO
         // CALL_PHONE — Telecom's placeCall enforces this on Android
         // 14+ even for self-managed VoIP accounts. Without it, our
-        // service's ACTION_PLACE_CALL throws SecurityException.
+        // service's TelecomManager.placeCall throws SecurityException.
         want += Manifest.permission.CALL_PHONE
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             want += Manifest.permission.BLUETOOTH_CONNECT
@@ -2510,13 +2504,9 @@ class XvMapComponent : AbstractMapComponent() {
                 // Hang Up action does — endChannelCall() routes through
                 // AIDL to XvVoiceService, which tears down the Telecom
                 // Connection; the externalTeardownListener then unwinds
-                // Mumble + voice plant. notifyExternallyEnded clears
-                // the local callActive flag immediately so refreshMain
-                // hides the bar without waiting for the async Telecom
-                // round-trip.
+                // Mumble + voice plant.
                 Log.i(TAG, "Controller.endCall — in-app escape hatch tapped")
                 callBridge?.endChannelCall()
-                callBridge?.notifyExternallyEnded()
             }
         }
 
@@ -4529,7 +4519,7 @@ class XvMapComponent : AbstractMapComponent() {
         // up". Nothing re-triggers autoConnect, so the reader stays
         // unspawned until the operator manually touches the picker.
         // Observed: OS-level BT reconnect completed at ~4-5 s after
-        // STATE_ON (log: `XvAudioRouter: added: BT_SCO(APTT316782)`
+        // STATE_ON (log: `XvAudioRouter: added: BT_SCO(APTT000000)`
         // at 20:39:54 vs STATE_ON at 20:39:49).
         //
         // 3000 ms gives a safety margin over the observed 4-5 s

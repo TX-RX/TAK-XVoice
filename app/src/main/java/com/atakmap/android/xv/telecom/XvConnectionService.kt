@@ -5,6 +5,7 @@ import android.content.Intent
 import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
+import android.telecom.DisconnectCause
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.util.Log
@@ -23,9 +24,11 @@ import android.util.Log
 // originating here have the permission.
 //
 // Plugin → Service contract is action-based via startService:
-//   ACTION_PLACE_CALL + EXTRA_CHANNEL_TAG: register account if needed,
-//                                          then placeCall
 //   ACTION_END_CALL: disconnect the active Connection (if any)
+//
+// (The outgoing placeCall now originates solely in XvVoiceService, in
+// this same process/UID — see placeTelecomCallInternal. The legacy
+// startService(ACTION_PLACE_CALL) path was dead code and was removed.)
 //
 // The Connection lives in this process for its entire lifetime; the
 // plugin never touches it directly.
@@ -47,10 +50,6 @@ class XvConnectionService : ConnectionService() {
         val action = intent?.action
         Log.i(TAG, "onStartCommand action=$action")
         when (action) {
-            ACTION_PLACE_CALL -> {
-                val tag = intent.getStringExtra(EXTRA_CHANNEL_TAG) ?: "unknown"
-                handlePlaceCall(tag)
-            }
             ACTION_END_CALL -> {
                 val conn = ActiveCallRegistry.activeConnection()
                 if (conn == null) {
@@ -69,28 +68,6 @@ class XvConnectionService : ConnectionService() {
         return START_NOT_STICKY
     }
 
-    private fun handlePlaceCall(channelTag: String) {
-        registerPhoneAccountIfNeeded()
-        val tm = getSystemService(TELECOM_SERVICE) as? TelecomManager
-        if (tm == null) {
-            Log.w(TAG, "TelecomManager unavailable")
-            return
-        }
-        val uri = XvPhoneAccount.callUri(channelTag)
-        val extras = XvPhoneAccount.placeCallExtras(this, channelTag)
-        try {
-            tm.placeCall(uri, extras)
-            Log.i(TAG, "placeCall fired for tag=$channelTag uri=$uri")
-        } catch (t: SecurityException) {
-            // MANAGE_OWN_CALLS missing OR PhoneAccount registered but
-            // not enabled in system Telecom settings. Some OEM ROMs
-            // require manual enable for self-managed accounts.
-            Log.e(TAG, "placeCall denied — check MANAGE_OWN_CALLS + account enabled", t)
-        } catch (t: Throwable) {
-            Log.e(TAG, "placeCall threw", t)
-        }
-    }
-
     private fun registerPhoneAccountIfNeeded() {
         if (phoneAccountRegistered) return
         XvPhoneAccount.register(this)
@@ -104,17 +81,40 @@ class XvConnectionService : ConnectionService() {
         val tag = request?.address?.schemeSpecificPart ?: "unknown"
         Log.i(TAG, "onCreateOutgoingConnection tag=$tag account=$connectionManagerPhoneAccount")
 
+        // Defense-in-depth for the double-place race: if a live
+        // connection with the SAME tag already exists, a second
+        // placeCall for it raced past XvVoiceService's synchronous
+        // TelecomState guard. Do NOT stack a second XvConnection —
+        // keep the existing one ACTIVE and fail THIS duplicate request
+        // so Telecom drops it. Returning a CANCELED failed connection
+        // (not ERROR) is silent for a self-managed call and, unlike
+        // Telecom's own rejection, never disturbs the live call. This
+        // does NOT invoke onCreateOutgoingConnectionFailed, so the
+        // service's place-failed reset does not fire — correct, because
+        // our real call is still up.
+        ActiveCallRegistry.activeConnection()?.let { prior ->
+            if (prior.tag == tag) {
+                Log.w(
+                    TAG,
+                    "onCreateOutgoingConnection: duplicate placeCall for live tag='$tag' — " +
+                        "rejecting duplicate, keeping the existing connection",
+                )
+                prior.setActiveSession()
+                return Connection.createFailedConnection(
+                    DisconnectCause(DisconnectCause.CANCELED),
+                )
+            }
+        }
+
         // Tear down any prior PRIVATE call before placing a new one.
         // A new outgoing call's tag is either "voice" (group-channel
         // placeholder for PTT) or "→ peer" (private call). When the new
-        // tag is "voice", the prior is usually also "voice" — that's
-        // the existing connection-reuse path. When the new tag is
-        // "→ peer", a prior "voice" must NOT be torn down here for the
-        // same reason as the incoming path: tearing it fires
-        // fireExternalTeardown which the plugin's onPrivateCallEnded
-        // interprets and sends CANCEL_CALL, which the callee receives
-        // and shows on its side. Prior private calls are torn down
-        // normally.
+        // tag is "→ peer", a prior "voice" must NOT be torn down here:
+        // tearing it fires fireExternalTeardown which the plugin's
+        // onPrivateCallEnded interprets and sends CANCEL_CALL, which the
+        // callee receives and shows on its side. Prior private calls are
+        // torn down normally. (Same-tag "voice"-over-"voice" is already
+        // handled by the reuse guard above.)
         ActiveCallRegistry.activeConnection()?.let { prior ->
             val newIsPrivate = tag.startsWith("→ ") || tag.startsWith("← ")
             val priorIsVoice = prior.tag == "voice"
@@ -168,6 +168,15 @@ class XvConnectionService : ConnectionService() {
             TAG,
             "onCreateOutgoingConnectionFailed account=$connectionManagerPhoneAccount address=${request?.address}",
         )
+        // A placeCall we issued did not become a Connection. Signal the
+        // service (same process) so it can reset its synchronous
+        // TelecomState back to IDLE immediately — otherwise the state
+        // would stick at ACTIVE_TX_RX and the next PTT would REUSE a
+        // call that never existed, wedging TX until the place-timeout
+        // backstop fires. The service-side listener guards on
+        // hasActiveCall() so a failure caused by another of our calls
+        // being legitimately active leaves that live call untouched.
+        ActiveCallRegistry.firePlaceFailed()
     }
 
     override fun onCreateIncomingConnection(
@@ -221,9 +230,10 @@ class XvConnectionService : ConnectionService() {
         // Observed 2026-05-11 Pixel→Surface call: Surface had a residual
         // "voice" connection from group PTT, REQUEST_CALL arrived, we
         // tore down the prior, plugin sent CANCEL_CALL, Pixel's call
-        // screen vanished. The group-channel connection's own 5s
-        // end-debounce clears it shortly; Telecom can hold a RINGING +
-        // ACTIVE call in parallel until the user answers.
+        // screen vanished. The group-channel connection's own 8s
+        // end-debounce (TELECOM_END_DEBOUNCE_MS) clears it shortly;
+        // Telecom can hold a RINGING + ACTIVE call in parallel until
+        // the user answers.
         ActiveCallRegistry.activeConnection()?.let { prior ->
             if (prior.tag == "voice") {
                 Log.i(TAG, "skipping prior 'voice' connection teardown — will clear via its own debounce")
@@ -250,10 +260,7 @@ class XvConnectionService : ConnectionService() {
     companion object {
         private const val TAG = "XvConnSvc"
 
-        const val ACTION_PLACE_CALL = "com.atakmap.android.xv.telecom.PLACE_CALL"
         const val ACTION_END_CALL = "com.atakmap.android.xv.telecom.END_CALL"
         const val ACTION_NOOP = "com.atakmap.android.xv.telecom.NOOP"
-
-        const val EXTRA_CHANNEL_TAG = "channel_tag"
     }
 }

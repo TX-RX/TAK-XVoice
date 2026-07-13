@@ -3,77 +3,46 @@ package com.atakmap.android.xv.telecom
 import android.util.Log
 import com.atakmap.android.xv.service.XvVoiceClient
 
-// Plugin-side facade for the Telecom-mediated voice session. Because
+// Plugin-side facade for ENDING the Telecom-mediated voice session.
 // XvConnectionService is gated on BIND_TELECOM_CONNECTION_SERVICE
 // (system-only) AND the plugin runs in ATAK's UID without
-// MANAGE_OWN_CALLS, all Telecom operations have to happen in our
-// APK's UID. This bridge proxies them through XvVoiceClient (which
-// already has a binder to XvVoiceService in our UID). The voice
-// service in turn calls TelecomManager.placeCall — same process as
-// XvConnectionService, so the system-mediated callback chain works.
+// MANAGE_OWN_CALLS, so all Telecom operations must happen in our APK's
+// UID. This bridge proxies the end-call through XvVoiceClient (which
+// holds a binder to XvVoiceService in our UID); the service in turn
+// tears down the XvConnection it owns.
 //
-// callActive is the plugin's local approximation of "is there a
-// Telecom call right now?" — used to gate manual audio focus calls
-// in TxController + AudioPlayback. Flips true on placeCall, false
-// on endCall.
+// Placement is NOT proxied here — outgoing calls originate directly in
+// XvVoiceService.placeTelecomCallInternal (group PTT) or via
+// XvVoiceClient.startChannelCall (private calls). This bridge is the
+// end-call side only.
+//
+// History: this class used to carry a plugin-side `callActive`
+// approximation flag plus a `startChannelCall` proxy and an
+// `isCallActive()` reader. That machinery was superseded by
+// ActiveCallRegistry.hasActiveCall() (the authoritative service-process
+// signal that TxController/AudioPlayback actually consult) and became
+// dead — `startChannelCall` had no callers, so `callActive` was never
+// set true, which in turn made `endChannelCall()`'s old
+// `if (!callActive) return` guard a permanent no-op that silently broke
+// the in-app "End Call" bar. The flag/proxy/reader were removed and
+// `endChannelCall()` now fires unconditionally.
 class XvCallBridge(
     private val voiceClient: XvVoiceClient,
 ) {
-    @Volatile
-    private var callActive: Boolean = false
-
-    fun isCallActive(): Boolean = callActive
-
     /**
-     * Reset the call-active flag from outside. Called by the plugin's
-     * `onPrivateCallEnded` listener (which fires when the service-side
-     * `externalTeardownListener` notifies that Telecom tore down the
-     * call from outside our explicit `endChannelCall` path — peer
-     * hangup, system preempt, BAL kill, etc.).
-     *
-     * L4 fix: without this hook, `callActive` stays true forever after
-     * an external teardown — TxController + AudioPlayback consult
-     * isCallActive() to decide whether to skip their manual focus
-     * fallback, and a stale-true result blocks fallback paths the
-     * plant expects to use when no Telecom call is up.
+     * End the active Telecom call. Fires unconditionally — the
+     * service-side teardown is idempotent (`teardownLocal()` no-ops when
+     * no XvConnection is registered), so a redundant end is harmless.
+     * Teardown converges here from several sites (stopActiveTransport,
+     * the in-app End Call bar, onPrivateCallEnded, direct UI Hang Up);
+     * every one of them needs the Telecom Connection released so audio
+     * focus + BT routing hand back to normal media.
      */
-    fun notifyExternallyEnded() {
-        if (callActive) {
-            callActive = false
-            Log.i(TAG, "notifyExternallyEnded — callActive=false")
-        }
-    }
-
-    fun startChannelCall(channelTag: String): Boolean =
-        try {
-            voiceClient.ifBound {
-                try {
-                    it.startChannelCall(channelTag)
-                } catch (t: Throwable) {
-                    Log.w(TAG, "startChannelCall AIDL threw", t)
-                }
-            }
-            callActive = true
-            Log.i(TAG, "startChannelCall queued for tag=$channelTag (callActive=true)")
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "startChannelCall threw", t)
-            false
-        }
-
     fun endChannelCall() {
-        // Idempotent. Teardown converges on this from multiple sites
-        // (stopActiveTransport, callBridge.shutdown, onPrivateCallEnded,
-        // direct UI Hang Up), so a stale-true → stale-false flip is
-        // the only useful work — if callActive is already false the
-        // AIDL has been sent and the service side has cleared its
-        // Telecom call; re-sending just produces a duplicate log line.
-        if (!callActive) return
-        callActive = false
         voiceClient.ifBound {
             try {
                 it.endChannelCall()
-                Log.i(TAG, "endChannelCall sent (callActive=false)")
+                Log.i(TAG, "endChannelCall sent")
             } catch (t: Throwable) {
                 Log.w(TAG, "endChannelCall AIDL threw", t)
             }
