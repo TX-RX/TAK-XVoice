@@ -252,6 +252,35 @@ internal object ActiveCallRegistry {
         }
     }
 
+    // Listeners notified when Telecom REFUSES an outgoing placeCall we
+    // just issued — i.e. XvConnectionService.onCreateOutgoingConnectionFailed
+    // fires (same service process). Distinct from externalTeardown: no
+    // call ever became live, so there is nothing to unwind — the signal
+    // only lets XvVoiceService reset its synchronous TelecomState back to
+    // IDLE immediately instead of waiting for its place-timeout backstop.
+    // The listener is expected to guard on hasActiveCall() so a placeCall
+    // rejected *because* another of our calls is legitimately active does
+    // not disturb that live call.
+    private val placeFailedListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    fun addPlaceFailedListener(listener: () -> Unit) {
+        placeFailedListeners.add(listener)
+    }
+
+    fun removePlaceFailedListener(listener: () -> Unit) {
+        placeFailedListeners.remove(listener)
+    }
+
+    fun firePlaceFailed() {
+        for (l in placeFailedListeners) {
+            try {
+                l()
+            } catch (t: Throwable) {
+                Log.w(TAG, "place-failed listener threw", t)
+            }
+        }
+    }
+
     fun addHoldStateListener(listener: (Boolean) -> Unit) {
         holdStateListeners.add(listener)
     }
