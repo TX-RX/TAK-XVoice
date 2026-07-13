@@ -511,21 +511,9 @@ class TxController(
         cooldownHandler.postDelayed(primingTimeoutRunnable, timeoutMs)
     }
 
-    // No-op stub. Earlier this used incoming RX frames to pre-warm
-    // AudioRecord while a peer was talking. The backing keep-alive
-    // produced silent reads on every burst after the first (BT chipset
-    // routing went stale on the held-open AudioRecord), so the
-    // capture lifecycle is back to "fresh per-burst." Hook left here
-    // and still wired from AudioPlayback so the architecture is in
-    // place if we revisit RX-driven prewarm via a different
-    // mechanism (e.g. cycle restartRecording rather than reuse).
-    fun notifyRxActivity() {
-        // intentionally empty
-    }
-
     // Bounded mic pre-warm tied to AudioPlayback's SCO_HOT window.
     // When AudioPlayback enters SCO_HOT (RX just ended, SCO link
-    // held warm for ~5 s) we proactively allocate AudioCapture so
+    // held warm for ~8 s — AudioPlayback.scoHoldMs) we proactively allocate AudioCapture so
     // the BT chipset's mic data path can settle. On slow chipsets
     // (Duo+V1, observed) the mic returns silent samples for 1-3 s
     // after a cold SCO setup; if the operator's response press has
@@ -534,13 +522,13 @@ class TxController(
     // BEFORE the operator presses PTT, so PRIMING completes in
     // ~100 ms (we just verify the now-flowing samples are non-silent).
     //
-    // Bounded by SCO_HOT (5 s max) — does NOT bring back the
+    // Bounded by SCO_HOT (8 s max) — does NOT bring back the
     // historical "stale routing across many bursts" bug, which
     // required AudioRecord to be held open through TX bursts and
-    // mode transitions. Here it's only alive during the 5 s window
+    // mode transitions. Here it's only alive during the 8 s window
     // BEFORE TX, then handed off cleanly to the burst.
     // Session-scope mic pre-arm. Distinct from preWarmMic (which is the
-    // 5 s SCO_HOT window): this holds AudioCapture open for the entire
+    // 8 s SCO_HOT window): this holds AudioCapture open for the entire
     // duration of a connected Mumble session, regardless of route.
     // VoicePlant.setMumbleSessionLive drives it: connect → arm,
     // disconnect → disarm.
@@ -881,39 +869,12 @@ class TxController(
         // log "encoder is null!" and drop on each cold-SCO burst.)
         framesSent = 0
         txFrameNumber = 0
-        val enc = opusEncoderFactory()
-        encoder = enc
+        encoder = opusEncoderFactory()
         state = State.TRANSMITTING
-        // Flush the TPT-overlap ring BEFORE live frames start arriving.
-        // These are real mic samples captured while TPT was playing —
-        // the operator started speaking the moment they heard the
-        // permit tone and we caught those words. Ordering matters: the
-        // ring is FIFO so flushing in order preserves speech continuity
-        // on the receiving end (no "out-of-order audio" glitches). The
-        // encode path is the same one onPcmFrame uses for live frames
-        // (encodeAndQueueFrame), so opus framing + the trailing-click
-        // swallow window apply uniformly.
-        val flushedFrames: List<ShortArray>
-        synchronized(preTxBuffer) {
-            flushedFrames =
-                if (preTxBuffer.isEmpty()) {
-                    emptyList()
-                } else {
-                    val copy = preTxBuffer.toList()
-                    preTxBuffer.clear()
-                    copy
-                }
-        }
-        if (flushedFrames.isNotEmpty()) {
-            Log.i(TAG, "TX: flushing ${flushedFrames.size} pre-TX frame(s) from TPT-overlap buffer (${flushedFrames.size * 10}ms)")
-            for (frame in flushedFrames) {
-                encodeAndQueueFrame(frame, enc)
-            }
-        }
         // Per-PTT focus management is SKIPPED when Telecom owns the
         // voice session — XvVoiceService holds GAIN focus for the
         // entire Telecom call lifetime (which spans rapid PTT cycles
-        // via the 5 s end-debounce). Grabbing/abandoning focus on
+        // via the 8 s end-debounce). Grabbing/abandoning focus on
         // every PTT down/up confuses media apps (Spotify ducks
         // instead of pauses when it sees focus flapping at sub-second
         // cadence) and risks denying our own RX focus request mid-
@@ -947,21 +908,6 @@ class TxController(
     }
 
     private var framesSent: Long = 0
-
-    // TPT-overlap ring buffer. Frames captured while [state] == TPT
-    // get queued here so the operator's pre-speech (started while the
-    // TPT was still playing, before TX-state flipped) survives instead
-    // of being dropped on the floor. Sized to [PRE_TX_BUFFER_MAX_FRAMES]
-    // ≈ 500 ms which covers the longest TPT play plus a generous
-    // operator-reaction tail. Older frames evicted on push so a stuck
-    // TPT can't grow this without bound. Drained by startTransmitting
-    // ahead of the first live frame; cleared by stopInternal.
-    //
-    // synchronized() because AudioCapture reads on a worker thread
-    // (frame producer) and startTransmitting flushes on the caller of
-    // [start] (typically a Telecom callback or AIDL thread).
-    private val preTxBuffer: ArrayDeque<ShortArray> =
-        ArrayDeque(PRE_TX_BUFFER_MAX_FRAMES + 2)
 
     // Trailing-frame ring buffer to swallow the PTT release click. The
     // physical button click on the AINA V1/V2 happens at time T; the
@@ -1005,9 +951,6 @@ class TxController(
     internal fun setEncoderForTest(enc: OpusEncoder?) {
         encoder = enc
     }
-
-    @VisibleForTesting
-    internal fun preTxBufferSizeForTest(): Int = synchronized(preTxBuffer) { preTxBuffer.size }
 
     @VisibleForTesting
     internal fun currentEncoderForTest(): OpusEncoder? = encoder
@@ -1081,39 +1024,15 @@ class TxController(
             return
         }
         if (state == State.TPT) {
-            // DISABLED 2026-05-21: ring-buffer flush corrupts the Opus
-            // encoder on BT SCO cold-start regardless of RMS gating.
-            //
-            // Original intent: queue mic frames captured during TPT
-            // play so the operator's first syllable (started while TPT
-            // was still audible) survived into the transmitted burst.
-            //
-            // Root cause of the recurring screech bug: on cold-SCO
-            // PTT-down, AudioRecord allocates against a not-yet-stable
-            // BT SCO source. The chipset delivers chunked / irregular
-            // frames for the first 300-500 ms — frames arrive in bursts
-            // instead of the expected 10 ms cadence, sometimes with
-            // sample-rate drift while the chipset settles. Frame
-            // contents pass the RMS gate (real audio amplitude) but
-            // Opus's stateful SILK encoder chokes on the temporal
-            // discontinuity. The frame that throws gets dropped by
-            // the encoder-reset recovery, but subsequent frames
-            // continue to corrupt because the underlying AudioRecord
-            // is STILL delivering irregular data. Result: alternating
-            // tiny / loud RMS pattern on the wire (verified in the
-            // 20:36:52 trace), peer hears continuous screech.
-            //
-            // The pre-TX-overlap capture is a small UX win (catches
-            // the operator's first syllable if they spoke during the
-            // ~100 ms TPT). The screech is intolerable. Disable the
-            // feature outright; operators adapt by waiting for TPT
-            // before speaking (the universal LMR convention anyway).
-            //
-            // If we re-introduce this later, the right fix is to defer
-            // the ring-buffer flush until the AudioRecord cadence has
-            // stabilized (e.g. observe 5 consecutive frames at the
-            // expected ~10 ms interval). Until that's in place, dropping
-            // the feature entirely is the only safe stance.
+            // Drop mic frames captured while the permit tone is playing.
+            // A TPT-overlap ring buffer that flushed these into the
+            // burst was tried and removed 2026-05-21: on cold-SCO
+            // PTT-down AudioRecord delivers chunked/irregular frames for
+            // the first 300-500 ms, and feeding them to Opus's stateful
+            // SILK encoder produced peer-side screech. Operators adapt by
+            // waiting for TPT before speaking (the universal LMR
+            // convention), so pre-speech capture buys little and the
+            // screech was intolerable.
             return
         }
         if (state != State.TRANSMITTING) {
@@ -1221,14 +1140,6 @@ class TxController(
         // while we're still waiting for the mic to produce real samples,
         // we abandon cleanly without playing TPT or transmitting.
         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
-        // Drop anything still sitting in the TPT-overlap ring. Two cases:
-        //   - Stop during TPT (rare; PTT released before TPT completed):
-        //     the queued speech never reaches the wire, which matches the
-        //     existing "don't transmit if no TPT-end" intent.
-        //   - Stop right after TRANSMITTING flushed the ring: it's already
-        //     empty; clear is a no-op.
-        // Either way, leftover frames must not bleed into the next burst.
-        synchronized(preTxBuffer) { preTxBuffer.clear() }
         // Session-arm: keep the capture alive between bursts so the
         // next PTT-down doesn't pay AudioRecord/mic-chipset cold-start
         // latency. Released only on disarmSessionMic (Mumble disconnect)
@@ -1366,13 +1277,6 @@ class TxController(
             }
         }
 
-    // Vestigial — the cool-down keep-alive scheme that owned this is
-    // gone (caused stale AudioRecord on subsequent bursts). Kept as a
-    // no-op so existing removeCallbacks() sites in stopInternal /
-    // shutdown stay safe even if a stale postDelayed reference were
-    // ever scheduled.
-    private val captureReleaseRunnable = Runnable { /* no-op */ }
-
     /**
      * Hot Mic Mode: pre-acquire the SCO link so the next PTT skips the
      * 500-1500 ms cold-start. Idempotent — safe to call repeatedly. No
@@ -1439,7 +1343,6 @@ class TxController(
             if (state != State.IDLE) stopInternal()
         }
         cooldownHandler.removeCallbacks(coolDownReleaseRunnable)
-        cooldownHandler.removeCallbacks(captureReleaseRunnable)
         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
         capture?.let {
             it.stop()
@@ -1476,8 +1379,12 @@ class TxController(
         private const val SCO_WARMUP_MS = 3000L
 
         // Hold the SCO link for this long after PTT-up before releasing
-        // our ref. Matches the RX SCO_HOT window so the operator's
-        // "rapid back-and-forth" UX is consistent across TX and RX.
+        // our ref. NOTE this 5 s TX cool-down is intentionally SHORTER
+        // than the RX SCO_HOT window (8 s, AudioPlayback.scoHoldMs) and
+        // the Telecom end-debounce (8 s, TELECOM_END_DEBOUNCE_MS): the
+        // physical SCO link may drop at 5 s while the higher-level call
+        // (media pause + focus) lingers to 8 s. They are deliberately
+        // not equal — do not "reconcile" them.
         // Exposed (vs. private) so AudioControllerImpl can reuse it as
         // the phone-mode (non-BT) audio-plant hang time — same operator
         // back-and-forth UX whether the route is BT/SCO or phone speaker.
@@ -1490,29 +1397,6 @@ class TxController(
         // a permanently-open SCO link. The next press pays one cold-
         // start cost, then armHotMic re-acquires.
         private const val HOT_MIC_IDLE_RELEASE_MS = 60_000L
-
-        // TPT-overlap ring buffer size. Each frame is 10 ms (480 samples
-        // at 48 kHz), so 8 frames = 80 ms of buffered pre-TX speech.
-        // Tuned down from 50 (500 ms) after field complaint 2026-05-19
-        // about TPT bleed appearing in the buffered audio as "horrible
-        // screeching." 80 ms is enough to catch a fast operator's first
-        // word that lands inside the trailing edge of the TPT play
-        // window; longer windows just risk re-encoding more residual
-        // TPT-bleed for negligible operator benefit.
-        private const val PRE_TX_BUFFER_MAX_FRAMES = 8
-
-        // Skip the first N ms of state.TPT before buffering. The TPT
-        // tone's high-amplitude region drives speaker output that
-        // bleeds into the mic; AEC cancels most of it but residuals
-        // remain. By the tail of TPT play the envelope has rolled off
-        // (the fillSine release window is ~4 ms but the perceptible
-        // tone amplitude drops well before that). 80 ms is long enough
-        // to cover the louder middle of most TPT tones (NEXTEL is
-        // 150 ms total, ASTRO_25 ~150 ms, timeout cutoff ~1200 ms but
-        // never in this path). Frames before SKIP_MS get dropped on
-        // the floor — we don't even put them in the ring — so even an
-        // eviction can't pull them back in.
-        private const val TPT_RING_SKIP_MS: Long = 80L
 
         // Number of mic frames to hold in the trailing buffer before
         // sending. On stop() these queued frames are dropped, swallowing
@@ -1528,26 +1412,6 @@ class TxController(
         // room), so PRIMING completes within ~50-200ms of mic
         // allocation under normal conditions.
         private const val MIC_PRIMING_RMS_THRESHOLD = 5
-
-        // Noise-floor gate on the TPT-overlap ring buffer. Frames with
-        // RMS below this threshold are NOT appended to the ring — they're
-        // either silence (no operator speech overlap, no value in
-        // queueing) or garbage (`-1` fill from a not-yet-routed mic
-        // source during pre-arm). The garbage path is what produced the
-        // 2026-05-19 screech: Concentus' Resampler asserts on stuck-DC
-        // input, the assert wedges the encoder's SILK state, every
-        // subsequent live frame encodes garbage. 50 sits above mic
-        // self-noise (typically rms 5-20 in a quiet room) and well
-        // below normal speech onset (rms 500+ for spoken syllables),
-        // so it excludes garbage and silence but lets real pre-TX
-        // speech through.
-        //
-        // Exposed (internal) so TxControllerScreechTest can pin the
-        // threshold against the documented intent. Any change to this
-        // value must keep the rms=1 garbage pattern below the line and
-        // typical-speech rms above it — see the test for the boundary
-        // assertions.
-        internal const val RING_BUFFER_MIN_RMS = 50
 
         /**
          * RMS amplitude of a PCM frame. Pure function — promoted out of
@@ -1696,7 +1560,8 @@ class TxController(
         //
         //   2. Silently drop the first [COLD_SCO_START_DROP_FRAMES] TX
         //      frames past state=TRANSMITTING on cold-SCO bursts.
-        //      N=3 at 20 ms/frame = 60 ms of dropped leading edge,
+        //      At 10 ms/frame (480 samples @ 48 kHz) the current N=6 is
+        //      60 ms of dropped leading edge,
         //      typically covering a breath or click rather than
         //      intelligible speech. Analogous to the trailing-frame
         //      swallow ([TRAILING_FRAMES]) that eats the PTT release
@@ -1728,9 +1593,10 @@ class TxController(
         internal const val COLD_SCO_TPT_HOLD_MS: Long = 300L
 
         // Number of leading TX frames to silently discard on the cold-
-        // SCO path. Each frame is 20 ms of PCM.
+        // SCO path. Each frame is 10 ms of PCM (480 samples @ 48 kHz —
+        // see AudioCapture.frameSamples).
         //
-        // Original tuning 2026-07-08: N=3 (60 ms). Covered the
+        // Original tuning 2026-07-08: N=3 (30 ms). Covered the
         // literal underrun burst well and left the TPT→speech
         // ramp intact.
         //
@@ -1738,7 +1604,7 @@ class TxController(
         // cold-SCO hold above, the first-frame-post-transition
         // window is quieter but the SILK encoder still catches a
         // few frames of "not-yet-clean" mic before it locks in. N=6
-        // = 120 ms of dropped leading edge, still well inside the
+        // = 60 ms of dropped leading edge, still well inside the
         // typical 250-400 ms human reaction time from TPT-audible
         // to first phoneme, so operator speech is not eaten.
         //
