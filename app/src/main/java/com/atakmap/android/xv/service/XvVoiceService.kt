@@ -528,6 +528,7 @@ class XvVoiceService : Service() {
     // (SCO release, AudioPlayback teardown) follows naturally from
     // pttDispatcher.release() and the focus drop.
     private val externalTeardownListener: () -> Unit = {
+        telecomState = TelecomState.IDLE
         Log.w(TAG, "Telecom externally tore down our call — unwinding voice plant")
         telecomHandler.removeCallbacks(pendingEndRunnable)
         // Call really ended — kill the idle watchdog too. Covers all
@@ -1041,9 +1042,20 @@ class XvVoiceService : Service() {
     // Connection (no churn). Idle for the full debounce → call ends,
     // media resumes.
     private val telecomHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private enum class TelecomState {
+        IDLE,
+        ACTIVE_TX_RX,
+        TAIL_WARM
+    }
+
+    @Volatile
+    private var telecomState = TelecomState.IDLE
+
     private val pendingEndRunnable =
         Runnable {
-            Log.i(TAG, "telecom end-debounce fired — tearing down connection + releasing voice focus")
+            telecomState = TelecomState.IDLE
+            Log.i(TAG, "telecom end-debounce expired — executing complete teardown (connection + focus + SCO)")
             com.atakmap.android.xv.telecom.ActiveCallRegistry
                 .activeConnection()
                 ?.teardownLocal()
@@ -1242,84 +1254,59 @@ class XvVoiceService : Service() {
     }
 
     private fun placeTelecomCallInternal(tag: String) {
-        // If an end was scheduled, cancel it — we want to keep the
-        // existing call alive instead of placing a fresh one.
         telecomHandler.removeCallbacks(pendingEndRunnable)
-        // Fresh PTT-down is activity; reset the call-idle watchdog
-        // so a placeCall right at the edge of the window doesn't trip
-        // it before plantCallbacks can fire.
-        resetCallIdleWatchdog()
 
-        // Grab voice focus FIRST, before placeCall returns. Media
-        // apps see the focus loss synchronously and start their
-        // pause animation in parallel with our SCO warmup, so the
-        // operator hears the TPT against silence instead of music.
+        val isWarmOrActive = (telecomState == TelecomState.TAIL_WARM || telecomState == TelecomState.ACTIVE_TX_RX)
+
+        resetCallIdleWatchdog()
         acquireVoiceFocus()
 
-        // Phase E: private-call tag → show the system CallStyle
-        // ongoing-call notification with Hang Up action. The arrow
-        // prefix indicates direction:
-        //   "← <name>" = INCOMING (we just accepted) → mic on now
-        //   "→ <name>" = OUTGOING (waiting for callee accept) →
-        //                mic stays cold until engagePrivateCallMic()
-        //                fires from the transport's
-        //                onPeerAcceptedCall hook.
         val peerCallsign = peerCallsignFromTag(tag)
         if (peerCallsign != null) {
             val isIncomingAnswer = tag.startsWith("← ")
             engagePrivateCallAudioMode(autoEngageMic = isIncomingAnswer)
-            // BAL fix: promote the foreground service to include
-            // FOREGROUND_SERVICE_TYPE_PHONE_CALL before launching the
-            // in-call activity. Without this, Android 14's BAL_BLOCK
-            // refuses the startActivity inside CallStyleNotifier.postActive
-            // (observed 2026-05-11 Surface→Pixel call: heads-up shown but
-            // no XvCallActivity, no Mute / route / Hang Up controls).
             promoteToPhoneCallForeground()
             callStyleNotifier.postActive(peerCallsign, isIncoming = isIncomingAnswer)
             scheduleActiveCallActivityLaunch(peerCallsign)
         }
 
-        // If a Connection is already alive, just leave it in ACTIVE
-        // state. No need to placeCall again — Telecom would reject
-        // anyway with "another call connecting" if the prior call's
-        // teardown hasn't fully settled.
-        val existing =
-            com.atakmap.android.xv.telecom.ActiveCallRegistry
-                .activeConnection()
-        if (existing != null) {
-            Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection")
-            try {
-                existing.setActiveSession()
-            } catch (t: Throwable) {
-                Log.w(TAG, "setActiveSession on existing threw", t)
+        val existing = com.atakmap.android.xv.telecom.ActiveCallRegistry.activeConnection()
+        if (isWarmOrActive) {
+            telecomState = TelecomState.ACTIVE_TX_RX
+            if (existing != null) {
+                Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection in state $telecomState")
+                try {
+                    existing.setActiveSession()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "setActiveSession on existing threw", t)
+                }
+            } else {
+                Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection (or waiting for it to land) in state $telecomState; no-op if not yet landed")
             }
             return
         }
 
-        Log.i(TAG, "placeTelecomCallInternal tag=$tag")
-        com.atakmap.android.xv.telecom.XvPhoneAccount
-            .register(this)
-        val tm =
-            getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
+        Log.i(TAG, "placeTelecomCallInternal tag=$tag — requesting new Telecom API session")
+        com.atakmap.android.xv.telecom.XvPhoneAccount.register(this)
+        val tm = getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
         if (tm == null) {
             Log.w(TAG, "TelecomManager unavailable")
             return
         }
-        val uri =
-            com.atakmap.android.xv.telecom.XvPhoneAccount
-                .callUri(tag)
-        val extras =
-            com.atakmap.android.xv.telecom.XvPhoneAccount
-                .placeCallExtras(this, tag)
+        val uri = com.atakmap.android.xv.telecom.XvPhoneAccount.callUri(tag)
+        val extras = com.atakmap.android.xv.telecom.XvPhoneAccount.placeCallExtras(this, tag)
         try {
             tm.placeCall(uri, extras)
+            telecomState = TelecomState.ACTIVE_TX_RX
             Log.i(TAG, "placeCall OK for tag=$tag (from PTT-down)")
         } catch (t: Throwable) {
             Log.e(TAG, "placeCall threw", t)
+            telecomState = TelecomState.IDLE
         }
     }
 
     private fun scheduleEndTelecomCall() {
+        telecomState = TelecomState.TAIL_WARM
         telecomHandler.removeCallbacks(pendingEndRunnable)
         telecomHandler.postDelayed(pendingEndRunnable, TELECOM_END_DEBOUNCE_MS)
     }
