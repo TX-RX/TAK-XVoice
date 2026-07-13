@@ -78,9 +78,54 @@ class XvVoiceService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Bring the file-backed diagnostic logger up BEFORE anything
+        // else so subsequent init events land in the field-post-mortem
+        // file. Safe to call more than once — subsequent init()s are
+        // no-ops. See DiagnosticLogger KDoc for the field-motivating
+        // 2026-07-12 rollover incident.
+        com.atakmap.android.xv.util.DiagnosticLogger.init(this)
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onCreate — pid=${Process.myPid()} uid=${Process.myUid()}",
+        )
         Log.i(TAG, "onCreate (XV voice plant starting in pid=${Process.myPid()} uid=${Process.myUid()})")
         resolveAuthorizedUids()
         NotificationChannels.ensureAll(this)
+        // Ship-blocking bug (issue #66 item #1): purge any stale self-
+        // managed calls Telecom is still holding under XV's PhoneAccount
+        // from a previous process instance. Field-observed 2026-07-11
+        // TPP validation on Pixel 9 Pro (API 35) and Sonim XP9900:
+        // `dumpsys telecom | grep "SelfMgd Call"` showed XV calls
+        // stacking TC@86..TC@95 with the last entry still ACTIVE
+        // 138+ s after the 8 s [TELECOM_END_DEBOUNCE_MS] should have
+        // torn it down — [ActiveCallRegistry.activeConnection] returned
+        // null (our synchronous view of the call ledger), so the reuse
+        // check in [placeTelecomCallInternal] believed no call existed
+        // and placed a fresh one against a PhoneAccount that Telecom
+        // still associated with a ghost TC@N. Result: system arbitration
+        // fires "Hang up XV to place a new call", PTT press produces no
+        // TX, and the operator sees a toast + confusion.
+        //
+        // The unregister → immediate re-register cycle tells Telecom to
+        // drop every call bound to our PhoneAccountHandle. Safe at
+        // service-process onCreate because we KNOW no live XvConnection
+        // can exist across a fresh process: the connection lives in
+        // this process's [ActiveCallRegistry], which is a Kotlin object
+        // that reinitializes to empty on every classload. Any residual
+        // TC@N in Telecom's own [mCalls] ledger is by definition a
+        // ghost we want gone.
+        //
+        // Explicit constraint (see prior abandoned branch
+        // `copilot/fix-telecom-arbitration-deadlock`): we do NOT touch
+        // `TelecomManager.isInSelfManagedCall(...)` or
+        // `TelecomManager.isInCall()` — both throw SecurityException on
+        // Pixel API 35 because they require READ_PHONE_STATE, a
+        // permission XV does not hold and CANNOT hold (privileged
+        // variant is system-app-only, non-privileged variant requires
+        // Play review for a "phone" app category XV is not). The
+        // unregister path needs no phone-state permission — a self-
+        // managed app is always free to drop its own PhoneAccount.
+        purgeGhostSelfManagedCallsOnFreshProcess()
         // Eagerly construct the voice plant: AudioCapture/AudioTrack/SCO
         // initialization is non-trivial, and the first PTT press
         // shouldn't pay that cost. The plugin's audio plant has been
@@ -460,6 +505,10 @@ class XvVoiceService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy — releasing voice plant")
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — releasing voice plant",
+        )
         releaseVolumeKeyCapture()
         telecomHandler.removeCallbacks(pendingEndRunnable)
         // Cancel the watchdog BEFORE removing externalTeardownListener
@@ -515,6 +564,11 @@ class XvVoiceService : Service() {
         }
         plant = null
         listeners.kill()
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — complete, flushing diagnostic log",
+        )
+        com.atakmap.android.xv.util.DiagnosticLogger.flush()
         super.onDestroy()
     }
 
@@ -968,6 +1022,15 @@ class XvVoiceService : Service() {
             }
 
             override fun onPttBlockedByCellularCall(reason: String) {
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    severity = 'W',
+                    message = "PTT blocked by cellular gate: $reason",
+                )
+                com.atakmap.android.xv.util.DiagnosticLogger.stateSnapshot(
+                    context = this@XvVoiceService,
+                    reason = "cellular-gate-block",
+                )
                 fanOut { it.onPttBlockedByCellularCall(reason) }
             }
 
@@ -1288,6 +1351,10 @@ class XvVoiceService : Service() {
                 .activeConnection()
         if (existing != null) {
             Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection")
+            com.atakmap.android.xv.util.DiagnosticLogger.event(
+                tag = "XvVoiceSvc",
+                message = "placeCall tag='$tag' — REUSING existing XvConnection",
+            )
             try {
                 existing.setActiveSession()
             } catch (t: Throwable) {
@@ -1297,8 +1364,33 @@ class XvVoiceService : Service() {
         }
 
         Log.i(TAG, "placeTelecomCallInternal tag=$tag")
-        com.atakmap.android.xv.telecom.XvPhoneAccount
-            .register(this)
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "placeCall tag='$tag' — NEW Telecom call attempt",
+        )
+        if (shouldGhostPurgeBeforePlaceCall(
+                hasActiveConnection =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall(),
+                hasHadOwnCallInProcess =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry
+                    .hasHadOwnCallInProcess(),
+            )
+        ) {
+            Log.w(
+                TAG,
+                "placeTelecomCallInternal: no active connection but this process has ended one " +
+                    "before — purging any Telecom-side ghost calls under our PhoneAccount",
+            )
+            com.atakmap.android.xv.util.DiagnosticLogger.event(
+                tag = "XvVoiceSvc",
+                severity = 'W',
+                message = "ghost-purge: unregister+register PhoneAccount before placeCall (issue #66 defensive)",
+            )
+            purgeGhostSelfManagedCallsBeforePlaceCall()
+        } else {
+            com.atakmap.android.xv.telecom.XvPhoneAccount
+                .register(this)
+        }
         val tm =
             getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
         if (tm == null) {
@@ -1316,6 +1408,55 @@ class XvVoiceService : Service() {
             Log.i(TAG, "placeCall OK for tag=$tag (from PTT-down)")
         } catch (t: Throwable) {
             Log.e(TAG, "placeCall threw", t)
+        }
+    }
+
+    /**
+     * Fresh-process ghost purge: unregister then re-register the XV
+     * PhoneAccount. Called once at [onCreate] to release any stale
+     * self-managed calls Telecom is still holding from a previous
+     * process instance whose in-memory [ActiveCallRegistry] is no
+     * longer reachable. See the [onCreate] callsite for the field-bug
+     * rationale.
+     *
+     * Wrapped in a helper so it can be swapped in tests and so
+     * exception handling is centralized: an unexpected throw here
+     * MUST NOT prevent the rest of onCreate from completing (the
+     * voice plant would then be permanently unavailable). Any
+     * [Throwable] from either leg is logged and swallowed.
+     */
+    private fun purgeGhostSelfManagedCallsOnFreshProcess() {
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.unregister(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onCreate ghost-purge: unregisterPhoneAccount threw", t)
+        }
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.register(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onCreate ghost-purge: re-register threw", t)
+        }
+    }
+
+    /**
+     * Pre-placeCall ghost purge: same unregister → re-register cycle
+     * as the onCreate path, but invoked from [placeTelecomCallInternal]
+     * when [shouldGhostPurgeBeforePlaceCall] returns true. See the
+     * placeTelecomCallInternal callsite for the full rationale.
+     *
+     * Same exception-handling contract: a throw MUST NOT block the
+     * follow-on [TelecomManager.placeCall]. Log and swallow.
+     */
+    private fun purgeGhostSelfManagedCallsBeforePlaceCall() {
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.unregister(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "pre-placeCall ghost-purge: unregisterPhoneAccount threw", t)
+        }
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.register(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "pre-placeCall ghost-purge: re-register threw", t)
         }
     }
 
@@ -1405,8 +1546,33 @@ class XvVoiceService : Service() {
         } catch (t: Throwable) {
             Log.w(TAG, "setCallRinging(true) threw", t)
         }
-        com.atakmap.android.xv.telecom.XvPhoneAccount
-            .register(this)
+        // Same ghost-purge as [placeTelecomCallInternal] — an incoming
+        // REQUEST_CALL after a prior teardown hits the same TC@N-
+        // stacking arbitration when Telecom still holds a stale entry
+        // under our PhoneAccount. Field bug #66 was reported for
+        // outgoing PTT calls, but the underlying Telecom bookkeeping is
+        // symmetric: [TelecomManager.addNewIncomingCall] is subject to
+        // the same "already has an active call under this account"
+        // arbitration as [TelecomManager.placeCall]. See
+        // [shouldGhostPurgeBeforePlaceCall] KDoc for the decision.
+        if (shouldGhostPurgeBeforePlaceCall(
+                hasActiveConnection =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall(),
+                hasHadOwnCallInProcess =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry
+                    .hasHadOwnCallInProcess(),
+            )
+        ) {
+            Log.w(
+                TAG,
+                "placeIncomingTelecomCallInternal: no active connection but this process has " +
+                    "ended one before — purging any Telecom-side ghost calls under our PhoneAccount",
+            )
+            purgeGhostSelfManagedCallsBeforePlaceCall()
+        } else {
+            com.atakmap.android.xv.telecom.XvPhoneAccount
+                .register(this)
+        }
         val tm = getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
         if (tm == null) {
             Log.w(TAG, "TelecomManager unavailable")
@@ -2030,6 +2196,60 @@ class XvVoiceService : Service() {
             if (lastState == android.bluetooth.BluetoothAdapter.ERROR) return true
             if (newState != lastState) return true
             return (nowMs - lastReactedMs) >= thresholdMs
+        }
+
+        /**
+         * Pure decision function for the pre-[android.telecom.TelecomManager.placeCall]
+         * ghost-purge guard (issue #66 item #1). Extracted from
+         * [placeTelecomCallInternal] so it can be unit-tested without
+         * standing up a Robolectric service.
+         *
+         * The signal we are trying to detect is "our in-process view of
+         * [com.atakmap.android.xv.telecom.ActiveCallRegistry] is empty
+         * but Telecom may still hold a ghost TC@N under our
+         * PhoneAccount." We can not ASK Telecom directly —
+         * [android.telecom.TelecomManager.isInSelfManagedCall] and
+         * [android.telecom.TelecomManager.isInCall] both require
+         * READ_PHONE_STATE (and the privileged variant on API 35+), a
+         * permission XV does not hold and cannot obtain for a non-
+         * system app. So we approximate the signal using ONLY
+         * information we own:
+         *
+         *  - `hasActiveConnection == false` — our registry has no live
+         *    call reference. Necessary condition; the reuse path in
+         *    [placeTelecomCallInternal] short-circuits when this is
+         *    true and never reaches the ghost-purge check.
+         *  - `hasHadOwnCallInProcess == true` — an own call HAS
+         *    existed in this process at some point and been
+         *    unregistered
+         *    ([com.atakmap.android.xv.telecom.ActiveCallRegistry.hasHadOwnCallInProcess]
+         *    reads the same `lastOwnCallEndedAtMs > 0` invariant the
+         *    grace window uses). This is the gate that keeps us from
+         *    paying the Telecom-roundtrip cost on the very first PTT
+         *    press in a fresh process; the fresh-process case is
+         *    handled once at [onCreate] by
+         *    [purgeGhostSelfManagedCallsOnFreshProcess], which runs
+         *    before any call can be attempted.
+         *
+         * Both conditions must hold. Returning `true` from this
+         * function is the exact "we already dropped one call in this
+         * process and are about to start another; make sure Telecom
+         * agrees the previous one is gone" scenario the field bug
+         * describes.
+         *
+         * @param hasActiveConnection the current registry snapshot —
+         *     [com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall]
+         *     at the placeCall entry point.
+         * @param hasHadOwnCallInProcess whether any own call has been
+         *     unregistered in this process
+         *     ([com.atakmap.android.xv.telecom.ActiveCallRegistry.hasHadOwnCallInProcess]).
+         */
+        internal fun shouldGhostPurgeBeforePlaceCall(
+            hasActiveConnection: Boolean,
+            hasHadOwnCallInProcess: Boolean,
+        ): Boolean {
+            if (hasActiveConnection) return false
+            return hasHadOwnCallInProcess
         }
     }
 }
