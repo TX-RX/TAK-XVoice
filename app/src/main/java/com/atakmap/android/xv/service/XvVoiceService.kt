@@ -1518,6 +1518,9 @@ class XvVoiceService : Service() {
         if (tm == null) {
             Log.w(TAG, "TelecomManager unavailable")
             telecomState = TelecomState.IDLE
+            // No call will be placed — release the voice focus we grabbed
+            // above so media doesn't stay paused/ducked indefinitely.
+            releaseVoiceFocus()
             return
         }
         val uri =
@@ -1536,6 +1539,9 @@ class XvVoiceService : Service() {
         } catch (t: Throwable) {
             Log.e(TAG, "placeCall threw", t)
             telecomState = TelecomState.IDLE
+            // placeCall failed — nothing will land, so release the voice
+            // focus grabbed above rather than leaving media paused.
+            releaseVoiceFocus()
         }
     }
 

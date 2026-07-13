@@ -282,12 +282,22 @@ object DiagnosticLogger {
         event(tag = tag, severity = 'E', message = "$prefix — ${t.javaClass.simpleName}: ${t.message}")
         val sw = StringWriter()
         t.printStackTrace(PrintWriter(sw))
-        // Split the stack trace across multiple log lines so the
-        // per-line severity prefix stays parseable. Cap at 20 frames
-        // to bound worst-case output size on a runaway loop.
-        sw.toString().lineSequence().take(20).forEach { frame ->
-            event(tag = tag, severity = 'E', message = "  at $frame")
-        }
+        // Split the stack trace across multiple log lines so the per-line
+        // severity prefix stays parseable. printStackTrace() emits an
+        // exception-header first line (already covered by the event above)
+        // followed by frames that already begin with "\tat …" — so drop
+        // the header and trim the leading tab rather than re-prefixing
+        // with "at " (which produced garbled "  at \tat …" output). Cap at
+        // 20 frames to bound worst-case size on a runaway loop.
+        sw.toString()
+            .lineSequence()
+            .drop(1)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .take(20)
+            .forEach { frame ->
+                event(tag = tag, severity = 'E', message = "  $frame")
+            }
     }
 
     private fun formatLine(
