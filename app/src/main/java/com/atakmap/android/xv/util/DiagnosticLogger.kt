@@ -108,6 +108,13 @@ object DiagnosticLogger {
      */
     private const val HEARTBEAT_INTERVAL_MS: Long = 60_000L
 
+    /**
+     * Minimum wall-clock between BufferedWriter flushes in [writeLine].
+     * Coalesces burst-PTT write volume into ~one flush/second while
+     * bounding data loss on a process kill to ~1 s. See [writeLine].
+     */
+    private const val FLUSH_INTERVAL_MS: Long = 1_000L
+
     private val started = AtomicBoolean(false)
     private var appContext: Context? = null
     private var writer: BufferedWriter? = null
@@ -117,6 +124,10 @@ object DiagnosticLogger {
     private var writeHandler: Handler? = null
 
     private val pending = ConcurrentLinkedQueue<String>()
+
+    // Wall-clock of the last BufferedWriter flush. See writeLine() for the
+    // throttled-flush rationale (2026-07-13 zero-byte-log incident).
+    private var lastFlushMs: Long = 0L
 
     private val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
     private val timeFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
@@ -292,9 +303,20 @@ object DiagnosticLogger {
             val w = writer ?: return
             w.write(line)
             w.newLine()
-            // Deliberately no per-line flush() — the write buffer +
-            // shutdown flush() are the durability boundary. Per-line
-            // flush would triple I/O cost on burst-PTT sessions.
+            // Time-throttled flush. Field incident 2026-07-13: a fresh
+            // install ran for ~2 h and the pulled log was 0 bytes — the
+            // BufferedWriter's 8 KiB buffer never filled at idle
+            // heartbeat volume, and a long-running service never reaches
+            // the shutdown()/flush() durability boundary, so a process
+            // kill lost the entire session. Flushing at most once per
+            // FLUSH_INTERVAL_MS coalesces burst-PTT writes (100+/s) into
+            // one flush per second while bounding worst-case data loss on
+            // a kill to ~1 s — the whole point of a post-mortem log.
+            val now = System.currentTimeMillis()
+            if (now - lastFlushMs >= FLUSH_INTERVAL_MS) {
+                w.flush()
+                lastFlushMs = now
+            }
         } catch (t: Throwable) {
             // I/O died mid-session (storage full, permission revoked).
             // Fall back to logcat and stop trying to write for this

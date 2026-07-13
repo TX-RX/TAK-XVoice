@@ -203,27 +203,42 @@ class TxController(
     @Volatile
     private var primingFramesObserved: Int = 0
 
-    // Whether PRIMING was entered while SCO was CONNECTED. Captured at
-    // startPriming() so the gate values are stable through the whole
-    // priming window — the SCO chipset noise floor (~5-15 for the
-    // first 300-1000 ms of a cold start) sits above the non-SCO
-    // MIC_PRIMING_RMS_THRESHOLD, which produced the 2026-07-08 field
-    // repro where onPcmFrame declared "mic ready" on chipset warmup
-    // hiss and shipped ~500 ms of near-silent frames before real
-    // audio reached the encoder. Route-aware gates below fix that.
+    // Whether this burst faces a COLD BT SCO chipset ramp — i.e. we had
+    // to acquire SCO from scratch this burst (currentBurstColdSco).
+    // Captured at startPriming() so the gate values are stable through
+    // the whole priming window.
+    //
+    // The cold chipset delivers 300-1000 ms of warmup where frames
+    // arrive late and at only noise-floor amplitude (~5-15, which sits
+    // above the non-SCO MIC_PRIMING_RMS_THRESHOLD) — the 2026-07-08
+    // field repro where onPcmFrame declared "mic ready" on chipset
+    // warmup hiss and shipped ~500 ms of near-silent frames. The
+    // ramp-tolerant SCO gates (30-frame count, rms>=200, 1500 ms
+    // timeout) fix that.
+    //
+    // CRITICAL (2026-07-13 field repro): this must key off COLD SCO, not
+    // "SCO is CONNECTED." When SCO is held WARM across bursts (the whole
+    // point of the cool-down tail), the chipset is already settled and
+    // there is no ramp — but the old `scoLink.state == CONNECTED` check
+    // still forced the 30-frame (~300 ms) cold gate onto every warm
+    // burst. With bursty radio keying that ~300 ms + TPT meant the
+    // operator released before TX ever started and NOTHING went out
+    // (zero frames per burst, observed across a full session). Warm-SCO
+    // and non-SCO bursts use the fast gates (5 frames / ~50 ms).
     @Volatile
-    private var primingUseScoGates: Boolean = false
+    private var primingUseColdScoGates: Boolean = false
 
     // Was this burst started with SCO in a cold state (i.e. we had to
     // acquire SCO from scratch instead of reusing a warm cool-down or
     // RX SCO_HOT link)? Captured at start() BEFORE we transition into
-    // ACQUIRING_SCO / PRIMING, because primingUseScoGates only tells us
-    // "SCO is CONNECTED right now" — by the time the scoListener drives
-    // startPriming() the link is up, so the cold vs. warm distinction
-    // is already lost from scoLink.state. Used to decide (a) whether
-    // to hold TPT play an extra COLD_SCO_TPT_HOLD_MS while the Pixel
-    // AOC modem stabilizes, and (b) whether to silently drop the first
-    // few TX frames past the initial AOC underrun window.
+    // ACQUIRING_SCO / PRIMING, because by the time the scoListener drives
+    // startPriming() the link reads CONNECTED and the cold vs. warm
+    // distinction is otherwise lost from scoLink.state. This is the
+    // single source of truth for "this burst faces a cold chipset ramp"
+    // and drives: the priming gate selection (primingUseColdScoGates),
+    // (a) the extra COLD_SCO_TPT_HOLD_MS TPT hold while the Pixel AOC
+    // modem stabilizes, and (b) the silent drop of the first few TX
+    // frames past the initial AOC underrun window.
     //
     // Field observation 2026-07-10: cold-SCO first-burst on Pixel 9 Pro
     // showed AOC "[AMixMODEM] uplink underrun for 86 frames" in the
@@ -292,7 +307,7 @@ class TxController(
                     // frames may be silent (peer hears nothing for
                     // 0.5-1 s) but then real audio flows. Better UX
                     // than bonking + retrying.
-                    val txRoute = if (primingUseScoGates) TxRoute.SCO else TxRoute.OFFLOAD
+                    val txRoute = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD
                     val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
                     if (holdMs > 0L) {
                         Log.w(
@@ -485,13 +500,20 @@ class TxController(
         // Route-aware gate selection. On BT SCO the chipset takes
         // 300-1000 ms of cold-start warmup during which frames arrive
         // late and/or with only noise-floor amplitude. Non-SCO routes
-        // (built-in mic, wired headset) stabilize within one frame
-        // period. Capture the route decision once so the timeout
-        // callback and onPcmFrame use consistent thresholds even if
-        // SCO state changes mid-priming.
-        primingUseScoGates = scoLink.state == ScoLink.State.CONNECTED
-        val timeoutMs =
-            if (primingUseScoGates) MIC_PRIMING_TIMEOUT_MS_SCO else MIC_PRIMING_TIMEOUT_MS
+        // period. Only a COLD SCO acquire faces the chipset ramp; a
+        // warm-held SCO link (cool-down tail / RX SCO_HOT) has a settled
+        // chipset and must NOT pay the 30-frame cold gate. Capture the
+        // decision once so the timeout callback and onPcmFrame use
+        // consistent thresholds even if SCO state changes mid-priming.
+        primingUseColdScoGates = currentBurstColdSco
+        val timeoutMs = primingTimeoutMs(primingUseColdScoGates)
+        val scoUp = scoLink.state == ScoLink.State.CONNECTED
+        val routeLabel =
+            when {
+                !scoUp -> "non-sco"
+                primingUseColdScoGates -> "sco-cold"
+                else -> "sco-warm"
+            }
         if (capture == null) {
             val cap =
                 audioCaptureFactory { pcm ->
@@ -502,10 +524,10 @@ class TxController(
             Log.i(
                 TAG,
                 "PRIMING: mic capture started — waiting for first non-silent frame " +
-                    "(route=${if (primingUseScoGates) "sco" else "non-sco"}, timeout=${timeoutMs}ms)",
+                    "(route=$routeLabel, timeout=${timeoutMs}ms)",
             )
         } else {
-            Log.i(TAG, "PRIMING: mic capture already alive — waiting for non-silent frame")
+            Log.i(TAG, "PRIMING: mic capture already alive (route=$routeLabel) — waiting for non-silent frame")
         }
         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
         cooldownHandler.postDelayed(primingTimeoutRunnable, timeoutMs)
@@ -981,10 +1003,8 @@ class TxController(
             // is delivering frames at all, the mic is up and TPT can
             // play; the worst that can happen is the first few ms of
             // speech encode as silence, which is unnoticeable.
-            val rmsThreshold =
-                if (primingUseScoGates) MIC_PRIMING_RMS_THRESHOLD_SCO else MIC_PRIMING_RMS_THRESHOLD
-            val minFrames =
-                if (primingUseScoGates) MIC_PRIMING_MIN_FRAMES_ALIVE_SCO else MIC_PRIMING_MIN_FRAMES_ALIVE
+            val rmsThreshold = primingRmsThreshold(primingUseColdScoGates)
+            val minFrames = primingMinFramesToConfirmAlive(primingUseColdScoGates)
             val micAlive =
                 rms >= rmsThreshold ||
                     primingFramesObserved >= minFrames
@@ -999,8 +1019,13 @@ class TxController(
                             } else {
                                 "frames-confirm-alive"
                             }
-                        val route = if (primingUseScoGates) "sco" else "non-sco"
-                        val txRoute = if (primingUseScoGates) TxRoute.SCO else TxRoute.OFFLOAD
+                        val route =
+                            when {
+                                scoLink.state != ScoLink.State.CONNECTED -> "non-sco"
+                                primingUseColdScoGates -> "sco-cold"
+                                else -> "sco-warm"
+                            }
+                        val txRoute = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD
                         val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
                         if (holdMs > 0L) {
                             Log.i(
@@ -1479,9 +1504,11 @@ class TxController(
         // chipset's noise floor, require ~300 ms of stable frame
         // delivery before declaring ready via the frame-count path,
         // and extend the timeout so the chipset has room to warm up
-        // before we call it dead. Selected at startPriming() based on
-        // scoLink.state and pinned into primingUseScoGates so mid-
-        // priming SCO state changes don't split-brain the gate logic.
+        // before we call it dead. Applied ONLY to cold-SCO bursts:
+        // selected at startPriming() from currentBurstColdSco and pinned
+        // into primingUseColdScoGates so mid-priming SCO state changes
+        // don't split-brain the gate logic. Warm-SCO bursts (settled
+        // chipset) deliberately use the fast non-SCO gates.
         //
         // Values calibrated from field capture 2026-07-08 (AINA V2
         // APTT316782 + Pixel 9 Pro), where a cold-SCO PTT produced:
@@ -1638,6 +1665,30 @@ class TxController(
             if (COLD_SCO_TPT_HOLD_MS <= 0L) return baseMs
             return baseMs + COLD_SCO_TPT_HOLD_MS
         }
+
+        // ---------- PRIMING gate selection (cold-SCO vs everything else) ----------
+        //
+        // The ramp-tolerant SCO gates exist ONLY for a cold BT SCO
+        // acquire, where the chipset delivers 300-1000 ms of warmup
+        // noise. A warm-held SCO link (cool-down tail / RX SCO_HOT) has a
+        // settled chipset with no ramp, so it — like a non-SCO route —
+        // uses the fast gates. Keying these on `coldSco` (not "SCO is
+        // connected") is the 2026-07-13 field fix: warm bursts previously
+        // paid the 30-frame (~300 ms) cold gate, and with bursty keying
+        // the operator released before TX started and zero frames went
+        // out. Pure functions so the selection is unit-tested directly.
+
+        /** Min frames delivered before PRIMING declares the mic alive. */
+        internal fun primingMinFramesToConfirmAlive(coldSco: Boolean): Int =
+            if (coldSco) MIC_PRIMING_MIN_FRAMES_ALIVE_SCO else MIC_PRIMING_MIN_FRAMES_ALIVE
+
+        /** RMS above which PRIMING treats a frame as real speech. */
+        internal fun primingRmsThreshold(coldSco: Boolean): Int =
+            if (coldSco) MIC_PRIMING_RMS_THRESHOLD_SCO else MIC_PRIMING_RMS_THRESHOLD
+
+        /** Upper bound on the PRIMING wait before bonking/proceeding. */
+        internal fun primingTimeoutMs(coldSco: Boolean): Long =
+            if (coldSco) MIC_PRIMING_TIMEOUT_MS_SCO else MIC_PRIMING_TIMEOUT_MS
 
         /**
          * Should this leading TX frame be silently discarded to skip
