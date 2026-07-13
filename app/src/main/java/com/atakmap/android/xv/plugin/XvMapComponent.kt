@@ -4519,7 +4519,7 @@ class XvMapComponent : AbstractMapComponent() {
         // up". Nothing re-triggers autoConnect, so the reader stays
         // unspawned until the operator manually touches the picker.
         // Observed: OS-level BT reconnect completed at ~4-5 s after
-        // STATE_ON (log: `XvAudioRouter: added: BT_SCO(APTT316782)`
+        // STATE_ON (log: `XvAudioRouter: added: BT_SCO(APTT000000)`
         // at 20:39:54 vs STATE_ON at 20:39:49).
         //
         // 3000 ms gives a safety margin over the observed 4-5 s

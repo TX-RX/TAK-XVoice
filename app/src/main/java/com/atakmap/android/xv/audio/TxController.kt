@@ -1511,7 +1511,7 @@ class TxController(
         // chipset) deliberately use the fast non-SCO gates.
         //
         // Values calibrated from field capture 2026-07-08 (AINA V2
-        // APTT316782 + Pixel 9 Pro), where a cold-SCO PTT produced:
+        // AINA V2 puck + Pixel 9 Pro), where a cold-SCO PTT produced:
         //   - AudioRecord alloc → first frame: ~863 ms
         //   - Frames #1-30 rms range: 1-13 (chipset ramp)
         //   - Frame #60 (~570 ms in): rms 1070 (first real speech)
