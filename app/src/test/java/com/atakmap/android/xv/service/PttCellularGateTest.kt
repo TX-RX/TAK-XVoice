@@ -697,4 +697,67 @@ class PttCellularGateTest {
             ),
         )
     }
+
+    // ============================================================
+    // resolveGateWithOwnSco — suppress the false-positive block when
+    // XV's own audio plant is holding the SCO link (the comm-mode the
+    // gate detected is ours, not an external call). 2026-07-13 repro:
+    // screensaver-wake re-acquired SCO_HOT ~39 s after XV's own call
+    // ended, and the gate misread MODE_IN_COMMUNICATION as external.
+    // ============================================================
+
+    @Test
+    fun `own-SCO hold flips a cellular-call block to ALLOW`() {
+        assertEquals(
+            PttGate.ALLOW,
+            resolveGateWithOwnSco(PttGate.BLOCK_CELLULAR_CALL, xvHoldsSco = true),
+        )
+    }
+
+    @Test
+    fun `no SCO hold leaves a cellular-call block intact (real external call)`() {
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_CALL,
+            resolveGateWithOwnSco(PttGate.BLOCK_CELLULAR_CALL, xvHoldsSco = false),
+        )
+    }
+
+    @Test
+    fun `ringing is never suppressed even when XV holds SCO`() {
+        // MODE_RINGTONE is unambiguously an incoming external call; XV's
+        // plant never drives it. Holding SCO must NOT unlock PTT here.
+        assertEquals(
+            PttGate.BLOCK_CELLULAR_RINGING,
+            resolveGateWithOwnSco(PttGate.BLOCK_CELLULAR_RINGING, xvHoldsSco = true),
+        )
+    }
+
+    @Test
+    fun `ALLOW stays ALLOW regardless of SCO hold`() {
+        assertEquals(
+            PttGate.ALLOW,
+            resolveGateWithOwnSco(PttGate.ALLOW, xvHoldsSco = true),
+        )
+        assertEquals(
+            PttGate.ALLOW,
+            resolveGateWithOwnSco(PttGate.ALLOW, xvHoldsSco = false),
+        )
+    }
+
+    @Test
+    fun `full chain — VoLTE-style block during XV SCO_HOT resolves to ALLOW`() {
+        // End-to-end: no own Telecom call (grace expired), mode reads
+        // IN_COMMUNICATION (XV's SCO_HOT hold), operator presses PTT.
+        // Raw gate would BLOCK; the own-SCO override rescues it.
+        val rawGate =
+            shouldGateForCellularCall(
+                cellularCallStateFromAudioMode(
+                    audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                    xvHasActiveTelecomCall = false,
+                ),
+                PttSource.ON_SCREEN,
+            )
+        assertEquals(PttGate.BLOCK_CELLULAR_CALL, rawGate)
+        assertEquals(PttGate.ALLOW, resolveGateWithOwnSco(rawGate, xvHoldsSco = true))
+    }
 }

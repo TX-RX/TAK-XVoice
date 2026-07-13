@@ -251,6 +251,7 @@ object DiagnosticLogger {
                     AudioManager.MODE_IN_COMMUNICATION -> "IN_COMMUNICATION"
                     AudioManager.MODE_RINGTONE -> "RINGTONE"
                     AudioManager.MODE_NORMAL -> "NORMAL"
+                    AudioManager.MODE_CALL_SCREENING -> "CALL_SCREENING"
                     null -> "?"
                     else -> "mode=${am.mode}"
                 }

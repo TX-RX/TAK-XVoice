@@ -95,6 +95,45 @@ fun shouldGateForCellularCall(
     }
 
 /**
+ * Suppress a [PttGate.BLOCK_CELLULAR_CALL] verdict when XV itself is
+ * currently holding the BT SCO link.
+ *
+ * The gate infers "a call is active" from [AudioManager.getMode]. But
+ * XV's OWN audio plant drives the device into MODE_IN_COMMUNICATION /
+ * MODE_IN_CALL whenever it holds the SCO link — RX SCO_HOT, the TX
+ * cool-down tail, Hot-Mic, and the pre-warm window all acquire SCO with
+ * no Telecom call registered. Field repro 2026-07-13 (Pixel 9 Pro):
+ * after the operator's own Telecom call had ended ~39 s earlier, an
+ * Assistant-screensaver wake re-acquired SCO_HOT; the gate saw
+ * MODE_IN_COMMUNICATION with no registered call, mapped it to OFFHOOK,
+ * and blocked a legitimate PTT with "Cellular call active." The
+ * ActiveCallRegistry disambiguation could not catch it — there was no
+ * Telecom call by then, only XV's audio-plant SCO hold.
+ *
+ * If XV holds the SCO link, the comm mode is unambiguously OURS, so the
+ * OFFHOOK-derived block is a false positive → ALLOW. [PttGate.BLOCK_CELLULAR_RINGING]
+ * is never suppressed: it comes from MODE_RINGTONE, which XV's plant
+ * never sets, so a ringing state is always genuinely external.
+ *
+ * Trade-off (accepted): if a real external call is active AND XV happens
+ * to be holding SCO at the same moment, this would let XV place its own
+ * call. That requires XV to be actively holding SCO during an external
+ * call — during which the cellular stack owns HFP/SCO and XV's acquire
+ * would normally lose — so it is a rare edge. The gate is a fidget-guard,
+ * not a hard interlock, and blocking a legitimate tactical PTT is the
+ * worse failure (see [shouldGateForCellularCall]'s fail-open rationale).
+ */
+fun resolveGateWithOwnSco(
+    gate: PttGate,
+    xvHoldsSco: Boolean,
+): PttGate =
+    if (xvHoldsSco && gate == PttGate.BLOCK_CELLULAR_CALL) {
+        PttGate.ALLOW
+    } else {
+        gate
+    }
+
+/**
  * Decide whether a "cellular call active — hang up before XV PTT"
  * toast should be shown right now, given [nowMs] and the timestamp of
  * the previous toast [lastToastAtMs]. Rapid PTT button mashing during
