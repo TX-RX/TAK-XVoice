@@ -970,7 +970,23 @@ class MumbleSession(
                 }
             } catch (t: IOException) {
                 Log.e(TAG, "send ${MumbleMessageType.nameOf(type)} FAILED: ${t.message}", t)
-                Log.w(TAG, "send ${MumbleMessageType.nameOf(type)} failed: ${t.message}")
+                // A write-side IOException means the socket is broken
+                // (half-open TCP / peer reset). Left alone, the read loop
+                // can stay blocked on the dead socket until the ping
+                // watchdog fires (~18-20s), silently dropping TX the whole
+                // time. Close the socket to unblock readLoop, which exits
+                // through its finally and fires onDisconnected — routing us
+                // into the normal reconnect path immediately. Idempotent
+                // with disconnect()/readLoop teardown (double-close is
+                // caught), and gated on running so we don't fight an
+                // in-progress intentional teardown.
+                if (running.get()) {
+                    try {
+                        socket?.close()
+                    } catch (t2: Throwable) {
+                        Log.w(TAG, "socket close after write failure threw", t2)
+                    }
+                }
             } catch (t: Throwable) {
                 Log.w(TAG, "send ${MumbleMessageType.nameOf(type)} unexpected error", t)
             }

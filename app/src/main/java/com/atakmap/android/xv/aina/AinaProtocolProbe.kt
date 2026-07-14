@@ -288,7 +288,7 @@ class AinaProtocolProbe(
             try {
                 val filter = IntentFilter(BluetoothDevice.ACTION_UUID)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    context.registerReceiver(uuidReceiver, filter, Context.RECEIVER_EXPORTED)
+                    context.registerReceiver(uuidReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
                 } else {
                     @Suppress("UnspecifiedRegisterReceiverFlag")
                     context.registerReceiver(uuidReceiver, filter)

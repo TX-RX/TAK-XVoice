@@ -1,0 +1,119 @@
+# Detekt static analysis for TAK-XVoice.
+#
+# ktlint (ci.yml) enforces formatting; Semgrep (semgrep.yml) covers
+# security patterns. Neither flags Kotlin code smells / complexity /
+# bug patterns — that gap is what detekt fills.
+#
+# Why the standalone CLI (not the Gradle plugin):
+#   `./gradlew detekt` would configure the whole Android build, which
+#   applies the takdev plugin and needs app/libs/main.jar (the ATAK CIV
+#   SDK) — unavailable in public CI (see ci.yml's header). The detekt
+#   CLI parses Kotlin source directly, no SDK on the classpath, exactly
+#   like the ktlint CLI job. Type-resolution rules are therefore off;
+#   that's fine for the syntactic smell/complexity rules we want here.
+#
+# Why advisory (continue-on-error) for now:
+#   This is detekt's first run against a ~37k-LoC codebase, so it will
+#   surface a large backlog. Rather than red-CI every PR (the fatigue
+#   trap that killed CodeQL here — see semgrep.yml), findings are
+#   advisory: they upload to the Code Scanning tab and annotate PRs but
+#   do not fail the build. To promote detekt to a hard gate later:
+#     1. Run `detekt-cli --input app/src --baseline detekt-baseline.xml
+#        --create-baseline` locally to grandfather existing findings.
+#     2. Commit detekt-baseline.xml and add `--baseline` below.
+#     3. Remove `continue-on-error: true` so NEW findings fail CI.
+
+name: Detekt
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+      - 'chore/**'
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: detekt-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detekt:
+    name: Detekt scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Fetch standalone detekt CLI
+        # Pinned by version AND (once DETEKT_SHA256 is set below) by the
+        # SHA256 of the release zip, so a compromised release asset / CDN
+        # can't run arbitrary code in CI — mirrors the wrapper-validation
+        # guarantee. Bump the version and the hash together.
+        #
+        # DETEKT_SHA256 is intentionally empty for now: the expected hash
+        # could not be computed offline, so this run PRINTS the actual
+        # SHA256 (see log) and does not yet enforce it. A follow-up commit
+        # pins that value and flips the check to enforcing.
+        run: |
+          set -e
+          DETEKT_VERSION=1.23.8
+          DETEKT_SHA256=""
+          curl -fSL --retry 3 -o detekt-cli.zip \
+            "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}.zip"
+          ACTUAL_SHA256="$(sha256sum detekt-cli.zip | awk '{print $1}')"
+          echo "detekt-cli-${DETEKT_VERSION}.zip sha256=${ACTUAL_SHA256}"
+          if [ -n "${DETEKT_SHA256}" ] && [ "${DETEKT_SHA256}" != "${ACTUAL_SHA256}" ]; then
+            echo "::error::detekt-cli.zip SHA256 mismatch — expected ${DETEKT_SHA256}, got ${ACTUAL_SHA256}"
+            exit 1
+          fi
+          unzip -q detekt-cli.zip
+          echo "DETEKT=detekt-cli-${DETEKT_VERSION}/bin/detekt-cli" >> "$GITHUB_ENV"
+          "detekt-cli-${DETEKT_VERSION}/bin/detekt-cli" --version
+
+      - name: Run detekt (advisory only)
+        # Advisory: continue-on-error keeps CI green while findings
+        # accrue. --build-upon-default-config layers our tuning
+        # (config/detekt/detekt.yml) on detekt's defaults.
+        continue-on-error: true
+        run: |
+          "$DETEKT" \
+            --input app/src \
+            --config config/detekt/detekt.yml \
+            --build-upon-default-config \
+            --report sarif:detekt.sarif \
+            --report xml:detekt-report.xml
+
+      - name: Upload SARIF to GitHub Code Scanning
+        # Only upload if detekt actually produced the SARIF. If detekt
+        # fails at startup (e.g. a config-validation error) it writes no
+        # report; guarding on the file's existence keeps that from
+        # failing this advisory job on the upload step.
+        if: always() && hashFiles('detekt.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: detekt.sarif
+          category: detekt
+
+      - name: Upload detekt report artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: detekt-report
+          path: detekt-report.xml
+          retention-days: 7
