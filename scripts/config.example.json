@@ -1,0 +1,49 @@
+{
+  "_comment_": "Local config for the scripts in this directory. Copy to scripts/config.json (gitignored) and edit for your plugin/operator. Every key is optional. Scripts fall back to safe generic defaults; the values here are what TAK-XVoice's operator uses.",
+
+  "pluginPackage":     "com.atakmap.android.xv.plugin",
+  "pluginShortName":   "xv",
+  "productFlavor":     "civ",
+
+  "defaultBaseline":   "5.7.0",
+  "tppBaselines":      ["5.6.0", "5.7.0"],
+
+  "sourceZipPrefix":   "xv",
+  "sourceZipBaseName": "xv-tpp-source",
+  "sanityApkBaseName": "ATAK-Plugin-xv",
+
+  "_atak_apks_comment_": "Per-baseline paths used by install-dev.ps1's -InstallAtakDev / -InstallAtakRelease switches. Keyed by baseline (e.g. '5.6.0', '5.7.0') and selected by the -Baseline value at install time. atakDevApks should point at the atak.apk INSIDE the corresponding ATAK-CIV SDK bundle (Developer edition, DEBUGGABLE-flagged, accepts dev-signed plugins). atakReleaseApks should point at production/TPP-signed ATAK-CIV APKs (Play Store or civ-release from tak.gov). Leave an entry (or the whole hash) null / missing if you don't have that baseline on disk. Paths use POSIX slashes; %USERPROFILE% is a fine substitute for a hardcoded C:/Users/<user>.",
+  "atakDevApks": {
+    "5.6.0": "%USERPROFILE%/repos/ATAK-CIV-5.6.0.21-SDK/atak.apk",
+    "5.7.0": "%USERPROFILE%/repos/ATAK-CIV-5.7.0.10-SDK/atak.apk"
+  },
+  "atakReleaseApks": {
+    "5.6.0": null,
+    "5.7.0": null
+  },
+
+  "_atakPackage_comment_": "Android package name of ATAK itself. The CIV variant is com.atakmap.app.civ; other variants use different suffixes.",
+  "atakPackage":       "com.atakmap.app.civ",
+
+  "_forbiddenPatterns_comment_": "Regex patterns that must NEVER appear in a TPP source zip beyond the built-in universal list (.audio/, /logs/, .logs/, .tmp/, diagnostics/, /build/, keystore.properties, credentials, .env). Add anything operator-specific here: real TAK server hostnames, callsign lists, unit names.",
+  "forbiddenPatterns": [
+    "tak\\.example\\.com"
+  ],
+
+  "_takServer_comment_": "TAK / OpenTAK server upload settings used by scripts/upload-tak-plugin.ps1. Leave baseUrl null (or omit the whole takServer block) if you don't intend to upload from this machine. authMode is one of 'bearer', 'basic', 'mtls', or 'none'. Secrets live in env vars, not in this file — set the env var whose NAME is listed here (e.g. setx TAK_API_TOKEN <value>) and the script reads it at upload time. extraFormFields is a hash of extra multipart body fields; use {baseline} as a template placeholder that the script substitutes per upload.",
+  "takServer": {
+    "baseUrl":              "https://tak.example.com:8443",
+    "uploadPath":           "/api/plugins/upload",
+    "fileFieldName":        "file",
+    "authMode":             "bearer",
+    "tokenEnvVar":          "TAK_API_TOKEN",
+    "basicUser":            null,
+    "basicPassEnvVar":      null,
+    "clientCertPath":       null,
+    "clientCertPassEnvVar": null,
+    "insecureSkipTlsVerify": false,
+    "extraFormFields": {
+      "atakApiVersion": "{baseline}"
+    }
+  }
+}

@@ -139,6 +139,40 @@ way a refactor breaks plugin loading. `testCivDebugUnitTest` is the
 JUnit/MockK/Robolectric unit suite for the state machines listed in
 the initial commit.
 
+## Scripting recurring workflows
+
+If a multi-step command sequence gets run more than a handful of
+times in a session (build + install to phone, package for TPP, pull
++ scrub + summarize field logs, etc.), turn it into a script under
+`scripts/` rather than re-running the raw commands each time. The
+script is faster for the operator, less mistake-prone (correct
+`.gitignore`-respecting archive command, correct baseline flag,
+correct install path), and gives Claude Code a durable artifact
+to reason about instead of reconstructing the sequence per session.
+
+Script conventions:
+
+- PowerShell 7+ (`pwsh`) is the primary shell — matches the operator's
+  desktop. Target `pwsh`, **not** Windows PowerShell 5.1
+  (`powershell.exe`); give each script a `#requires -Version 7.0` so a
+  5.1 invocation fails fast. Bash-only scripts should be the exception,
+  not the default.
+- Per-clone / operator-specific values (ATAK SDK paths, real TAK
+  server hostnames, callsign redaction lists) go in
+  `scripts/config.json` (gitignored). A `scripts/config.example.json`
+  template is committed so a fresh clone knows the schema. Shared
+  config-loader logic lives in `scripts/lib/`.
+- The tooling is generic across TAK plugins — nothing plugin-specific
+  should be hardcoded in `scripts/*.ps1` files. If a script is only
+  useful to this plugin, that's a smell; extract the specific bits
+  to config.
+- Any script that produces a public artifact (TPP zip, PR body,
+  screenshot bundle) MUST run a sensitive-content scan before
+  declaring success. `scripts/package-tpp.ps1` is the reference
+  pattern.
+
+See `scripts/README.md` for the current inventory and usage.
+
 ## ATAK SDK jar
 
 `app/libs/main.jar` is gitignored and is **not** vendored in this

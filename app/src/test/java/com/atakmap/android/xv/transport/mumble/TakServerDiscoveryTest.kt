@@ -92,10 +92,10 @@ class TakServerDiscoveryTest {
 
     @Test
     fun `selectByExactHost matches case-insensitively`() {
-        val a = host("Texas", "tak.example.com", connected = true)
+        val a = host("Alpha", "tak.example.com", connected = true)
         val b = host("Other", "other.example.com", connected = true)
-        // Operator may have typed "TAK.TEXAS-TAK.COM" or similar.
-        assertEquals(a, TakServerDiscovery.selectByExactHost(listOf(a, b), "TAK.TEXAS-TAK.COM"))
+        // Operator may have typed the host in any case, e.g. "TAK.EXAMPLE.COM".
+        assertEquals(a, TakServerDiscovery.selectByExactHost(listOf(a, b), "TAK.EXAMPLE.COM"))
     }
 
     @Test

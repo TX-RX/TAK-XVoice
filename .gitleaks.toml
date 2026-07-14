@@ -46,3 +46,85 @@ regexes = [
     '''CONNECTION_POLICY_ALLOWED\s*=\s*100''',
     '''CONNECTION_POLICY_FORBIDDEN\s*=\s*-1''',
 ]
+
+# ---------------------------------------------------------------------
+# Repository-specific detection rules.
+#
+# gitleaks' default ruleset targets API keys / tokens / private keys.
+# It does NOT know about the sensitive-content categories that matter
+# most for a public ATAK plugin: operator Bluetooth MACs, TAK server
+# hostnames / IPs, and GPS coordinates (see CLAUDE.md). The rules below
+# add that coverage. Each is intentionally narrow to keep false
+# positives low, with a per-rule allowlist for the blessed placeholder
+# forms the policy tells contributors to use.
+#
+# NOTE: These rules were authored without a local `gitleaks detect`
+# run against the tree. Run `gitleaks detect --no-banner` once after
+# this lands; if any existing (intentionally-public) string trips a
+# rule, add it to that rule's allowlist rather than weakening the regex.
+# ---------------------------------------------------------------------
+
+# NOTE on Bluetooth MACs: there is deliberately NO regex rule for them.
+# CLAUDE.md's policy blesses realistic *fake* MACs (e.g.
+# AA:BB:CC:DD:EE:FF) for tests and docstrings, and the suite uses ~60 of
+# them. A regex cannot distinguish a blessed fake from a real operator
+# MAC, so any MAC rule is pure false-positive noise here. MAC hygiene is
+# enforced instead by the `MacRedact` utility (which redacts at log time)
+# plus human review — do not add a MAC rule without also solving the
+# fake-vs-real problem.
+
+# TAK server endpoint: an IPv4 literal on a well-known TAK port. Much
+# lower false-positive rate than bare IPs (which collide with version
+# strings like the SDK's 5.6.0.17). RFC 5737 documentation ranges are
+# allowlisted.
+[[rules]]
+id = "xv-tak-ip-endpoint"
+description = "IP:port resembling a TAK server endpoint"
+regex = '''\b(?:\d{1,3}\.){3}\d{1,3}:(?:8087|8088|8089|8443|8446)\b'''
+[[rules.allowlists]]
+description = "RFC 5737 documentation address ranges"
+regexes = [
+    '''\b(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}:''',
+]
+
+# TAK server hostname / FQDN. Matches tak*.<tld> including sub-labels.
+# tak.gov (the SDK vendor, referenced throughout the build) and the
+# tak.example placeholders are allowlisted.
+[[rules]]
+id = "xv-tak-hostname"
+description = "TAK server hostname/FQDN — use tak.example"
+regex = '''(?i)\btak[a-z0-9.-]*\.(?:com|net|org|io|mil|gov|us|local|internal)\b'''
+# The test tree is NOT exempt: tests must use tak.example too, and a real
+# operator domain slipping into a fixture is exactly what this should
+# catch (it already did once). Only the explicit safe names below and
+# the SDK package namespace are allowlisted.
+[[rules.allowlists]]
+description = "Vendor + placeholder names that are safe to ship"
+regexes = [
+    '''(?i)\btak\.example(?:\.com)?\b''',
+    '''(?i)\btak\.gov\b''',
+]
+# ATAK SDK Java package namespace (gov.tak.api.engine.net, etc.) are
+# import paths, not hostnames. The rule captures only "tak.api..." (no
+# leading "gov."), so match against the whole line to catch the package
+# prefix — Go's regexp has no lookbehind to exclude it inline.
+[[rules.allowlists]]
+description = "ATAK SDK gov.tak.* package imports"
+regexTarget = "line"
+regexes = [
+    '''(?i)gov\.tak\.''',
+]
+
+# GPS coordinate literal — a lat/lon keyword next to a decimal with at
+# least three fractional digits. The keyword anchor keeps this from
+# firing on the many unrelated float literals in the audio/timing code.
+# The null-island 0.0 sentinel the policy blesses is allowlisted.
+[[rules]]
+id = "xv-gps-coordinates"
+description = "Latitude/longitude literal — replace real locations with 0.0"
+regex = '''(?i)\b(?:lat|latitude|lon|lng|long|longitude)\s*[=:]\s*-?\d{1,3}\.\d{3,}'''
+[[rules.allowlists]]
+description = "Null-island / origin placeholder"
+regexes = [
+    '''(?i)(?:lat|latitude|lon|lng|long|longitude)\s*[=:]\s*-?0\.0+\b''',
+]
