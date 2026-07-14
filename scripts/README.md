@@ -2,6 +2,8 @@
 
 Reusable PowerShell tooling for the TAK-XVoice dev + submission workflow. Everything here is generic across TAK plugins — plugin-specific values live in `scripts/config.json` (gitignored).
 
+These scripts target **PowerShell 7+ (`pwsh`)** — not Windows PowerShell 5.1 (`powershell.exe`). Each carries a `#requires -Version 7.0`, so a 5.1 invocation fails fast with a clear message; some also use 7-only cmdlet features (e.g. `Invoke-WebRequest -Form`/`-SkipCertificateCheck`). Run them as `pwsh ./scripts/<name>.ps1` (or just `./scripts/<name>.ps1` from a `pwsh` prompt). Get it via `winget install Microsoft.PowerShell` if it isn't installed.
+
 ## Setup, once per clone
 
 ```powershell

@@ -1,4 +1,5 @@
 #!/usr/bin/env pwsh
+#requires -Version 7.0
 # scripts/package-tpp.ps1
 #
 # Build a TAK Product Portal (TPP) submission bundle from the current HEAD.

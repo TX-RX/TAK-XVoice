@@ -152,8 +152,11 @@ to reason about instead of reconstructing the sequence per session.
 
 Script conventions:
 
-- PowerShell (`*.ps1`) is the primary shell — matches the operator's
-  desktop. Bash-only scripts should be the exception, not the default.
+- PowerShell 7+ (`pwsh`) is the primary shell — matches the operator's
+  desktop. Target `pwsh`, **not** Windows PowerShell 5.1
+  (`powershell.exe`); give each script a `#requires -Version 7.0` so a
+  5.1 invocation fails fast. Bash-only scripts should be the exception,
+  not the default.
 - Per-clone / operator-specific values (ATAK SDK paths, real TAK
   server hostnames, callsign redaction lists) go in
   `scripts/config.json` (gitignored). A `scripts/config.example.json`

@@ -1,3 +1,4 @@
+#requires -Version 7.0
 # scripts/lib/Read-Config.ps1
 #
 # Shared config loader for scripts/*.ps1. Dot-source, then call

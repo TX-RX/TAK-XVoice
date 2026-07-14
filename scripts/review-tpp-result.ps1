@@ -1,4 +1,5 @@
 #!/usr/bin/env pwsh
+#requires -Version 7.0
 # scripts/review-tpp-result.ps1
 #
 # Review a TAK Product Portal (TPP) build+scan result bundle. Reads the
@@ -73,11 +74,10 @@ if (-not $sdkBuildTools) {
 }
 
 # Windows build-tools ship aapt.exe / apksigner.bat; macOS/Linux ship
-# bare 'aapt' / 'apksigner'. $IsWindows is $true on Windows pwsh, $false
-# on *nix pwsh, and $null on Windows PowerShell 5.1 (treat null as Win).
-$onWindows = $IsWindows -ne $false
-$aapt      = Join-Path $sdkBuildTools.FullName ("aapt"      + $(if ($onWindows) { ".exe" } else { "" }))
-$apksigner = Join-Path $sdkBuildTools.FullName ("apksigner" + $(if ($onWindows) { ".bat" } else { "" }))
+# bare 'aapt' / 'apksigner'. $IsWindows is a reliable automatic variable
+# under pwsh 7+ (the #requires floor), so no 5.1 null-case handling.
+$aapt      = Join-Path $sdkBuildTools.FullName ("aapt"      + $(if ($IsWindows) { ".exe" } else { "" }))
+$apksigner = Join-Path $sdkBuildTools.FullName ("apksigner" + $(if ($IsWindows) { ".bat" } else { "" }))
 foreach ($tool in @($aapt, $apksigner)) {
     if (-not (Test-Path $tool)) {
         throw "Expected build-tools binary not found: $tool (build-tools dir: $($sdkBuildTools.FullName)). Reinstall/repair the build-tools package via Android Studio SDK Manager."

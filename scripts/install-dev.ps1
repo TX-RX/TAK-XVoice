@@ -1,4 +1,5 @@
 #!/usr/bin/env pwsh
+#requires -Version 7.0
 # scripts/install-dev.ps1
 #
 # Build the current branch's debug APK and install it on every

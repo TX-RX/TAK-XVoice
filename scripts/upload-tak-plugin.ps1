@@ -1,4 +1,5 @@
 #!/usr/bin/env pwsh
+#requires -Version 7.0
 # scripts/upload-tak-plugin.ps1
 #
 # Upload one or more signed plugin APKs to a TAK / OpenTAK server for
