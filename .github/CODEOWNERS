@@ -1,0 +1,29 @@
+# Code owners for TAK-XVoice.
+#
+# GitHub uses this file to auto-request review from the listed owners
+# when a PR touches matching paths. Combined with a branch-protection
+# rule requiring code-owner review on `main`, it gives every change a
+# named reviewer without manual assignment.
+#
+# Syntax: <path-glob>  <owner> [more owners].
+# Later matches win, so the catch-all is first and specific overrides
+# follow.
+
+# Default owner for everything not matched more specifically below.
+*                           @TX-RX
+
+# Build + release wiring — the most load-bearing files; a break here
+# stops the plugin loading on ATAK. Keep explicit even though the
+# catch-all already covers them.
+/build.gradle.kts           @TX-RX
+/app/build.gradle.kts       @TX-RX
+/settings.gradle.kts        @TX-RX
+/gradle/                    @TX-RX
+/gradle.properties          @TX-RX
+
+# CI, guardrails, and policy. Changes here alter what the automated
+# safety net enforces, so they always route to the maintainer.
+/.github/                   @TX-RX
+/.gitleaks.toml             @TX-RX
+/.pre-commit-config.yaml    @TX-RX
+/CLAUDE.md                  @TX-RX

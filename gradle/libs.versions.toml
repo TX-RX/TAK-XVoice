@@ -1,0 +1,52 @@
+# Gradle version catalog for TAK-XVoice.
+#
+# Single source of truth for dependency + plugin versions that were
+# previously string literals scattered across build.gradle.kts and
+# app/build.gradle.kts. Gradle auto-loads this file as the `libs`
+# catalog (no settings.gradle.kts change needed on Gradle 7.4+).
+#
+# SDK-blocked pins (do NOT bump without a coordinated takdev refresh —
+# see .github/dependabot.yml): `agp` and `coreKtx`. Dependabot's ignore
+# rules reference these by Maven coordinate, so keep the coordinates in
+# the [libraries]/[plugins] blocks stable.
+
+[versions]
+agp = "8.7.3"
+kotlin = "2.4.0"
+ktlintPlugin = "14.2.0"
+protobufPlugin = "0.10.0"
+# Standalone ktlint CLI version. NOTE: the CI job (.github/workflows/
+# ci.yml) and .editorconfig cannot read this catalog, so those two
+# still hard-code 1.3.1 — keep all three in lockstep on a bump.
+ktlint = "1.3.1"
+coroutines = "1.11.0"
+# Held at 1.13.1 — 1.19+ needs compileSdk 37 + AGP 9.1 (SDK-blocked).
+coreKtx = "1.13.1"
+appcompat = "1.7.1"
+# Shared by protobuf-javalite (runtime) and the protoc compiler.
+protobuf = "4.35.1"
+# JitPack commit-pinned Concentus (pure-Java Opus); see app build file.
+concentus = "3885c4e46513ef0fc81fca100189e54f1714c6ca"
+junit = "4.13.2"
+mockk = "1.14.11"
+androidxTestCore = "1.7.0"
+robolectric = "4.16.1"
+
+[libraries]
+kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+concentus = { module = "com.github.lostromb:concentus", version.ref = "concentus" }
+protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
+junit = { module = "junit:junit", version.ref = "junit" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlintPlugin" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }

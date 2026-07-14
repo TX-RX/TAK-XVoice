@@ -41,6 +41,11 @@ on:
   push:
     branches:
       - main
+      # Mirror ci.yml: scan feat/ · fix/ · chore/ branches on push so
+      # findings surface before the PR is opened.
+      - 'feat/**'
+      - 'fix/**'
+      - 'chore/**'
   pull_request:
     branches:
       - main
@@ -79,7 +84,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Run Semgrep (advisory only)
         # `--config` flags stack; each pack is fetched from the
@@ -135,7 +140,7 @@ jobs:
         # needing Code Scanning access. 7-day retention matches
         # the ktlint-report artifact in ci.yml.
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: semgrep-sarif
           path: semgrep.sarif

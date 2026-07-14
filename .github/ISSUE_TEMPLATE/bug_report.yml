@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a defect in TAK-XVoice
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ Before you paste anything
+
+        This is a **public** repository. Do **not** include any of the
+        following in this issue — scrub them first:
+
+        - Bluetooth MAC addresses (use `XX:XX:XX:XX:XX:XX`)
+        - TAK server hostnames, URLs, or IP addresses (use `tak.example`
+          / `192.0.2.x`)
+        - Real callsigns, unit, agency, or customer names (use
+          `Alpha` / `Bravo`)
+        - GPS coordinates of any real location
+        - Credentials, keys, or tokens of any kind
+
+        Raw logcat / `dumpsys` output routinely contains all of the
+        above. Redact before pasting, or attach a scrubbed excerpt only.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: PTT / audio hardware
+      description: e.g. AINA V2 puck, Sonim XP10, on-screen only
+    validations:
+      required: false
+  - type: input
+    id: device
+    attributes:
+      label: Phone model + Android version
+      description: e.g. Pixel 8 / Android 15
+    validations:
+      required: false
+  - type: input
+    id: atak-version
+    attributes:
+      label: ATAK version + XV plugin version
+      description: e.g. ATAK-CIV 5.6.0.17 / XV 0.1.18
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log excerpts (redacted)
+      description: >
+        Paste only scrubbed excerpts. See the redaction reminder at the
+        top of this form.
+      render: text
+    validations:
+      required: false
