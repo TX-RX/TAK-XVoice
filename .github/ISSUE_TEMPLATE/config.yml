@@ -1,0 +1,9 @@
+# Steer reporters toward the right channel. Security-sensitive reports
+# must NOT go through public issues.
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability (private)
+    url: https://github.com/TX-RX/TAK-XVoice/security/advisories/new
+    about: >
+      Report security issues privately via GitHub Private Vulnerability
+      Reporting — never in a public issue. See SECURITY.md.
