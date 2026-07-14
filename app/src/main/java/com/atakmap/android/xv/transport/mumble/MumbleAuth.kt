@@ -208,7 +208,8 @@ object MumbleAuth {
         }
         val socket =
             try {
-                ctx.socketFactory.createSocket(plain, host, port, /* autoClose= */ true) as SSLSocket
+                // autoClose = true: closing the SSLSocket also closes `plain`.
+                ctx.socketFactory.createSocket(plain, host, port, true) as SSLSocket
             } catch (t: Throwable) {
                 try {
                     plain.close()
