@@ -580,6 +580,16 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var sonimEmergencyFg: com.atakmap.android.xv.ptt.SonimEmergencyForegroundReader? = null
 
+    // Assigned-app broadcast reader (Sonim Programmable Keys → ATAK
+    // mode). Runs in ATAK's process so the pkg-scoped intents Sonim
+    // fires (pkg=com.atakmap.app.civ) reach it. Callbacks gate on the
+    // individual Sonim toggle settings before dispatching, so this
+    // single reader instance can safely stay live for both PTT (Yellow)
+    // and Emergency (SOS+Kodiak) routing regardless of which toggle is
+    // on. See SonimAssignedAppReader kdoc for the full mapping.
+    @Volatile
+    private var sonimAssignedApp: com.atakmap.android.xv.ptt.SonimAssignedAppReader? = null
+
     private var presenceRegistry: XvPresenceRegistry? = null
     private var presencePublisher: XvCotPublisher? = null
     private var presenceListener: XvCotListener? = null
@@ -1356,6 +1366,10 @@ class XvMapComponent : AbstractMapComponent() {
         }
         try {
             stopSonimEmergencyForeground()
+        } catch (_: Throwable) {
+        }
+        try {
+            stopSonimAssignedApp()
         } catch (_: Throwable) {
         }
         presenceListener?.stop()
@@ -2657,6 +2671,14 @@ class XvMapComponent : AbstractMapComponent() {
         } else {
             Log.i(TAG, "autoStartSonimButtons: Emergency-button toggle OFF — skipping Emergency reader")
         }
+        // Assigned-app broadcast reader is unconditional — it registers
+        // for all 5 pkg-scoped actions but its callbacks gate on the
+        // individual PTT / Emergency toggles above. Cheap to leave live
+        // (a single receiver in ATAK's process, no active resources)
+        // and it means toggling either PTT or Emergency on later
+        // requires no additional wiring.
+        Log.i(TAG, "autoStartSonimButtons: starting SonimAssignedAppReader (Yellow → PTT, SOS+Kodiak → emergency)")
+        startSonimAssignedApp()
     }
 
     /**
@@ -2853,6 +2875,70 @@ class XvMapComponent : AbstractMapComponent() {
         } catch (t: Throwable) {
             Log.w(TAG, "defensive notifySonimEmergencyEdge(false) threw", t)
         }
+    }
+
+    /**
+     * Start the SonimAssignedAppReader — the receiver for pkg-scoped
+     * broadcasts Sonim fires when the operator assigns Programmable
+     * Keys → ATAK. Runs in ATAK's process because the intents carry
+     * `pkg=com.atakmap.app.civ` and pkg-scoped delivery only reaches
+     * receivers in that package's process. Field-verified on the AT&T
+     * XP9900 (2026-07-14): Yellow key emits YELLOW_KEY_DOWN/_UP and
+     * SOS key emits SOS_KEY_DOWN/_UP + KODIAK_SOS.
+     *
+     * Kept live from plugin load through destroy; the callbacks gate
+     * on the individual Sonim toggle settings so a single reader
+     * covers both PTT and Emergency routing. Idempotent.
+     */
+    private fun startSonimAssignedApp() {
+        val ctx = heldMapView?.context ?: return
+        if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+            return
+        }
+        if (sonimAssignedApp != null) {
+            Log.i(TAG, "startSonimAssignedApp: already registered — ignoring")
+            return
+        }
+        val reader =
+            com.atakmap.android.xv.ptt.SonimAssignedAppReader(
+                context = ctx,
+                onYellowKeyEdge = { isDown ->
+                    // Yellow key → PTT, but only if the operator has
+                    // the Sonim PTT toggle enabled. Route via the
+                    // same AIDL notify used by the KeyEvent foreground
+                    // reader so the service dispatcher sees a single
+                    // logical SONIM_PTT source.
+                    if (settings.persistedSonimPttButtonEnabled()) {
+                        voiceClient?.ifBound { it.notifySonimPttEdge(isDown) }
+                    }
+                },
+                onSosKeyEdge = { isDown ->
+                    // SOS key → emergency-alert path (matches
+                    // AINA-PTTE parity from commit 4e12933). Gated on
+                    // Sonim Emergency toggle so the operator can turn
+                    // this off without also killing the Yellow PTT
+                    // path.
+                    if (settings.persistedSonimEmergencyButtonEnabled()) {
+                        voiceClient?.ifBound { it.notifySonimEmergencyEdge(isDown) }
+                    }
+                },
+            )
+        if (reader.start()) {
+            sonimAssignedApp = reader
+        } else {
+            Log.w(TAG, "startSonimAssignedApp: reader.start() failed — leaving detached")
+        }
+    }
+
+    /** Idempotent. */
+    private fun stopSonimAssignedApp() {
+        val reader = sonimAssignedApp ?: return
+        try {
+            reader.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimAssignedApp: reader.stop() threw", t)
+        }
+        sonimAssignedApp = null
     }
 
     private fun autoConnectMumble() {

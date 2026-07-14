@@ -178,6 +178,45 @@ object SonimHardwareButtons {
     /** [MCX_EXTRA_STATE] value indicating the PTT button was released. */
     const val MCX_STATE_RELEASED: Int = 0
 
+    // -- "Assigned to ATAK" broadcast actions ---------------------------
+    //
+    // On the XP9900 (AT&T carrier firmware, Android 12) the operator
+    // configures which app receives PTT / SOS / Yellow-key presses via
+    // Settings → System → Buttons → Programmable Keys. When set to ATAK,
+    // Sonim's WindowManager fires the following broadcasts with
+    // `Intent.setPackage("com.atakmap.app.civ")` — pkg-scoped, so only
+    // receivers running in ATAK's process see them. XV registers a
+    // matching receiver from XvMapComponent (which runs inside ATAK's
+    // process) via SonimAssignedAppReader. The service-process
+    // SonimEmergencyButtonReader / SonimPttButtonReader do NOT receive
+    // these because they live in the plugin's own process.
+    //
+    // Field-verified 2026-07-14 on the operator's XP9900 with keys
+    // assigned to ATAK; Yellow key is what the operator uses as their
+    // effective PTT trigger on this chassis.
+
+    /** Yellow-key press when the Yellow key is assigned to the receiving app. */
+    const val ACTION_YELLOW_KEY_DOWN: String = "com.sonim.intent.action.YELLOW_KEY_DOWN"
+
+    /** Yellow-key release when the Yellow key is assigned to the receiving app. */
+    const val ACTION_YELLOW_KEY_UP: String = "com.sonim.intent.action.YELLOW_KEY_UP"
+
+    /** SOS-key press when the SOS key is assigned to the receiving app. */
+    const val ACTION_SOS_KEY_DOWN: String = "com.sonim.intent.action.SOS_KEY_DOWN"
+
+    /** SOS-key release when the SOS key is assigned to the receiving app. */
+    const val ACTION_SOS_KEY_UP: String = "com.sonim.intent.action.SOS_KEY_UP"
+
+    /**
+     * Kodiak MCPTT-stack redundant SOS broadcast. Fires alongside the
+     * Sonim SOS_KEY_DOWN / _UP actions on the same press (both are
+     * emitted from the same WindowManager sendKeyEventBroadcast call
+     * on the XP9900). The reader dedupes: whichever action arrives
+     * first wins the down/up edge, the redundant one is dropped by
+     * the held-state guard.
+     */
+    const val ACTION_KODIAK_SOS: String = "com.kodiak.intent.action.KEYCODE_SOS"
+
     /**
      * Sentinel returned by [android.content.Intent.getIntExtra] when
      * the [MCX_EXTRA_STATE] extra is absent from an [ACTION_MCX_KEY]
