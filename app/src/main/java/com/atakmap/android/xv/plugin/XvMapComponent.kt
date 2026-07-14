@@ -1940,11 +1940,13 @@ class XvMapComponent : AbstractMapComponent() {
             if (hadAnyChannel) {
                 statusTones?.play(com.atakmap.android.xv.audio.StatusToneKind.CHANNEL_LEAVE)
             }
-            // No settle-sleep here: VoiceTransport.disconnect() is now
-            // synchronous (MumbleSession joins its read thread and
-            // awaits its write executor). If a future transport adds
-            // async teardown, expose an onTeardownComplete callback
-            // rather than reintroducing a UI-thread sleep that ANRs.
+            // No settle-sleep here. ReconnectingMumbleTransport.disconnect()
+            // is ASYNC — it submits the teardown (which joins the inner's
+            // read thread and awaits its write executor) onto the recon
+            // executor and returns immediately, so the UI thread never
+            // blocks. If a future transport needs the caller to observe
+            // teardown completion, expose an onTeardownComplete callback
+            // rather than reintroducing a UI-thread sleep/join that ANRs.
             Log.i(TAG, "stopActiveTransport: cleanup complete")
         }
     }

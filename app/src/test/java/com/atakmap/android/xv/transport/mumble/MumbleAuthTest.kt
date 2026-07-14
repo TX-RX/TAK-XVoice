@@ -1,6 +1,7 @@
 package com.atakmap.android.xv.transport.mumble
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -68,5 +69,17 @@ class MumbleAuthTest {
     fun `mumbleUsername substitutes ALL spaces, not just the first`() {
         val u = MumbleAuth.mumbleUsername(callsign = "Bravo Six Niner", slotSuffix = "112233VS2")
         assertEquals("Bravo_Six_Niner---112233VS2", u)
+    }
+
+    @Test
+    fun `connectTls uses a bounded, positive TCP connect timeout`() {
+        // Contract pin for the Wi-Fi→cellular handoff fix: connectTls must
+        // bound its connect() so a black-hole route can't wedge the read
+        // thread for the OS-default (~1-2 min, un-interruptible) timeout.
+        // Must be positive (0 means "infinite" for Socket.connect) and
+        // capped so a doomed connect fails fast enough to retry on the
+        // new route.
+        assertTrue("connect timeout must be > 0 (0 = infinite blocking)", MumbleAuth.CONNECT_TIMEOUT_MS > 0)
+        assertTrue("connect timeout must stay bounded (<= 15s)", MumbleAuth.CONNECT_TIMEOUT_MS <= 15_000)
     }
 }

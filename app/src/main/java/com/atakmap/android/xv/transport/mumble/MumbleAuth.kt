@@ -7,6 +7,8 @@ import com.atakmap.net.AtakCertificateDatabase
 import gov.tak.api.engine.net.ICertificateStore
 import gov.tak.api.engine.net.ICredentialsStore
 import java.io.ByteArrayInputStream
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.KeyStore
 import java.security.cert.CertPathValidator
 import java.security.cert.CertificateFactory
@@ -31,6 +33,16 @@ import javax.net.ssl.X509TrustManager
 //     misses.
 object MumbleAuth {
     private const val TAG = "XvMumbleAuth"
+
+    // Bound on the TCP connect() in [connectTls]. A healthy connect
+    // completes in well under a second on Wi-Fi or a live cellular data
+    // bearer; 8 s catches a black-hole route (the dying Wi-Fi interface
+    // mid Wi-Fi→cellular handoff) without aborting a slow-but-alive
+    // handshake on a marginal link. Matches the wrapper's
+    // PRIMARY_READY_TIMEOUT_MS so a doomed connect surfaces a failure
+    // around the same time the reconnect wrapper stops waiting on it, and
+    // the retry ladder re-attempts on the now-default (cellular) route.
+    internal const val CONNECT_TIMEOUT_MS: Int = 8_000
 
     fun deviceCallsign(): String? =
         try {
@@ -167,7 +179,43 @@ object MumbleAuth {
         takServerHost: String = host,
     ): SSLSocket {
         val ctx = buildSslContext(takServerHost)
-        val socket = ctx.socketFactory.createSocket(host, port) as SSLSocket
+        // Bounded TCP connect. The prior `createSocket(host, port)` form
+        // performed the connect() with the OS-default timeout (tens of
+        // seconds to minutes) and, being a plain blocking socket connect,
+        // was NOT interruptible — so on a Wi-Fi→cellular handoff, where the
+        // fresh reconnect fires against the old Wi-Fi route while it is a
+        // black hole (SYNs get no RST), the read thread wedged in connect()
+        // for the full kernel timeout. Neither disconnect() (the socket
+        // field isn't assigned yet, so socket?.close() is a no-op), nor
+        // readThread.interrupt() (does not unblock a native connect), nor
+        // the network-swap teardown could free it — voice hung
+        // "reconnecting" until an app restart (field report 2026-07-13).
+        //
+        // Connect an explicit plain socket with CONNECT_TIMEOUT_MS, then
+        // layer TLS over the already-connected socket. The
+        // createSocket(socket, host, port, autoClose) overload also carries
+        // the peer host, so SNI + the "HTTPS" endpoint-identification check
+        // below still match against `host`.
+        val plain = Socket()
+        try {
+            plain.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+        } catch (t: Throwable) {
+            try {
+                plain.close()
+            } catch (_: Throwable) {
+            }
+            throw t
+        }
+        val socket =
+            try {
+                ctx.socketFactory.createSocket(plain, host, port, /* autoClose= */ true) as SSLSocket
+            } catch (t: Throwable) {
+                try {
+                    plain.close()
+                } catch (_: Throwable) {
+                }
+                throw t
+            }
         // Hostname verification — without this, any cert chained to one of our
         // trust anchors (TAK private CA OR system trust store) would pass the
         // PinnedAnchorTrustManager regardless of CN/SAN. "HTTPS" is the
