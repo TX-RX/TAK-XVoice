@@ -63,4 +63,11 @@ class ReconnectNotificationTrackerTest {
         assertTrue(t.onAttemptFailed())
         assertFalse(t.onAttemptFailed())
     }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `rejects a threshold below one`() {
+        // A pure reusable utility should fail fast on misconfiguration
+        // rather than silently alerting on the first failure.
+        ReconnectNotificationTracker(alertAfterAttempts = 0)
+    }
 }

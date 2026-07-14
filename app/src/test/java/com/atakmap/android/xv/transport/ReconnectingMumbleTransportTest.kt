@@ -536,6 +536,41 @@ class ReconnectingMumbleTransportTest {
         assertEquals("no rebuild when the link is already up", before, factoryInvocations.size)
     }
 
+    @Test
+    fun `suspendAutoReconnect cancels a pending backoff and drops the reconnecting state`() {
+        primaryConnectedResult = false
+        val r = build()
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        val pending = executor.lastScheduledFuture
+        assertTrue("backoff pending before suspend", r.isReconnecting())
+        // Operator switched auto-reconnect off — take effect at once.
+        r.suspendAutoReconnect()
+        assertTrue("pending backoff cancelled immediately", pending?.isCancelled == true)
+        assertFalse("suspended ladder is not 'reconnecting'", r.isReconnecting())
+    }
+
+    @Test
+    fun `pending retry is suppressed when auto-reconnect is toggled off during backoff`() {
+        var enabled = true
+        val r = buildWith { enabled }
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        assertTrue(executor.hasPendingSchedule())
+        val before = factoryInvocations.size
+        // Operator flips the toggle off while the backoff is still pending;
+        // the queued task must re-check the gate at fire time and suppress
+        // the attempt rather than waking the radio one more time.
+        enabled = false
+        executor.fireScheduled()
+        assertEquals(
+            "fired retry must not rebuild when disabled mid-backoff",
+            before,
+            factoryInvocations.size,
+        )
+        assertFalse(r.isReconnecting())
+    }
+
     // ============================================================
     // Auto-pause — stop scheduling after a long run of failures
     // ============================================================

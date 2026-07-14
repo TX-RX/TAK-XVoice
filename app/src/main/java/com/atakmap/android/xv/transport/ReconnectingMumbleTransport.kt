@@ -483,8 +483,42 @@ class ReconnectingMumbleTransport(
         }
         pendingRetry =
             executor.schedule({
-                if (!teardownRequested) runAttempt()
+                if (teardownRequested) return@schedule
+                // Re-check the gate at FIRE time, not just at schedule
+                // time: the operator may have switched auto-reconnect off
+                // during the backoff window. Without this, an already-
+                // queued task would still wake the radio for one more
+                // background attempt after the operator disabled it.
+                if (!reconnectEnabled()) {
+                    Log.i(TAG, "pending retry fired but auto-reconnect now disabled — suspending")
+                    reconnectSuspended = true
+                    reconnecting.set(false)
+                    return@schedule
+                }
+                runAttempt()
             }, delay, TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * Immediately suspend the automatic reconnect ladder: cancel any
+     * pending backoff and drop out of the "reconnecting…" state at once,
+     * rather than waiting for the queued retry to fire (which could be
+     * minutes out on the dormant tail). Called when the operator switches
+     * auto-reconnect off so the change takes visible effect immediately.
+     * A later retryNow() / connect() re-arms. No-op if already connected
+     * or torn down. Runs on the wrapper's executor so it serializes with
+     * any in-flight connect / retry work.
+     */
+    fun suspendAutoReconnect() {
+        executor.submit {
+            if (teardownRequested) return@submit
+            if (inner?.isConnected == true) return@submit
+            Log.i(TAG, "suspendAutoReconnect() — cancelling pending backoff, dropping to disconnected")
+            pendingRetry?.cancel(false)
+            pendingRetry = null
+            reconnectSuspended = true
+            reconnecting.set(false)
+        }
     }
 
     /**

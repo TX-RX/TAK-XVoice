@@ -29,6 +29,16 @@ class ReconnectNotificationTracker(
     // stated "at least two or three reattempts" tolerance.
     private val alertAfterAttempts: Int = DEFAULT_ALERT_THRESHOLD,
 ) {
+    init {
+        // A threshold below 1 would alert on the very first failure,
+        // defeating the "brief blips stay silent" contract and making
+        // the utility's behavior surprising for any future caller. Fail
+        // fast on misconfiguration rather than silently degrading.
+        require(alertAfterAttempts >= 1) {
+            "alertAfterAttempts must be >= 1, was $alertAfterAttempts"
+        }
+    }
+
     private var consecutiveFailures: Int = 0
     private var alerted: Boolean = false
 

@@ -2320,13 +2320,18 @@ class XvMapComponent : AbstractMapComponent() {
             override fun setAutoReconnectEnabled(enabled: Boolean) {
                 Log.i(TAG, "Controller.setAutoReconnectEnabled($enabled)")
                 settings.persistAutoReconnectEnabled(enabled)
-                // Re-enabling should immediately re-arm a suspended
-                // ladder rather than waiting for the next drop; nudge the
-                // live transport to try now if it's currently down.
+                val t = activeTransport as? com.atakmap.android.xv.transport.ReconnectingMumbleTransport
                 if (enabled) {
-                    (activeTransport as? com.atakmap.android.xv.transport.ReconnectingMumbleTransport)
-                        ?.takeIf { !it.isConnected }
-                        ?.retryNow()
+                    // Re-enabling should immediately re-arm a suspended
+                    // ladder rather than waiting for the next drop; nudge
+                    // the live transport to try now if it's currently down.
+                    t?.takeIf { !it.isConnected }?.retryNow()
+                } else {
+                    // Disabling should take visible effect at once —
+                    // cancel any pending backoff and drop the
+                    // "reconnecting…" state now instead of waking once
+                    // more when the queued retry fires.
+                    t?.suspendAutoReconnect()
                 }
             }
 
