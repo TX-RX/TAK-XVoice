@@ -70,20 +70,18 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  */
 class SonimAssignedAppReader(
     private val context: Context,
-    // Called on any Yellow-key edge (assigned-app PTT). isDown = true
-    // on press, false on release. Wired from XvMapComponent to
-    // IXvVoice.notifySonimPttEdge → plant.pttDown/pttUp(SONIM_PTT).
-    private val onYellowKeyEdge: (isDown: Boolean) -> Unit,
     // Called on any SOS-key edge (assigned-app emergency). isDown =
     // true on press, false on release. Wired from XvMapComponent to
     // IXvVoice.notifySonimEmergencyEdge → plant.onSonimEmergencyEdge
     // → callbacks.onEmergencyButton → EmergencyController.
     private val onSosKeyEdge: (isDown: Boolean) -> Unit,
 ) {
-    // Independent per-source held-state guards. SOS emits two down
-    // actions in a single millisecond (Sonim + Kodiak); both need to
-    // collapse to a single edge.
-    @Volatile private var yellowHeld: Boolean = false
+    // Held-state guard for SOS — the paired Sonim+Kodiak emission
+    // (fires within 1ms of each other on the XP9900) needs to
+    // collapse to a single edge. Kodiak action is dropped entirely
+    // (see the when branch below); this guard survives to handle any
+    // future case where two Sonim SOS_KEY_DOWN broadcasts arrive
+    // without an intervening UP.
     @Volatile private var sosHeld: Boolean = false
 
     @Volatile private var registered: Boolean = false
@@ -95,52 +93,40 @@ class SonimAssignedAppReader(
                 intent: Intent,
             ) {
                 when (intent.action) {
-                    SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN -> handleYellow(isDown = true)
-                    SonimHardwareButtons.ACTION_YELLOW_KEY_UP -> handleYellow(isDown = false)
-                    SonimHardwareButtons.ACTION_SOS_KEY_DOWN,
-                    SonimHardwareButtons.ACTION_KODIAK_SOS -> {
-                        // ACTION_KODIAK_SOS is edge-ambiguous by name.
-                        // On the XP9900 it fires paired with the Sonim
-                        // SOS_KEY_DOWN / _UP action, so its edge is
-                        // implied by whichever Sonim edge is currently
-                        // being processed. The held-state guard means
-                        // whichever action lands first wins and the
-                        // other is a no-op — safe either way.
-                        if (intent.action == SonimHardwareButtons.ACTION_KODIAK_SOS) {
-                            // No standardized state extra; treat as
-                            // toggle-through-guard. Down first because
-                            // most fires we've observed are paired
-                            // with SOS_KEY_DOWN and land within 1ms.
-                            handleSos(isDown = !sosHeld && true)
-                        } else {
-                            handleSos(isDown = true)
-                        }
-                    }
+                    // YELLOW_KEY_DOWN / _UP is emitted by the side
+                    // application button (keyCode 291 / KEYCODE_APP)
+                    // when it's assigned to ATAK in Programmable Keys.
+                    // Field policy 2026-07-14: this is NOT the operator's
+                    // PTT button — the physical yellow PTT button is
+                    // keyCode 228 / KEYCODE_PTT, delivered as a
+                    // KeyEvent (not a broadcast) and handled by
+                    // SonimPttForegroundReader. Logged but not routed
+                    // so we can see if the operator ever chooses to
+                    // wire the application button to something later.
+                    SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN ->
+                        Log.i(TAG, "application-button DOWN (YELLOW_KEY broadcast) — no action wired")
+                    SonimHardwareButtons.ACTION_YELLOW_KEY_UP ->
+                        Log.i(TAG, "application-button UP (YELLOW_KEY broadcast) — no action wired")
+                    SonimHardwareButtons.ACTION_SOS_KEY_DOWN -> handleSos(isDown = true)
                     SonimHardwareButtons.ACTION_SOS_KEY_UP -> handleSos(isDown = false)
+                    // ACTION_KODIAK_SOS is edge-ambiguous by name and
+                    // fires paired with the Sonim SOS_KEY_DOWN / _UP
+                    // actions in the same millisecond on the XP9900.
+                    // Field-verified 2026-07-14: treating the Kodiak
+                    // action as either edge caused intermittent
+                    // premature release (down + phantom up on the same
+                    // press). We rely exclusively on the Sonim actions
+                    // for edge info and drop the Kodiak emission as
+                    // redundant. Registered in the filter only to keep
+                    // logcat quiet — anyone else broadcasting this
+                    // action to ATAK's package would surface here.
+                    SonimHardwareButtons.ACTION_KODIAK_SOS -> {
+                        Log.d(TAG, "Kodiak SOS action received — ignoring (redundant with SOS_KEY_*)")
+                    }
                     else -> Log.d(TAG, "unexpected action=${intent.action} — ignoring")
                 }
             }
         }
-
-    private fun handleYellow(isDown: Boolean) {
-        if (isDown) {
-            if (yellowHeld) {
-                Log.d(TAG, "Yellow DOWN — already held; dropping duplicate")
-                return
-            }
-            yellowHeld = true
-            Log.i(TAG, "Yellow key DOWN (assigned-to-ATAK broadcast) → PTT")
-            safeInvoke("onYellowKeyEdge(down)") { onYellowKeyEdge(true) }
-        } else {
-            if (!yellowHeld) {
-                Log.d(TAG, "Yellow UP — not held; dropping")
-                return
-            }
-            yellowHeld = false
-            Log.i(TAG, "Yellow key UP (assigned-to-ATAK broadcast) → PTT release")
-            safeInvoke("onYellowKeyEdge(up)") { onYellowKeyEdge(false) }
-        }
-    }
 
     private fun handleSos(isDown: Boolean) {
         if (isDown) {
@@ -223,7 +209,6 @@ class SonimAssignedAppReader(
                 Log.w(TAG, "unregisterReceiver threw", t)
             }
             registered = false
-            yellowHeld = false
             sosHeld = false
         }
     }

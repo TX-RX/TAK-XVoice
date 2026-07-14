@@ -2902,25 +2902,15 @@ class XvMapComponent : AbstractMapComponent() {
         val reader =
             com.atakmap.android.xv.ptt.SonimAssignedAppReader(
                 context = ctx,
-                onYellowKeyEdge = { isDown ->
-                    // Yellow key → PTT, but only if the operator has
-                    // the Sonim PTT toggle enabled. Route via the
-                    // same AIDL notify used by the KeyEvent foreground
-                    // reader so the service dispatcher sees a single
-                    // logical SONIM_PTT source.
-                    if (settings.persistedSonimPttButtonEnabled()) {
-                        voiceClient?.ifBound { it.notifySonimPttEdge(isDown) }
-                    }
-                },
                 onSosKeyEdge = { isDown ->
                     // SOS key → emergency-alert path (matches
-                    // AINA-PTTE parity from commit 4e12933). Gated on
-                    // Sonim Emergency toggle so the operator can turn
-                    // this off without also killing the Yellow PTT
-                    // path.
-                    if (settings.persistedSonimEmergencyButtonEnabled()) {
-                        voiceClient?.ifBound { it.notifySonimEmergencyEdge(isDown) }
-                    }
+                    // AINA-PTTE parity from commit 4e12933). Not
+                    // gated on an XV settings toggle — the phone's
+                    // Programmable Keys → app assignment is the
+                    // authoritative on/off (if the operator hasn't
+                    // assigned SOS to ATAK, no broadcast arrives and
+                    // this callback never fires).
+                    voiceClient?.ifBound { it.notifySonimEmergencyEdge(isDown) }
                 },
             )
         if (reader.start()) {

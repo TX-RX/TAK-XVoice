@@ -251,6 +251,25 @@ object SonimHardwareButtons {
     const val PTT_KEY_CODE_ALT: Int = KeyEvent.KEYCODE_CALL
 
     /**
+     * Second alternative KeyEvent code: the Android platform
+     * `KEYCODE_PTT` (228). Field-verified 2026-07-14 on Sonim XP9900
+     * (AT&T carrier firmware, Android 12): the physical PTT side key
+     * emits keyCode 228 through `PhoneWindowManager.interceptKeyBeforeDispatching`
+     * as `KEYCODE_PTT received`, and — because ATAK isn't a registered
+     * MCPTT app in Sonim's `SonimSdkPolicy.isMCPTTApp` check — the
+     * event is delivered ONLY as a KeyEvent to the top activity, not
+     * as a broadcast. Adding it to the accepted set here is what makes
+     * the button work when the operator assigns Programmable Keys →
+     * PTT key → ATAK on the XP9900. Chosen as PTT_KEY_CODE_ALT2 rather
+     * than a rename because 79 / 5 remain the correct primary/alt for
+     * older Sonim units.
+     */
+    // 228 = KeyEvent.KEYCODE_PTT. Not referenced by symbolic name
+    // because the constant is only present in the Android API from
+    // level 33 (Tiramisu) onward and XV's minSdk is 26.
+    const val PTT_KEY_CODE_ALT2: Int = 228
+
+    /**
      * KeyEvent code for the Sonim / ruggedized-Android SOS button.
      * `KEYCODE_SOS` (1079) is the Android platform integer used
      * consistently across ruggedized OEMs (Sonim / Ruggear / other
@@ -388,10 +407,12 @@ object SonimHardwareButtons {
     /**
      * Pure classification of a single Android [KeyEvent] tuple for the
      * Sonim PTT foreground path. Returns [FallbackAction.PTT_DOWN] on
-     * the initial press of either [PTT_KEY_CODE_PRIMARY] or
-     * [PTT_KEY_CODE_ALT] (both accepted because on-device confirmation
-     * of the exact XP10 mapping is pending), [FallbackAction.PTT_UP] on
-     * release, and [FallbackAction.IGNORE] for everything else.
+     * the initial press of [PTT_KEY_CODE_PRIMARY], [PTT_KEY_CODE_ALT],
+     * or [PTT_KEY_CODE_ALT2] — accepted in parallel because different
+     * Sonim firmwares report the PTT key under different Android
+     * keycodes and we don't want a firmware-variant check at input
+     * time. [FallbackAction.PTT_UP] on release, [FallbackAction.IGNORE]
+     * for everything else.
      *
      * Auto-repeat (repeatCount > 0) is dropped so a physically held key
      * doesn't spam the dispatcher with duplicate down edges after the
@@ -404,7 +425,10 @@ object SonimHardwareButtons {
         action: Int,
         repeatCount: Int,
     ): FallbackAction {
-        if (keyCode != PTT_KEY_CODE_PRIMARY && keyCode != PTT_KEY_CODE_ALT) {
+        if (keyCode != PTT_KEY_CODE_PRIMARY &&
+            keyCode != PTT_KEY_CODE_ALT &&
+            keyCode != PTT_KEY_CODE_ALT2
+        ) {
             return FallbackAction.IGNORE
         }
         return when (action) {
