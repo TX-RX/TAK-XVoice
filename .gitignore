@@ -38,6 +38,12 @@ keystore.properties
 signing.properties
 app/atak_keystore
 
+# ---------- Local per-clone script config ----------
+# scripts/config.json is per-operator (real ATAK server hostnames,
+# device-specific ATAK APK paths, callsign redaction lists). Only the
+# committed config.example.json travels with the repo.
+scripts/config.json
+
 # ---------- ATAK SDK (vendored, do not commit) ----------
 app/libs/main.jar
 app/libs/*.jar
