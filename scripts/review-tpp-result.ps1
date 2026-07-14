@@ -47,13 +47,37 @@ Set-Location $repoRoot
 . (Join-Path $repoRoot "scripts/lib/Read-Config.ps1")
 $cfg = Read-ScriptConfig -RepoRoot $repoRoot
 
-$sdkBuildTools = Get-ChildItem "$env:USERPROFILE/Android/Sdk/build-tools" -Directory -ErrorAction SilentlyContinue |
-    Sort-Object Name -Descending | Select-Object -First 1
-if (-not $sdkBuildTools) {
-    throw "Could not find Android SDK build-tools. Install one via Android Studio SDK Manager."
+# Locate the Android SDK build-tools. Honor the standard env vars first
+# (ANDROID_SDK_ROOT / ANDROID_HOME), then fall back to the usual install
+# locations. Pick the highest build-tools version present.
+$sdkRoots = @(
+    $env:ANDROID_SDK_ROOT,
+    $env:ANDROID_HOME,
+    (Join-Path $env:LOCALAPPDATA "Android/Sdk"),
+    (Join-Path $env:USERPROFILE  "Android/Sdk"),
+    (Join-Path $env:HOME         "Android/Sdk"),
+    (Join-Path $env:HOME         "Library/Android/sdk")
+) | Where-Object { $_ } | Select-Object -Unique
+
+$sdkBuildTools = $null
+foreach ($root in $sdkRoots) {
+    $bt = Join-Path $root "build-tools"
+    if (Test-Path $bt) {
+        $sdkBuildTools = Get-ChildItem $bt -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -First 1
+        if ($sdkBuildTools) { break }
+    }
 }
-$aapt      = Join-Path $sdkBuildTools.FullName "aapt.exe"
-$apksigner = Join-Path $sdkBuildTools.FullName "apksigner.bat"
+if (-not $sdkBuildTools) {
+    throw "Could not find Android SDK build-tools. Set ANDROID_SDK_ROOT (or ANDROID_HOME), or install build-tools via Android Studio SDK Manager. Searched: $($sdkRoots -join ', ')."
+}
+
+# Windows build-tools ship aapt.exe / apksigner.bat; macOS/Linux ship
+# bare 'aapt' / 'apksigner'. $IsWindows is $true on Windows pwsh, $false
+# on *nix pwsh, and $null on Windows PowerShell 5.1 (treat null as Win).
+$onWindows = $IsWindows -ne $false
+$aapt      = Join-Path $sdkBuildTools.FullName ("aapt"      + $(if ($onWindows) { ".exe" } else { "" }))
+$apksigner = Join-Path $sdkBuildTools.FullName ("apksigner" + $(if ($onWindows) { ".bat" } else { "" }))
 foreach ($tool in @($aapt, $apksigner)) {
     if (-not (Test-Path $tool)) {
         throw "Expected build-tools binary not found: $tool (build-tools dir: $($sdkBuildTools.FullName)). Reinstall/repair the build-tools package via Android Studio SDK Manager."
@@ -93,9 +117,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Get-ApkBaseline([string]$apkPath) {
     $out = & $aapt dump xmltree $apkPath AndroidManifest.xml 2>$null
     if ($LASTEXITCODE -ne 0) { return "?" }
-    $m = $out | Select-String -Pattern '"plugin-api".*\r?\n.*"([^"]+@[^"]+)"'
-    if ($m) { return $m.Matches.Groups[1].Value }
-    # Fallback: two-line parse the raw output.
+    # The plugin-api value sits on the line after the "plugin-api" name
+    # attribute in aapt's xmltree dump. Select-String is line-oriented so
+    # a single cross-line regex can't catch it — walk adjacent lines.
     $lines = $out -split "`n"
     for ($i = 0; $i -lt $lines.Length - 1; $i++) {
         if ($lines[$i] -match '"plugin-api"' -and $lines[$i+1] -match '"([^"]+@[^"]+)"') {
@@ -110,8 +134,13 @@ function Get-ApkSigningCert([string]$apkPath) {
     if ($LASTEXITCODE -ne 0) {
         return [PSCustomObject]@{ Verifies = $false; DN = ""; Sha256 = "" }
     }
-    $dn     = ($out | Select-String -Pattern 'Signer #1 certificate DN: (.+)').Matches.Groups[1].Value
-    $sha256 = ($out | Select-String -Pattern 'Signer #1 certificate SHA-256 digest: ([0-9a-f]+)').Matches.Groups[1].Value
+    # Guard each extraction: if apksigner's output format differs (or is
+    # localized) Select-String returns nothing, and blindly chaining
+    # .Matches.Groups would surface a confusing error. Degrade to "".
+    $dnMatch  = $out | Select-String -Pattern 'Signer #1 certificate DN: (.+)' | Select-Object -First 1
+    $shaMatch = $out | Select-String -Pattern 'Signer #1 certificate SHA-256 digest: ([0-9a-f]+)' | Select-Object -First 1
+    $dn     = if ($dnMatch)  { $dnMatch.Matches[0].Groups[1].Value }  else { "" }
+    $sha256 = if ($shaMatch) { $shaMatch.Matches[0].Groups[1].Value } else { "" }
     return [PSCustomObject]@{ Verifies = $true; DN = $dn; Sha256 = $sha256 }
 }
 

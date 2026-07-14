@@ -11,9 +11,9 @@
 #   .\scripts\upload-tak-plugin.ps1 -Apk a.apk,b.apk -Baseline 5.6.0,5.7.0 [-Send]
 #
 # Without -Send, the script performs a dry-run: prints exactly what
-# request it would POST (URL, headers with secrets redacted, form
-# fields, file size + hash) and exits without touching the network.
-# Re-run with -Send once the dry-run looks right.
+# request it would POST (URL, the auth line with the secret redacted to
+# env-var-name + length, form fields, per-file size + SHA-256) and exits
+# without touching the network. Re-run with -Send once it looks right.
 #
 # The Baseline value is templated into extraFormFields (any string of
 # form "{baseline}" in a config value is replaced at request time).
@@ -46,6 +46,12 @@ if (-not $tak) {
 }
 if (-not $tak.baseUrl) {
     throw "takServer.baseUrl is not set in scripts/config.json. Set it to your TAK / OpenTAK server URL (e.g. https://tak.example.com:8443)."
+}
+if (-not $tak.uploadPath) {
+    throw "takServer.uploadPath is not set in scripts/config.json (the server's upload endpoint path, e.g. /api/plugins/upload)."
+}
+if (-not $tak.fileFieldName) {
+    throw "takServer.fileFieldName is not set in scripts/config.json (the multipart form field the server expects the APK under, e.g. 'file')."
 }
 if ($Apk.Count -ne $Baseline.Count) {
     throw "-Apk count ($($Apk.Count)) must equal -Baseline count ($($Baseline.Count))."
@@ -93,7 +99,11 @@ switch -Regex ($tak.authMode) {
     }
 }
 
-$fullUrl = "$($tak.baseUrl.TrimEnd('/'))$($tak.uploadPath)"
+# Normalize the join so a config uploadPath with or without a leading
+# slash both produce a valid URL (baseUrl + "/api/..." not "host:8443api/...").
+$uploadPath = $tak.uploadPath
+if ($uploadPath -notmatch '^/') { $uploadPath = "/$uploadPath" }
+$fullUrl = "$($tak.baseUrl.TrimEnd('/'))$uploadPath"
 
 Write-Host "TAK server upload target" -ForegroundColor Cyan
 Write-Host "  URL:      $fullUrl"
@@ -154,7 +164,16 @@ for ($i = 0; $i -lt $Apk.Count; $i++) {
         Headers = $auth.Header
     }
     if ($auth.ClientCertPath) {
-        $iwArgs["Certificate"] = Get-PfxCertificate -FilePath $auth.ClientCertPath
+        # Load the client cert directly so a password-protected PFX works
+        # (Get-PfxCertificate can't take a password non-interactively).
+        # clientCertPassEnvVar, if set, was read into $auth.ClientCertPass.
+        if ($auth.ClientCertPass) {
+            $iwArgs["Certificate"] = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                $auth.ClientCertPath, $auth.ClientCertPass)
+        } else {
+            $iwArgs["Certificate"] = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                $auth.ClientCertPath)
+        }
     }
     if ($tak.insecureSkipTlsVerify) {
         $iwArgs["SkipCertificateCheck"] = $true
