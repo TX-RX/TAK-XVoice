@@ -2154,11 +2154,11 @@ class XvVoiceService : Service() {
 
             override fun notifySonimEmergencyEdge(isDown: Boolean) {
                 assertAuthorizedCaller()
-                if (isDown) {
-                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
-                } else {
-                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
-                }
+                // SOS button is an emergency-alert trigger, not PTT —
+                // route through the same shim the broadcast path uses
+                // (VoicePlant.onSonimEmergencyEdge → callbacks.onEmergencyButton
+                // → EmergencyController → ATAK Alert Tool). Matches AINA PTTE.
+                plant().onSonimEmergencyEdge(isDown)
             }
 
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {

@@ -1718,13 +1718,18 @@ class VoicePlant(
     /**
      * Start the Sonim dedicated Emergency / SOS button reader.
      * Registers a broadcast receiver for `android.intent.action.SOS.down`
-     * / `_up` and routes press / release edges through [pttDown] /
-     * [pttUp] with [PttSource.SONIM_EMERGENCY]. Idempotent.
+     * / `_up` and routes press / release edges into
+     * [PlantCallbacks.onEmergencyButton] — the same emergency-dispatch
+     * path the AINA PTTE key uses (see [primaryAinaEvent]). Idempotent.
      *
-     * Currently a plain PTT source with a distinct log tag / source
-     * enum value — a future PR may promote it to fire an emergency
-     * CoT event or SOS broadcast without disturbing the plain PTT
-     * path.
+     * The Sonim SOS key is a distinct red hardware button intended to
+     * declare emergency, NOT to key voice. Field policy 2026-07-14:
+     * the button is partially hidden and recessed on the XP9900 chassis
+     * so accidental presses are unlikely, and its purpose parallels
+     * the AINA PTTE. Routing it through [EmergencyController] therefore
+     * fires ATAK's Alert Tool via [AtakEmergencyDispatcher] (short-press
+     * = fire panic; long-hold = cancel), matching AINA behavior. It
+     * does NOT open a Telecom call or transmit audio.
      */
     fun startSonimEmergencyButton() {
         if (sonimEmergency != null) {
@@ -1732,18 +1737,27 @@ class VoicePlant(
             return
         }
         val reader =
-            SonimEmergencyButtonReader(context) { isDown, source ->
-                if (isDown) {
-                    pttDown(slot = 0, source = source)
-                } else {
-                    pttUp(slot = 0, source = source)
-                }
+            SonimEmergencyButtonReader(context) { isDown, _ ->
+                onSonimEmergencyEdge(isDown)
             }
         if (reader.start()) {
             sonimEmergency = reader
         } else {
             Log.w(TAG, "startSonimEmergencyButton: reader.start() failed — leaving disabled")
         }
+    }
+
+    /**
+     * Deliver a Sonim SOS-button edge from either the broadcast path
+     * ([SonimEmergencyButtonReader]) or the foreground KeyEvent path
+     * (via [XvVoiceService]'s `notifySonimEmergencyEdge` binder shim)
+     * into the plugin-side emergency subsystem. Public so
+     * [XvVoiceService] can forward foreground edges through the same
+     * shim, keeping the AINA-PTTE-parity contract single-sited.
+     */
+    fun onSonimEmergencyEdge(down: Boolean) {
+        Log.i(TAG, "sonim SOS down=$down — routing to onEmergencyButton (AINA-PTTE parity)")
+        callbacks.onEmergencyButton(down)
     }
 
     /** Stop the Sonim Emergency reader (if running). Idempotent. */
@@ -1755,11 +1769,9 @@ class VoicePlant(
             Log.w(TAG, "stopSonimEmergencyButton: reader.stop() threw", t)
         }
         sonimEmergency = null
-        try {
-            pttDispatcher.forgetSource(PttSource.SONIM_EMERGENCY)
-        } catch (t: Throwable) {
-            Log.w(TAG, "forgetSource(SONIM_EMERGENCY) threw", t)
-        }
+        // No pttDispatcher.forgetSource needed — SOS edges no longer
+        // register as a PTT source; they route to the emergency
+        // subsystem via callbacks.onEmergencyButton().
     }
 
     /** True while the Sonim Emergency broadcast receiver is registered. */
