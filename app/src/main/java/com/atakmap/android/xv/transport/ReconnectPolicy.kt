@@ -60,12 +60,34 @@ class ReconnectPolicy(
         }
 
     companion object {
-        // Capped curve: 1s, 2s, 4s, 8s, 15s, 30s, 60s. Last value
-        // repeats indefinitely (ReconnectingMumbleTransport keeps
-        // trying once a minute until the operator tears down or the
-        // server comes back).
+        // Capped curve with a dormant tail: 1s, 2s, 4s, 8s, 15s, 30s,
+        // 60s, then 2m, then 5m (5m repeats indefinitely). The fast
+        // front matches "the AINA came back" / "wifi handed off"
+        // timescales; the 2m/5m tail is the auto-slowdown for an
+        // unattended device that's genuinely off-grid (e.g. a
+        // hotspot-fed unit thrown in a vehicle trunk). Retrying a dead
+        // uplink once a minute forever wastes battery and radio for no
+        // one; stretching to 5m keeps a background heartbeat without the
+        // drain. An operator who wants back immediately collapses the
+        // wait with a PTT press (ReconnectingMumbleTransport.retryNow).
         val DEFAULT_SCHEDULE: LongArray =
-            longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L)
+            longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
+
+        // Auto-pause threshold. After this many consecutive failed
+        // attempts (~19 min of continuous failure with DEFAULT_SCHEDULE),
+        // the transport stops actively scheduling retries entirely and
+        // waits to be re-armed by an operator action (PTT press or a
+        // manual reconnect). This is the "auto-pause after a while" half
+        // of the reconnect-quieting work: the dormant tail slows the
+        // drain, and this stops it once it's clear nobody is around to
+        // benefit from the background attempts. Paused ≠ disconnected-
+        // forever: any explicit reconnect re-arms from zero.
+        const val PAUSE_AFTER_ATTEMPTS: Int = 10
+
+        // Pure predicate for the auto-pause decision — kept here (rather
+        // than inline in the wrapper) so it's unit-testable in isolation
+        // per house convention.
+        fun shouldPause(attemptCount: Int): Boolean = attemptCount >= PAUSE_AFTER_ATTEMPTS
 
         // Faster + tighter cap for AINA SPP. The hardware is local
         // (BR/EDR range), so the operator either walks back into
