@@ -1,0 +1,54 @@
+# Detekt configuration for TAK-XVoice.
+#
+# Layered on top of detekt's default ruleset via
+# `--build-upon-default-config`, so only the deltas below are needed;
+# every rule not mentioned keeps its detekt default. Tuning here is
+# aimed at making the FIRST rollout signal-rich rather than a wall of
+# noise — see .github/workflows/detekt.yml for the advisory→gate plan.
+
+config:
+  validation: true
+  warningsAsErrors: false
+
+complexity:
+  # These thresholds are deliberately loose for the initial pass — the
+  # god classes (XvMapComponent etc.) are already tracked as refactor
+  # work, so we don't want detekt re-reporting them on every PR. Tighten
+  # as the big files get split.
+  LongMethod:
+    threshold: 80
+  LargeClass:
+    threshold: 1200
+  CyclomaticComplexMethod:
+    threshold: 20
+  TooManyFunctions:
+    active: false
+
+exceptions:
+  # The audio / BT / transport layers intentionally use broad cleanup
+  # catches around native teardown; flagging every one is noise. But a
+  # SWALLOWED exception (caught and dropped with no log) is a real smell
+  # we DO want surfaced — that rule stays on.
+  TooGenericExceptionCaught:
+    active: false
+  SwallowedException:
+    active: true
+  ReturnCount:
+    active: false
+
+style:
+  # Magic numbers are pervasive in the timing/audio constants; the
+  # architecture review already recommends centralizing them, so leave
+  # this off until that lands rather than drowning the report.
+  MagicNumber:
+    active: false
+  MaxLineLength:
+    # Match .editorconfig's ktlint max_line_length so the two linters
+    # agree on line length.
+    maxLineLength: 140
+  ForbiddenComment:
+    # Surface TODO/FIXME/HACK markers so the backlog stays visible.
+    active: true
+    values:
+      - 'FIXME:'
+      - 'HACK:'

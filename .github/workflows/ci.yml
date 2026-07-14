@@ -27,11 +27,21 @@ on:
   push:
     branches:
       - main
-      - 'feature/**'
-      - 'release/**'
+      # Match the repo's branch-naming convention (see CLAUDE.md):
+      # feat/ · fix/ · chore/. The old 'feature/**' / 'release/**'
+      # globs never matched any real branch, so feature branches got
+      # no pre-PR lint feedback.
+      - 'feat/**'
+      - 'fix/**'
+      - 'chore/**'
   pull_request:
     branches:
       - main
+
+# Least-privilege default token for every job in this workflow. The
+# lint/wrapper jobs only read the repo; nothing here needs write scope.
+permissions:
+  contents: read
 
 # Cancel superseded runs of the same branch/PR to save minutes.
 concurrency:
@@ -90,3 +100,19 @@ jobs:
           name: ktlint-report
           path: ktlint-report.xml
           retention-days: 7
+
+  wrapper-validation:
+    # gradle-wrapper.jar is a committed binary. This job verifies it
+    # against the checksums Gradle publishes for each release, so a
+    # tampered wrapper jar (a known supply-chain vector) can't slip in
+    # through a PR. Needs no ATAK SDK — it only inspects the jar.
+    name: Gradle wrapper checksum
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate Gradle wrapper JAR
+        uses: gradle/actions/wrapper-validation@v4
