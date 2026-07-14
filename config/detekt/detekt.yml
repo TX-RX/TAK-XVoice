@@ -33,8 +33,6 @@ exceptions:
     active: false
   SwallowedException:
     active: true
-  ReturnCount:
-    active: false
 
 style:
   # Magic numbers are pervasive in the timing/audio constants; the
@@ -46,9 +44,6 @@ style:
     # Match .editorconfig's ktlint max_line_length so the two linters
     # agree on line length.
     maxLineLength: 140
-  ForbiddenComment:
-    # Surface TODO/FIXME/HACK markers so the backlog stays visible.
-    active: true
-    values:
-      - 'FIXME:'
-      - 'HACK:'
+  # ForbiddenComment keeps its default config (flags TODO/FIXME/etc.) —
+  # detekt's default already surfaces them, and the rule's `comments`
+  # schema is version-sensitive, so we don't override it here.

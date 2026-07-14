@@ -86,7 +86,11 @@ jobs:
             --report xml:detekt-report.xml
 
       - name: Upload SARIF to GitHub Code Scanning
-        if: always()
+        # Only upload if detekt actually produced the SARIF. If detekt
+        # fails at startup (e.g. a config-validation error) it writes no
+        # report; guarding on the file's existence keeps that from
+        # failing this advisory job on the upload step.
+        if: always() && hashFiles('detekt.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: detekt.sarif
