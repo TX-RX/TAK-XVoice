@@ -161,12 +161,18 @@ class TxControllerColdScoWarmupTest {
     }
 
     @Test
-    fun `production drop count matches the field-tuned N=3`() {
-        // If someone bumps COLD_SCO_START_DROP_FRAMES away from 3, they
+    fun `production drop count matches the field-tuned N=6`() {
+        // If someone bumps COLD_SCO_START_DROP_FRAMES away from 6, they
         // should update the block comment in TxController explaining
         // why. Pin the current value here so a change is visible in
         // the same PR.
-        assertEquals(3, TxController.COLD_SCO_START_DROP_FRAMES)
+        //
+        // History: N=3 was the original tuning (2026-07-08 field
+        // capture). Widened to N=6 on 2026-07-11 after peer reported
+        // residual screech at the head of cold-SCO bursts — 60 ms of
+        // drop covered the underrun burst itself but the SILK encoder
+        // was still catching the not-yet-clean tail. 120 ms clears it.
+        assertEquals(6, TxController.COLD_SCO_START_DROP_FRAMES)
     }
 
     // ============================================================
@@ -240,11 +246,15 @@ class TxControllerColdScoWarmupTest {
     }
 
     @Test
-    fun `production hold matches the field-tuned 200 ms`() {
-        // 200 ms was chosen to cover the observed 86-frame AOC underrun
-        // (~30 ms) plus pipeline-recovery margin. If this constant
-        // moves, the block comment above it should move with it.
-        assertEquals(200L, TxController.COLD_SCO_TPT_HOLD_MS)
+    fun `production hold matches the field-tuned 300 ms`() {
+        // 200 ms was the original tuning (2026-07-08 AOC underrun window
+        // + margin). Widened to 300 ms on 2026-07-11 after peer-side
+        // screech report during TPP validation — the underrun clears
+        // quickly but the pipeline needs another ~100 ms to fully
+        // settle before mic frames stop encoding to Opus screech.
+        // If this constant moves, the block comment above it should
+        // move with it.
+        assertEquals(300L, TxController.COLD_SCO_TPT_HOLD_MS)
     }
 
     // ============================================================
@@ -260,6 +270,48 @@ class TxControllerColdScoWarmupTest {
         assertEquals(
             listOf("SCO", "OFFLOAD"),
             TxRoute.entries.map { it.name },
+        )
+    }
+
+    // ============================================================
+    // Part 4 — PRIMING gate selection keys off COLD SCO, not "SCO up"
+    //
+    // 2026-07-13 field repro: SCO was held WARM across a full session
+    // (the cool-down tail working as intended), yet every burst still
+    // used the 30-frame (~300 ms) cold gate because the selection was
+    // tied to "SCO connected." With bursty keying the operator released
+    // before TX started and ZERO frames went out. The gates must be
+    // slow ONLY for a cold acquire; warm-SCO and non-SCO get fast gates.
+    // ============================================================
+
+    @Test
+    fun `cold-SCO burst uses the ramp-tolerant gates`() {
+        assertEquals(30, TxController.primingMinFramesToConfirmAlive(coldSco = true))
+        assertEquals(200, TxController.primingRmsThreshold(coldSco = true))
+        assertEquals(1500L, TxController.primingTimeoutMs(coldSco = true))
+    }
+
+    @Test
+    fun `warm-SCO or non-SCO burst uses the fast gates`() {
+        // The regression guard: coldSco=false MUST select the fast
+        // gates so a warm-held-SCO key reaches the tone in ~50 ms
+        // (5 frames), not ~300 ms.
+        assertEquals(5, TxController.primingMinFramesToConfirmAlive(coldSco = false))
+        assertEquals(5, TxController.primingRmsThreshold(coldSco = false))
+        assertEquals(500L, TxController.primingTimeoutMs(coldSco = false))
+    }
+
+    @Test
+    fun `warm gates are strictly faster to confirm than cold gates`() {
+        // Intent invariant independent of the exact tuned values: a warm
+        // burst never waits longer than a cold one to declare mic-alive.
+        assertTrue(
+            TxController.primingMinFramesToConfirmAlive(coldSco = false) <
+                TxController.primingMinFramesToConfirmAlive(coldSco = true),
+        )
+        assertTrue(
+            TxController.primingTimeoutMs(coldSco = false) <
+                TxController.primingTimeoutMs(coldSco = true),
         )
     }
 }

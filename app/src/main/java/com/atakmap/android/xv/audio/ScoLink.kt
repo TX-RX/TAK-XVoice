@@ -993,7 +993,7 @@ class ScoLink(
 
         // Threshold at which a held SCO link is no longer "legitimately
         // warm" but instead probably leaking. Hot Mic's idle release
-        // ceiling is 60s, RX SCO_HOT is 5s, TX cool-down is 5s — so
+        // ceiling is 60s, RX SCO_HOT is 8s, TX cool-down is 5s — so
         // anything past 90s of continuous hold means a holder isn't
         // releasing as expected. Below this, the watchdog logs at DEBUG.
         private const val WATCHDOG_WARN_THRESHOLD_MS = 90_000L

@@ -22,9 +22,9 @@ import org.robolectric.RobolectricTestRunner
  *
  * The seams are the minimum needed to exercise:
  *
- *   - The TPT-overlap ring buffer's RMS gate (the 2026-05-19 screech
- *     fix) end-to-end through `onPcmFrame`, not just the helper in
- *     [TxControllerScreechTest].
+ *   - The state=TPT frame-drop contract (the TPT-overlap ring was
+ *     removed 2026-05-21 after it corrupted the Opus encoder on
+ *     cold-SCO cadence) end-to-end through `onPcmFrame`.
  *   - The encoder-reset path on encode failure, end-to-end through
  *     `encodeAndQueueFrame` in state=TRANSMITTING.
  *   - The frame-drop branches in IDLE / PRIMING / ACQUIRING_SCO.
@@ -61,72 +61,31 @@ class TxControllerStateMachineTest {
         )
 
     // ============================================================
-    // RMS gate in state=TPT — the central screech fix.
+    // Frame handling in state=TPT — the TPT-overlap ring was removed
+    // 2026-05-21 (it corrupted the Opus encoder on cold-SCO cadence).
+    // Contract: frames captured while the permit tone plays are dropped
+    // — nothing is encoded and the state machine does not advance.
     // ============================================================
 
     @Test
-    fun `state=TPT past skip window — garbage frame is rejected by RMS gate`() {
+    fun `state=TPT — mic frames are dropped, not encoded (TPT-overlap ring removed 2026-05-21)`() {
         val tx = buildController()
-        // Past the TPT_RING_SKIP_MS (80ms) window so the gate is active.
-        tx.setStateForTest(TxController.State.TPT, tptEnteredAtMs = System.currentTimeMillis() - 200L)
-
-        val garbage = ShortArray(480) { -1 } // rms=1, the field-reported pattern
-        tx.onPcmFrameForTest(garbage)
-
-        assertEquals(
-            "garbage frame must not enter pre-TX ring",
-            0,
-            tx.preTxBufferSizeForTest(),
-        )
-    }
-
-    @Test
-    fun `state=TPT past skip window — frames are dropped (ring buffer disabled 2026-05-21)`() {
-        // The TPT-overlap ring buffer was disabled outright after a
-        // recurring cold-SCO screech bug — flushing those frames into
-        // Opus corrupts the encoder regardless of RMS gating. Pinned
-        // here as the new contract: state=TPT frames are dropped, no
-        // ring buffer accumulates. See the long comment in
-        // TxController.onPcmFrame for the rationale and the re-enable
-        // checklist.
-        val tx = buildController()
-        tx.setStateForTest(TxController.State.TPT, tptEnteredAtMs = System.currentTimeMillis() - 200L)
-
-        val speech = ShortArray(480) { i -> (10_000.0 * kotlin.math.sin(i * 0.2)).toInt().toShort() }
-        tx.onPcmFrameForTest(speech)
-
-        assertEquals(
-            "TPT frames must be dropped, not buffered",
-            0,
-            tx.preTxBufferSizeForTest(),
-        )
-    }
-
-    @Test
-    fun `state=TPT during skip window — even speech is dropped (TPT bleed defense)`() {
-        val tx = buildController()
-        // tptEnteredAtMs = now → elapsed = 0, well inside the 80ms skip.
         tx.setStateForTest(TxController.State.TPT, tptEnteredAtMs = System.currentTimeMillis())
 
         val speech = ShortArray(480) { i -> (10_000.0 * kotlin.math.sin(i * 0.2)).toInt().toShort() }
-        tx.onPcmFrameForTest(speech)
-
-        assertEquals(
-            "frame within skip window must be dropped, even if loud",
-            0,
-            tx.preTxBufferSizeForTest(),
-        )
-    }
-
-    @Test
-    fun `state=TPT — ring buffer stays empty no matter how many frames arrive`() {
-        // Companion to the disabled-buffer change. Even under sustained
-        // TPT-state frame delivery, the buffer remains empty.
-        val tx = buildController()
-        tx.setStateForTest(TxController.State.TPT, tptEnteredAtMs = System.currentTimeMillis() - 200L)
-        val speech = ShortArray(480) { 1_000 }
+        val garbage = ShortArray(480) { -1 } // rms=1, the field-reported pattern
         repeat(15) { tx.onPcmFrameForTest(speech) }
-        assertEquals(0, tx.preTxBufferSizeForTest())
+        tx.onPcmFrameForTest(garbage)
+
+        assertTrue(
+            "no opus frames may be emitted from state=TPT",
+            sentOpusFrames.isEmpty(),
+        )
+        assertEquals(
+            "frames in state=TPT must not advance the machine — only onTptComplete does",
+            TxController.State.TPT,
+            tx.currentStateForTest(),
+        )
     }
 
     // ============================================================
@@ -219,7 +178,6 @@ class TxControllerStateMachineTest {
 
         tx.onPcmFrameForTest(ShortArray(480) { 1_000 })
 
-        assertEquals(0, tx.preTxBufferSizeForTest())
         assertEquals(0, sentOpusFrames.size)
         assertNull("encoder stays unallocated", tx.currentEncoderForTest())
     }
@@ -231,7 +189,6 @@ class TxControllerStateMachineTest {
 
         tx.onPcmFrameForTest(ShortArray(480) { 1_000 })
 
-        assertEquals(0, tx.preTxBufferSizeForTest())
         assertEquals(0, sentOpusFrames.size)
     }
 

@@ -901,9 +901,14 @@ class VoicePlant(
         // "hardware = intentional" assumption was too generous.
         // See [shouldGateForCellularCall] for the pure decision.
         val cellState = cellularCallStateProvider()
-        val gate = shouldGateForCellularCall(cellState, source)
+        // If XV is currently holding the SCO link, the comm-mode the gate
+        // read is OURS (RX SCO_HOT / TX cool-down / pre-warm), not an
+        // external call — suppress the false-positive block. See
+        // resolveGateWithOwnSco for the 2026-07-13 screensaver-wake repro.
+        val xvHoldsSco = scoLink.holdersCount() > 0
+        val gate = resolveGateWithOwnSco(shouldGateForCellularCall(cellState, source), xvHoldsSco)
         if (gate != PttGate.ALLOW) {
-            Log.i(TAG, "PTT blocked — cellular call state=$cellState source=$source (gate=$gate)")
+            Log.i(TAG, "PTT blocked — cellular call state=$cellState source=$source xvHoldsSco=$xvHoldsSco (gate=$gate)")
             val now = nowMsProvider()
             if (shouldToastCellularBlock(nowMs = now, lastToastAtMs = lastCellCallToastAtMs)) {
                 lastCellCallToastAtMs = now

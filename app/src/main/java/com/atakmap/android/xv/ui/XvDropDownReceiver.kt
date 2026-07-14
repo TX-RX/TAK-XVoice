@@ -1,6 +1,7 @@
 package com.atakmap.android.xv.ui
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -1241,10 +1242,15 @@ class XvDropDownReceiver(
      * XV.
      *
      * Wiring lifecycle: registers a broadcast receiver for
-     * `BluetoothAdapter.ACTION_STATE_CHANGED` when the settings view
-     * is attached to the window and unregisters on detach. That's
-     * scoped to the dropdown's lifetime — no receiver leaks past the
-     * moment the operator closes the panel.
+     * `BluetoothAdapter.ACTION_STATE_CHANGED` and
+     * `BluetoothDevice.ACTION_BOND_STATE_CHANGED` when the settings
+     * view is attached to the window and unregisters on detach.
+     * That's scoped to the dropdown's lifetime — no receiver leaks
+     * past the moment the operator closes the panel. Handling both
+     * actions here lets the AINA + external-button pickers stay
+     * live-populated across two operator flows: toggling Bluetooth
+     * off/on from the banner, and pairing/unpairing a device in the
+     * system Bluetooth settings while XV Settings is open.
      *
      * Rationale: previously, opening the AINA picker with BT off left
      * the operator staring at an empty spinner with no explanation
@@ -1299,44 +1305,64 @@ class XvDropDownReceiver(
             banner.visibility = if (adapter?.isEnabled == true) View.GONE else View.VISIBLE
         }
 
+        fun repopulatePickers(trigger: String) {
+            // Repopulate the AINA + external-button pickers so
+            // newly-visible (or newly-hidden) bonded devices show up
+            // without the operator having to close and reopen the
+            // Settings panel. wireAinaPicker / wireExternalButtonPicker
+            // are idempotent — each just resets adapter + selection +
+            // listener on the same spinner view. Field-observed
+            // 2026-07-07 (BT toggle case) and 2026-07-11 (fresh
+            // pairing case).
+            try {
+                wireAinaPicker(v)
+            } catch (t: Throwable) {
+                android.util.Log.w("XvSettings", "wireAinaPicker refresh after $trigger threw", t)
+            }
+            try {
+                wireExternalButtonPicker(v)
+            } catch (t: Throwable) {
+                android.util.Log.w("XvSettings", "wireExternalButtonPicker refresh after $trigger threw", t)
+            }
+        }
+
         val stateReceiver =
             object : BroadcastReceiver() {
                 override fun onReceive(
                     context: Context?,
                     intent: Intent?,
                 ) {
-                    if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
-                    refresh()
-                    // Repopulate the AINA + external-button pickers so
-                    // newly-visible (or newly-hidden) bonded devices
-                    // show up without the operator having to close
-                    // and reopen the Settings panel. wireAinaPicker /
-                    // wireExternalButtonPicker are idempotent — each
-                    // just resets adapter + selection + listener on
-                    // the same spinner view. Field-observed 2026-07-07:
-                    // after re-enabling Bluetooth from the banner tap,
-                    // the AINA picker was stuck on "Screen-only PTT"
-                    // even though the operator's bonded AINA was
-                    // back in system BT state — the picker had been
-                    // populated once at Settings-open time when the
-                    // adapter reported no devices.
-                    val state =
-                        intent.getIntExtra(
-                            BluetoothAdapter.EXTRA_STATE,
-                            BluetoothAdapter.ERROR,
-                        )
-                    if (state == BluetoothAdapter.STATE_ON ||
-                        state == BluetoothAdapter.STATE_OFF
-                    ) {
-                        try {
-                            wireAinaPicker(v)
-                        } catch (t: Throwable) {
-                            android.util.Log.w("XvSettings", "wireAinaPicker refresh after BT state change threw", t)
+                    when (intent?.action) {
+                        BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                            refresh()
+                            val state =
+                                intent.getIntExtra(
+                                    BluetoothAdapter.EXTRA_STATE,
+                                    BluetoothAdapter.ERROR,
+                                )
+                            if (state == BluetoothAdapter.STATE_ON ||
+                                state == BluetoothAdapter.STATE_OFF
+                            ) {
+                                repopulatePickers("BT state change")
+                            }
                         }
-                        try {
-                            wireExternalButtonPicker(v)
-                        } catch (t: Throwable) {
-                            android.util.Log.w("XvSettings", "wireExternalButtonPicker refresh after BT state change threw", t)
+                        BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                            // Fires when the operator pairs / unpairs a
+                            // device in system Bluetooth settings while
+                            // the XV Settings panel is open (e.g. leaves
+                            // XV via multitask, re-pairs a Pryme, comes
+                            // back). Only react on terminal bond states
+                            // — BONDING transitions are noise.
+                            val bondState =
+                                intent.getIntExtra(
+                                    BluetoothDevice.EXTRA_BOND_STATE,
+                                    BluetoothDevice.ERROR,
+                                )
+                            if (bondState == BluetoothDevice.BOND_BONDED ||
+                                bondState == BluetoothDevice.BOND_NONE
+                            ) {
+                                repopulatePickers("bond state change")
+                            }
                         }
                     }
                 }
@@ -1348,7 +1374,10 @@ class XvDropDownReceiver(
                     try {
                         pluginContext.registerReceiver(
                             stateReceiver,
-                            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                            IntentFilter().apply {
+                                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                                addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+                            },
                         )
                     } catch (_: Throwable) {
                     }

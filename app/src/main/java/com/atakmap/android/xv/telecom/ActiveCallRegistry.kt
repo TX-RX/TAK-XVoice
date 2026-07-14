@@ -191,6 +191,31 @@ internal object ActiveCallRegistry {
     @VisibleForTesting
     fun lastOwnCallEndedAtMsForTest(): Long = lastOwnCallEndedAtMs
 
+    /**
+     * True when an own call has been unregistered in this process at
+     * least once — i.e. [unregister] has stamped
+     * [lastOwnCallEndedAtMs] non-zero. False on a fresh process where
+     * no call has ever been placed and torn down.
+     *
+     * Callers: the pre-[android.telecom.TelecomManager.placeCall]
+     * ghost-purge guard in
+     * [com.atakmap.android.xv.service.XvVoiceService.placeTelecomCallInternal]
+     * uses this to distinguish "very first PTT press in a fresh
+     * process (fresh-process purge already happened in onCreate)" from
+     * "we've placed and torn down at least one call already; a fresh
+     * placeCall may collide with a Telecom-side ghost TC@N." See
+     * [com.atakmap.android.xv.service.XvVoiceService.shouldGhostPurgeBeforePlaceCall]
+     * for the exact decision.
+     *
+     * Deliberately not derivable from [hasActiveCall]: a call that's
+     * currently active in the registry would satisfy "has ever
+     * existed" too, but the ghost-purge check dominates on
+     * `hasActiveCall == true` via a separate early-return (the reuse
+     * path). This reader captures ONLY the "ended-in-the-past"
+     * signal, keeping the guard's two conditions orthogonal.
+     */
+    fun hasHadOwnCallInProcess(): Boolean = lastOwnCallEndedAtMs > 0L
+
     fun fanOutRouteChange(state: CallAudioState?) {
         for (l in routeListeners) {
             try {
@@ -223,6 +248,35 @@ internal object ActiveCallRegistry {
                 l()
             } catch (t: Throwable) {
                 Log.w(TAG, "external teardown listener threw", t)
+            }
+        }
+    }
+
+    // Listeners notified when Telecom REFUSES an outgoing placeCall we
+    // just issued — i.e. XvConnectionService.onCreateOutgoingConnectionFailed
+    // fires (same service process). Distinct from externalTeardown: no
+    // call ever became live, so there is nothing to unwind — the signal
+    // only lets XvVoiceService reset its synchronous TelecomState back to
+    // IDLE immediately instead of waiting for its place-timeout backstop.
+    // The listener is expected to guard on hasActiveCall() so a placeCall
+    // rejected *because* another of our calls is legitimately active does
+    // not disturb that live call.
+    private val placeFailedListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    fun addPlaceFailedListener(listener: () -> Unit) {
+        placeFailedListeners.add(listener)
+    }
+
+    fun removePlaceFailedListener(listener: () -> Unit) {
+        placeFailedListeners.remove(listener)
+    }
+
+    fun firePlaceFailed() {
+        for (l in placeFailedListeners) {
+            try {
+                l()
+            } catch (t: Throwable) {
+                Log.w(TAG, "place-failed listener threw", t)
             }
         }
     }

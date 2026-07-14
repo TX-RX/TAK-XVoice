@@ -310,11 +310,12 @@ class AudioCapture(
         }
     }
 
-    // DSP policy. AEC and NS are enabled universally — the user wants
-    // belt-and-suspenders cleanup across both internal and external PTT
-    // devices. Even on AINA / Pryme speakermics with vendor DSP, the
-    // Android effects layer on top without obvious double-processing
-    // artifacts in field testing.
+    // DSP policy.
+    //
+    // AEC is always on when available. Even a slightly-mistuned AEC on
+    // AINA / Pryme speakermics with vendor DSP tests as a net win in
+    // co-located operator scenarios (project memory: DSP-on-BT-audio is
+    // required for the co-located team case).
     //
     // AGC is route + device aware (audit M10):
     //   - Built-in / wired: AGC on. Level varies widely with how the
@@ -325,9 +326,28 @@ class AudioCapture(
     //   - BT SCO + unknown device: AGC on. Generic headsets without
     //     vendor DSP need the Android-side AGC to avoid the operator
     //     sounding inaudible or clipped depending on how loud they
-    //     speak. Was previously "AGC off for ALL BT SCO" which broke
-    //     generic HFP headsets — operators on cheap BT earpieces had
-    //     to nearly shout.
+    //     speak.
+    //
+    // NS is gated on "AGC will actually run" (field capture 2026-07-11):
+    //   - NoiseSuppressor without a co-running AutomaticGainControl
+    //     aggressively suppresses the first ~500 ms of every burst,
+    //     zeroing PCM samples during operator speech onset. Peer-side
+    //     recordings across Pixel 9 Pro (BUILTIN + AINA V1 SCO),
+    //     Samsung Tab Active5 (BUILTIN, AGC unavailable), and Sonim
+    //     XP9900 (BUILTIN) all showed the same alternating rms=0 /
+    //     rms=voice pattern at burst start when NS was on without AGC.
+    //     Symptom: "the first couple seconds are garbled" across every
+    //     route — including non-SCO Tab5, ruling out the cold-SCO
+    //     underrun in TxController as the sole cause.
+    //   - When AGC is available and enabled, NS's speech-suppression
+    //     is compensated for by the follow-on gain stage and stays
+    //     imperceptible.
+    //   - When AGC is off by design (known-good vendor DSP path), NS
+    //     is also off — vendor DSP already does noise reduction, so
+    //     stacking Android's NS on top just adds the speech-onset
+    //     suppression artifact without benefit.
+    //   - When AGC is unavailable at the device level (Tab5, some
+    //     ruggedized units), NS is off — nothing to compensate.
     private fun configureAudioEffects(
         record: AudioRecord,
         pickedType: Int,
@@ -337,13 +357,14 @@ class AudioCapture(
         val isBtSpeakermic = pickedType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
         val hasKnownGoodDsp = isBtSpeakermic && isKnownGoodBtDspDevice(pickedDevice)
         val aecOn = true
-        val nsOn = true
         val agcOn = !hasKnownGoodDsp
+        val agcWillRun = agcOn && AutomaticGainControl.isAvailable()
+        val nsOn = agcWillRun
 
         Log.i(
             TAG,
             "DSP policy: route=${typeName(pickedType)} device='${pickedDevice?.productName ?: "?"}' " +
-                "knownGoodDsp=$hasKnownGoodDsp AEC=$aecOn NS=$nsOn AGC=$agcOn",
+                "knownGoodDsp=$hasKnownGoodDsp AEC=$aecOn NS=$nsOn (gated on agcWillRun=$agcWillRun) AGC=$agcOn",
         )
 
         applyEffect("AEC", AcousticEchoCanceler.isAvailable(), aecOn) {

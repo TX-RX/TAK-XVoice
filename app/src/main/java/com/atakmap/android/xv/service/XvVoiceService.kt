@@ -78,9 +78,54 @@ class XvVoiceService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Bring the file-backed diagnostic logger up BEFORE anything
+        // else so subsequent init events land in the field-post-mortem
+        // file. Safe to call more than once — subsequent init()s are
+        // no-ops. See DiagnosticLogger KDoc for the field-motivating
+        // 2026-07-12 rollover incident.
+        com.atakmap.android.xv.util.DiagnosticLogger.init(this)
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onCreate — pid=${Process.myPid()} uid=${Process.myUid()}",
+        )
         Log.i(TAG, "onCreate (XV voice plant starting in pid=${Process.myPid()} uid=${Process.myUid()})")
         resolveAuthorizedUids()
         NotificationChannels.ensureAll(this)
+        // Ship-blocking bug (issue #66 item #1): purge any stale self-
+        // managed calls Telecom is still holding under XV's PhoneAccount
+        // from a previous process instance. Field-observed 2026-07-11
+        // TPP validation on Pixel 9 Pro (API 35) and Sonim XP9900:
+        // `dumpsys telecom | grep "SelfMgd Call"` showed XV calls
+        // stacking TC@86..TC@95 with the last entry still ACTIVE
+        // 138+ s after the 8 s [TELECOM_END_DEBOUNCE_MS] should have
+        // torn it down — [ActiveCallRegistry.activeConnection] returned
+        // null (our synchronous view of the call ledger), so the reuse
+        // check in [placeTelecomCallInternal] believed no call existed
+        // and placed a fresh one against a PhoneAccount that Telecom
+        // still associated with a ghost TC@N. Result: system arbitration
+        // fires "Hang up XV to place a new call", PTT press produces no
+        // TX, and the operator sees a toast + confusion.
+        //
+        // The unregister → immediate re-register cycle tells Telecom to
+        // drop every call bound to our PhoneAccountHandle. Safe at
+        // service-process onCreate because we KNOW no live XvConnection
+        // can exist across a fresh process: the connection lives in
+        // this process's [ActiveCallRegistry], which is a Kotlin object
+        // that reinitializes to empty on every classload. Any residual
+        // TC@N in Telecom's own [mCalls] ledger is by definition a
+        // ghost we want gone.
+        //
+        // Explicit constraint (see prior abandoned branch
+        // `copilot/fix-telecom-arbitration-deadlock`): we do NOT touch
+        // `TelecomManager.isInSelfManagedCall(...)` or
+        // `TelecomManager.isInCall()` — both throw SecurityException on
+        // Pixel API 35 because they require READ_PHONE_STATE, a
+        // permission XV does not hold and CANNOT hold (privileged
+        // variant is system-app-only, non-privileged variant requires
+        // Play review for a "phone" app category XV is not). The
+        // unregister path needs no phone-state permission — a self-
+        // managed app is always free to drop its own PhoneAccount.
+        purgeGhostSelfManagedCallsOnFreshProcess()
         // Eagerly construct the voice plant: AudioCapture/AudioTrack/SCO
         // initialization is non-trivial, and the first PTT press
         // shouldn't pay that cost. The plugin's audio plant has been
@@ -98,6 +143,8 @@ class XvVoiceService : Service() {
         com.atakmap.android.xv.telecom.ActiveCallRegistry.serviceContext = this
         com.atakmap.android.xv.telecom.ActiveCallRegistry
             .addExternalTeardownListener(externalTeardownListener)
+        com.atakmap.android.xv.telecom.ActiveCallRegistry
+            .addPlaceFailedListener(placeFailedListener)
         com.atakmap.android.xv.telecom.ActiveCallRegistry
             .addHoldStateListener(holdStateListener)
         com.atakmap.android.xv.telecom.ActiveCallRegistry
@@ -460,6 +507,10 @@ class XvVoiceService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy — releasing voice plant")
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — releasing voice plant",
+        )
         releaseVolumeKeyCapture()
         telecomHandler.removeCallbacks(pendingEndRunnable)
         // Cancel the watchdog BEFORE removing externalTeardownListener
@@ -475,6 +526,8 @@ class XvVoiceService : Service() {
         telecomHandler.removeCallbacks(orphanSelfStopRunnable)
         com.atakmap.android.xv.telecom.ActiveCallRegistry
             .removeExternalTeardownListener(externalTeardownListener)
+        com.atakmap.android.xv.telecom.ActiveCallRegistry
+            .removePlaceFailedListener(placeFailedListener)
         com.atakmap.android.xv.telecom.ActiveCallRegistry
             .removeHoldStateListener(holdStateListener)
         com.atakmap.android.xv.telecom.ActiveCallRegistry
@@ -515,6 +568,11 @@ class XvVoiceService : Service() {
         }
         plant = null
         listeners.kill()
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "onDestroy — complete, flushing diagnostic log",
+        )
+        com.atakmap.android.xv.util.DiagnosticLogger.flush()
         super.onDestroy()
     }
 
@@ -529,6 +587,11 @@ class XvVoiceService : Service() {
     // pttDispatcher.release() and the focus drop.
     private val externalTeardownListener: () -> Unit = {
         Log.w(TAG, "Telecom externally tore down our call — unwinding voice plant")
+        // Call really ended (peer hangup, Telecom preempt, watchdog,
+        // AIDL end). Return the lifecycle to IDLE so the next PTT-down
+        // places a fresh call instead of REUSING a torn-down one.
+        telecomState = TelecomState.IDLE
+        telecomHandler.removeCallbacks(placeTimeoutRunnable)
         telecomHandler.removeCallbacks(pendingEndRunnable)
         // Call really ended — kill the idle watchdog too. Covers all
         // teardown paths (pendingEndRunnable, AIDL endChannelCall,
@@ -968,6 +1031,15 @@ class XvVoiceService : Service() {
             }
 
             override fun onPttBlockedByCellularCall(reason: String) {
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    severity = 'W',
+                    message = "PTT blocked by cellular gate: $reason",
+                )
+                com.atakmap.android.xv.util.DiagnosticLogger.stateSnapshot(
+                    context = this@XvVoiceService,
+                    reason = "cellular-gate-block",
+                )
                 fanOut { it.onPttBlockedByCellularCall(reason) }
             }
 
@@ -1041,14 +1113,94 @@ class XvVoiceService : Service() {
     // Connection (no churn). Idle for the full debounce → call ends,
     // media resumes.
     private val telecomHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // Coarse Telecom-call lifecycle, tracked SYNCHRONOUSLY so PTT input
+    // never double-places a call. The three states mirror the issue's
+    // vocabulary:
+    //   IDLE          — no XV Telecom call; next PTT-down places one.
+    //   ACTIVE_TX_RX  — a call is placed/active (or in-flight: placeCall
+    //                   fired, XvConnection not yet landed in the
+    //                   registry). Set the instant we commit to placing,
+    //                   BEFORE the async tm.placeCall() completes, so a
+    //                   second PTT-down inside the placeCall→
+    //                   onCreateOutgoingConnection registration gap sees
+    //                   "already active" and REUSES instead of issuing a
+    //                   colliding second placeCall ("there is another
+    //                   call connecting").
+    //   TAIL_WARM     — PTT-up fired; the 8 s end-debounce is running.
+    //                   A new PTT-down cancels the debounce and reuses
+    //                   the still-live call.
+    // This is the in-process complement to the PhoneAccount ghost-purge
+    // (#66): ghost-purge drains STALE cross-process Telecom-ledger
+    // entries our registry can't see; this state guards against
+    // IN-process double-placement during the async registration gap.
+    private enum class TelecomState { IDLE, ACTIVE_TX_RX, TAIL_WARM }
+
+    @Volatile
+    private var telecomState: TelecomState = TelecomState.IDLE
+
     private val pendingEndRunnable =
         Runnable {
-            Log.i(TAG, "telecom end-debounce fired — tearing down connection + releasing voice focus")
+            Log.i(TAG, "telecom end-debounce ($TELECOM_END_DEBOUNCE_MS ms) expired — complete teardown (connection + focus)")
+            telecomState = TelecomState.IDLE
+            telecomHandler.removeCallbacks(placeTimeoutRunnable)
             com.atakmap.android.xv.telecom.ActiveCallRegistry
                 .activeConnection()
                 ?.teardownLocal()
             releaseVoiceFocus()
         }
+
+    // Wedge backstop for the state machine. tm.placeCall() is async:
+    // Telecom answers with EITHER onCreateOutgoingConnection (success →
+    // registry populated) OR onCreateOutgoingConnectionFailed. The
+    // failed path fires firePlaceFailed() → placeFailedListener for an
+    // IMMEDIATE reset. This timer covers the pathological case where
+    // NEITHER callback ever arrives (a placeCall that silently produces
+    // no Connection on an OEM-locked ROM): without it, telecomState
+    // would stick at ACTIVE_TX_RX and every subsequent PTT would REUSE a
+    // call that does not exist — PTT wedged until the 8 s debounce.
+    // Self-checks hasActiveCall() so it is a no-op when the connection
+    // DID land (the common case); it only resets the genuinely-stuck
+    // "active state, no connection" wedge.
+    private val placeTimeoutRunnable =
+        Runnable {
+            if (telecomState == TelecomState.ACTIVE_TX_RX &&
+                !com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall()
+            ) {
+                Log.w(
+                    TAG,
+                    "place-timeout ($PLACE_TIMEOUT_MS ms): no XvConnection landed after placeCall — " +
+                        "resetting telecomState IDLE so the next PTT places cleanly",
+                )
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    severity = 'W',
+                    message = "place-timeout: no Connection landed — telecomState → IDLE (wedge recovery)",
+                )
+                telecomState = TelecomState.IDLE
+                releaseVoiceFocus()
+            }
+        }
+
+    // Fired from XvConnectionService.onCreateOutgoingConnectionFailed
+    // (same service process) via ActiveCallRegistry.firePlaceFailed().
+    // Guarded on !hasActiveCall() so a failed SECOND placeCall (rejected
+    // BECAUSE our first call is legitimately active) never tears down
+    // that good call — in that case telecomState correctly stays
+    // ACTIVE_TX_RX. Only resets the "we tried to place, nothing landed"
+    // wedge, immediately instead of waiting for placeTimeoutRunnable.
+    private val placeFailedListener: () -> Unit = {
+        telecomHandler.post {
+            if (!com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall() &&
+                telecomState == TelecomState.ACTIVE_TX_RX
+            ) {
+                Log.w(TAG, "onCreateOutgoingConnectionFailed — resetting telecomState IDLE (no call landed)")
+                telecomHandler.removeCallbacks(placeTimeoutRunnable)
+                telecomState = TelecomState.IDLE
+                releaseVoiceFocus()
+            }
+        }
+    }
 
     // Defense-in-depth watchdog for a live Telecom call. The 8s
     // pendingEndRunnable above is activity-gated in the happy path:
@@ -1279,30 +1431,96 @@ class XvVoiceService : Service() {
             scheduleActiveCallActivityLaunch(peerCallsign)
         }
 
-        // If a Connection is already alive, just leave it in ACTIVE
-        // state. No need to placeCall again — Telecom would reject
-        // anyway with "another call connecting" if the prior call's
-        // teardown hasn't fully settled.
-        val existing =
-            com.atakmap.android.xv.telecom.ActiveCallRegistry
-                .activeConnection()
-        if (existing != null) {
-            Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing existing connection")
-            try {
-                existing.setActiveSession()
-            } catch (t: Throwable) {
-                Log.w(TAG, "setActiveSession on existing threw", t)
+        // Decide: reuse the live call, suppress a duplicate placeCall
+        // while the first is still landing, or place a fresh one.
+        // decidePlacement is a pure, unit-tested function of two
+        // synchronous signals — whether the registry holds a live
+        // XvConnection, and whether telecomState says a call is
+        // active/warming.
+        val hasActive =
+            com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall()
+        val warmOrActive =
+            telecomState == TelecomState.ACTIVE_TX_RX ||
+                telecomState == TelecomState.TAIL_WARM
+        when (decidePlacement(hasActiveConnection = hasActive, warmOrActive = warmOrActive)) {
+            PlaceDecision.REUSE_ACTIVE -> {
+                // Live XvConnection exists — keep it ACTIVE; do NOT place
+                // again (Telecom would reject with "another call
+                // connecting").
+                telecomState = TelecomState.ACTIVE_TX_RX
+                Log.i(TAG, "placeTelecomCallInternal tag=$tag — reusing live XvConnection (state=$telecomState)")
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    message = "placeCall tag='$tag' — REUSING live XvConnection",
+                )
+                try {
+                    com.atakmap.android.xv.telecom.ActiveCallRegistry
+                        .activeConnection()
+                        ?.setActiveSession()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "setActiveSession on existing threw", t)
+                }
+                return
             }
-            return
+            PlaceDecision.REUSE_IN_FLIGHT -> {
+                // telecomState says active/warming but no XvConnection is
+                // registered yet — our first placeCall is still inside
+                // the async onCreateOutgoingConnection gap. Suppress this
+                // second placeCall; the in-flight one serves this press
+                // too. THIS is the double-place race fix.
+                telecomState = TelecomState.ACTIVE_TX_RX
+                Log.i(TAG, "placeTelecomCallInternal tag=$tag — placeCall already in flight; suppressing duplicate (state=$telecomState)")
+                com.atakmap.android.xv.util.DiagnosticLogger.event(
+                    tag = "XvVoiceSvc",
+                    message = "placeCall tag='$tag' — REUSE in-flight (suppressed duplicate placeCall)",
+                )
+                return
+            }
+            PlaceDecision.PLACE -> {
+                // Fall through to a genuinely new placement below.
+            }
         }
 
-        Log.i(TAG, "placeTelecomCallInternal tag=$tag")
-        com.atakmap.android.xv.telecom.XvPhoneAccount
-            .register(this)
+        // New session (telecomState IDLE, no live connection). Commit to
+        // ACTIVE_TX_RX BEFORE the async tm.placeCall() so a concurrent /
+        // rapid second PTT-down takes the REUSE_IN_FLIGHT path above
+        // instead of colliding.
+        telecomState = TelecomState.ACTIVE_TX_RX
+        Log.i(TAG, "placeTelecomCallInternal tag=$tag — requesting NEW Telecom session")
+        com.atakmap.android.xv.util.DiagnosticLogger.event(
+            tag = "XvVoiceSvc",
+            message = "placeCall tag='$tag' — NEW Telecom call attempt",
+        )
+        if (shouldGhostPurgeBeforePlaceCall(
+                hasActiveConnection = hasActive,
+                hasHadOwnCallInProcess =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry
+                    .hasHadOwnCallInProcess(),
+            )
+        ) {
+            Log.w(
+                TAG,
+                "placeTelecomCallInternal: no active connection but this process has ended one " +
+                    "before — purging any Telecom-side ghost calls under our PhoneAccount",
+            )
+            com.atakmap.android.xv.util.DiagnosticLogger.event(
+                tag = "XvVoiceSvc",
+                severity = 'W',
+                message = "ghost-purge: unregister+register PhoneAccount before placeCall (issue #66 defensive)",
+            )
+            purgeGhostSelfManagedCallsBeforePlaceCall()
+        } else {
+            com.atakmap.android.xv.telecom.XvPhoneAccount
+                .register(this)
+        }
         val tm =
             getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
         if (tm == null) {
             Log.w(TAG, "TelecomManager unavailable")
+            telecomState = TelecomState.IDLE
+            // No call will be placed — release the voice focus we grabbed
+            // above so media doesn't stay paused/ducked indefinitely.
+            releaseVoiceFocus()
             return
         }
         val uri =
@@ -1314,12 +1532,77 @@ class XvVoiceService : Service() {
         try {
             tm.placeCall(uri, extras)
             Log.i(TAG, "placeCall OK for tag=$tag (from PTT-down)")
+            // Arm the wedge backstop: if no XvConnection registers within
+            // PLACE_TIMEOUT_MS, reset to IDLE. No-op once it lands.
+            telecomHandler.removeCallbacks(placeTimeoutRunnable)
+            telecomHandler.postDelayed(placeTimeoutRunnable, PLACE_TIMEOUT_MS)
         } catch (t: Throwable) {
             Log.e(TAG, "placeCall threw", t)
+            telecomState = TelecomState.IDLE
+            // placeCall failed — nothing will land, so release the voice
+            // focus grabbed above rather than leaving media paused.
+            releaseVoiceFocus()
+        }
+    }
+
+    /**
+     * Fresh-process ghost purge: unregister then re-register the XV
+     * PhoneAccount. Called once at [onCreate] to release any stale
+     * self-managed calls Telecom is still holding from a previous
+     * process instance whose in-memory [ActiveCallRegistry] is no
+     * longer reachable. See the [onCreate] callsite for the field-bug
+     * rationale.
+     *
+     * Wrapped in a helper so it can be swapped in tests and so
+     * exception handling is centralized: an unexpected throw here
+     * MUST NOT prevent the rest of onCreate from completing (the
+     * voice plant would then be permanently unavailable). Any
+     * [Throwable] from either leg is logged and swallowed.
+     */
+    private fun purgeGhostSelfManagedCallsOnFreshProcess() {
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.unregister(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onCreate ghost-purge: unregisterPhoneAccount threw", t)
+        }
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.register(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onCreate ghost-purge: re-register threw", t)
+        }
+    }
+
+    /**
+     * Pre-placeCall ghost purge: same unregister → re-register cycle
+     * as the onCreate path, but invoked from [placeTelecomCallInternal]
+     * when [shouldGhostPurgeBeforePlaceCall] returns true. See the
+     * placeTelecomCallInternal callsite for the full rationale.
+     *
+     * Same exception-handling contract: a throw MUST NOT block the
+     * follow-on [TelecomManager.placeCall]. Log and swallow.
+     */
+    private fun purgeGhostSelfManagedCallsBeforePlaceCall() {
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.unregister(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "pre-placeCall ghost-purge: unregisterPhoneAccount threw", t)
+        }
+        try {
+            com.atakmap.android.xv.telecom.XvPhoneAccount.register(this)
+        } catch (t: Throwable) {
+            Log.w(TAG, "pre-placeCall ghost-purge: re-register threw", t)
         }
     }
 
     private fun scheduleEndTelecomCall() {
+        // PTT-up: enter the warm tail. The call stays live for
+        // TELECOM_END_DEBOUNCE_MS so a rapid re-key reuses it; only if
+        // the debounce expires untouched does pendingEndRunnable tear
+        // it down. Guard against clobbering IDLE — a stray end after a
+        // completed teardown must not mark us TAIL_WARM.
+        if (telecomState == TelecomState.ACTIVE_TX_RX) {
+            telecomState = TelecomState.TAIL_WARM
+        }
         telecomHandler.removeCallbacks(pendingEndRunnable)
         telecomHandler.postDelayed(pendingEndRunnable, TELECOM_END_DEBOUNCE_MS)
     }
@@ -1405,8 +1688,33 @@ class XvVoiceService : Service() {
         } catch (t: Throwable) {
             Log.w(TAG, "setCallRinging(true) threw", t)
         }
-        com.atakmap.android.xv.telecom.XvPhoneAccount
-            .register(this)
+        // Same ghost-purge as [placeTelecomCallInternal] — an incoming
+        // REQUEST_CALL after a prior teardown hits the same TC@N-
+        // stacking arbitration when Telecom still holds a stale entry
+        // under our PhoneAccount. Field bug #66 was reported for
+        // outgoing PTT calls, but the underlying Telecom bookkeeping is
+        // symmetric: [TelecomManager.addNewIncomingCall] is subject to
+        // the same "already has an active call under this account"
+        // arbitration as [TelecomManager.placeCall]. See
+        // [shouldGhostPurgeBeforePlaceCall] KDoc for the decision.
+        if (shouldGhostPurgeBeforePlaceCall(
+                hasActiveConnection =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall(),
+                hasHadOwnCallInProcess =
+                com.atakmap.android.xv.telecom.ActiveCallRegistry
+                    .hasHadOwnCallInProcess(),
+            )
+        ) {
+            Log.w(
+                TAG,
+                "placeIncomingTelecomCallInternal: no active connection but this process has " +
+                    "ended one before — purging any Telecom-side ghost calls under our PhoneAccount",
+            )
+            purgeGhostSelfManagedCallsBeforePlaceCall()
+        } else {
+            com.atakmap.android.xv.telecom.XvPhoneAccount
+                .register(this)
+        }
         val tm = getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
         if (tm == null) {
             Log.w(TAG, "TelecomManager unavailable")
@@ -1955,14 +2263,30 @@ class XvVoiceService : Service() {
 
         // Holds the Telecom call ACTIVE for 8s after PTT-up so media
         // (Tidal, Spotify) stays paused for the full quiet window
-        // before resuming — matches the SCO_HOT window on the RX side
-        // (AudioPlayback.scoHoldMs) and TxController.SCO_COOL_DOWN_MS.
+        // before resuming — the same 8s as the RX-side SCO_HOT window
+        // (AudioPlayback.scoHoldMs). NOTE this is deliberately LONGER
+        // than TxController.SCO_COOL_DOWN_MS (5s): the SCO physical link
+        // may drop at 5s while the Telecom call (media pause + focus)
+        // lingers to 8s; they are not meant to match.
         // Operator's expectation: "music stays paused until I'm done
         // talking, then quietly resumes after a few seconds." Also
         // absorbs rapid PTT cycles (Telecom needs 200-500ms to settle
         // a disconnect, so the long debounce subsumes the rapid-press
         // protection too).
         private const val TELECOM_END_DEBOUNCE_MS: Long = 8_000L
+
+        // Wedge backstop for the TelecomState machine. After a
+        // successful tm.placeCall() we expect Telecom to answer with
+        // onCreateOutgoingConnection (→ registry populated) or
+        // onCreateOutgoingConnectionFailed within a few hundred ms.
+        // 4s is generous headroom over the observed ~1.5s
+        // placeCall→onCreateOutgoingConnection latency (Pixel-class +
+        // AINA) while still recovering a genuinely-stuck ACTIVE_TX_RX
+        // state fast enough that the operator's next PTT works. The
+        // immediate onCreateOutgoingConnectionFailed → placeFailedListener
+        // path handles the common failure instantly; this only covers
+        // the pathological "no callback ever arrives" case.
+        private const val PLACE_TIMEOUT_MS: Long = 4_000L
 
         // Hard ceiling on Telecom-call lifetime in the absence of any
         // audio activity. Every TX state change and every RX frame
@@ -2030,6 +2354,104 @@ class XvVoiceService : Service() {
             if (lastState == android.bluetooth.BluetoothAdapter.ERROR) return true
             if (newState != lastState) return true
             return (nowMs - lastReactedMs) >= thresholdMs
+        }
+
+        /**
+         * Pure decision function for the pre-[android.telecom.TelecomManager.placeCall]
+         * ghost-purge guard (issue #66 item #1). Extracted from
+         * [placeTelecomCallInternal] so it can be unit-tested without
+         * standing up a Robolectric service.
+         *
+         * The signal we are trying to detect is "our in-process view of
+         * [com.atakmap.android.xv.telecom.ActiveCallRegistry] is empty
+         * but Telecom may still hold a ghost TC@N under our
+         * PhoneAccount." We can not ASK Telecom directly —
+         * [android.telecom.TelecomManager.isInSelfManagedCall] and
+         * [android.telecom.TelecomManager.isInCall] both require
+         * READ_PHONE_STATE (and the privileged variant on API 35+), a
+         * permission XV does not hold and cannot obtain for a non-
+         * system app. So we approximate the signal using ONLY
+         * information we own:
+         *
+         *  - `hasActiveConnection == false` — our registry has no live
+         *    call reference. Necessary condition; the reuse path in
+         *    [placeTelecomCallInternal] short-circuits when this is
+         *    true and never reaches the ghost-purge check.
+         *  - `hasHadOwnCallInProcess == true` — an own call HAS
+         *    existed in this process at some point and been
+         *    unregistered
+         *    ([com.atakmap.android.xv.telecom.ActiveCallRegistry.hasHadOwnCallInProcess]
+         *    reads the same `lastOwnCallEndedAtMs > 0` invariant the
+         *    grace window uses). This is the gate that keeps us from
+         *    paying the Telecom-roundtrip cost on the very first PTT
+         *    press in a fresh process; the fresh-process case is
+         *    handled once at [onCreate] by
+         *    [purgeGhostSelfManagedCallsOnFreshProcess], which runs
+         *    before any call can be attempted.
+         *
+         * Both conditions must hold. Returning `true` from this
+         * function is the exact "we already dropped one call in this
+         * process and are about to start another; make sure Telecom
+         * agrees the previous one is gone" scenario the field bug
+         * describes.
+         *
+         * @param hasActiveConnection the current registry snapshot —
+         *     [com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall]
+         *     at the placeCall entry point.
+         * @param hasHadOwnCallInProcess whether any own call has been
+         *     unregistered in this process
+         *     ([com.atakmap.android.xv.telecom.ActiveCallRegistry.hasHadOwnCallInProcess]).
+         */
+        internal fun shouldGhostPurgeBeforePlaceCall(
+            hasActiveConnection: Boolean,
+            hasHadOwnCallInProcess: Boolean,
+        ): Boolean {
+            if (hasActiveConnection) return false
+            return hasHadOwnCallInProcess
+        }
+
+        /**
+         * Outcome of the placement decision in [placeTelecomCallInternal].
+         *  - [PLACE]           — no live call and none in flight: issue a
+         *                        fresh [android.telecom.TelecomManager.placeCall].
+         *  - [REUSE_ACTIVE]    — a live [com.atakmap.android.xv.telecom.XvConnection]
+         *                        is registered: keep it ACTIVE, do not
+         *                        place again.
+         *  - [REUSE_IN_FLIGHT] — our `telecomState` says a call is
+         *                        active/warming but the connection has
+         *                        not registered yet (the first placeCall
+         *                        is still inside its async
+         *                        onCreateOutgoingConnection gap): suppress
+         *                        the duplicate placeCall.
+         */
+        internal enum class PlaceDecision { PLACE, REUSE_ACTIVE, REUSE_IN_FLIGHT }
+
+        /**
+         * Pure decision for [placeTelecomCallInternal]. Extracted so the
+         * double-place race logic is unit-testable without a Robolectric
+         * service (house convention — cf. [shouldGhostPurgeBeforePlaceCall],
+         * [com.atakmap.android.xv.telecom.ActiveCallRegistry.withinRecentCallGrace]).
+         *
+         * A live registered connection always wins ([REUSE_ACTIVE]) — even
+         * if `telecomState` somehow read IDLE — because placing over a
+         * live self-managed call is exactly what Telecom rejects with
+         * "there is another call connecting." Absent a live connection,
+         * an active/warming `telecomState` means our own first placeCall
+         * is still landing ([REUSE_IN_FLIGHT]); only a fully-idle
+         * lifecycle with no connection warrants a fresh [PLACE].
+         *
+         * @param hasActiveConnection registry snapshot
+         *     ([com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall]).
+         * @param warmOrActive whether `telecomState` is ACTIVE_TX_RX or
+         *     TAIL_WARM at the placeCall entry point.
+         */
+        internal fun decidePlacement(
+            hasActiveConnection: Boolean,
+            warmOrActive: Boolean,
+        ): PlaceDecision {
+            if (hasActiveConnection) return PlaceDecision.REUSE_ACTIVE
+            if (warmOrActive) return PlaceDecision.REUSE_IN_FLIGHT
+            return PlaceDecision.PLACE
         }
     }
 }
