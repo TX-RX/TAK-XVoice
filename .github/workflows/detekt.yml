@@ -61,13 +61,27 @@ jobs:
           java-version: '17'
 
       - name: Fetch standalone detekt CLI
-        # Pinned; bump deliberately. The zip distribution ships a
-        # bin/detekt-cli launcher plus its lib jars.
+        # Pinned by version AND (once DETEKT_SHA256 is set below) by the
+        # SHA256 of the release zip, so a compromised release asset / CDN
+        # can't run arbitrary code in CI — mirrors the wrapper-validation
+        # guarantee. Bump the version and the hash together.
+        #
+        # DETEKT_SHA256 is intentionally empty for now: the expected hash
+        # could not be computed offline, so this run PRINTS the actual
+        # SHA256 (see log) and does not yet enforce it. A follow-up commit
+        # pins that value and flips the check to enforcing.
         run: |
           set -e
           DETEKT_VERSION=1.23.8
+          DETEKT_SHA256=""
           curl -fSL --retry 3 -o detekt-cli.zip \
             "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}.zip"
+          ACTUAL_SHA256="$(sha256sum detekt-cli.zip | awk '{print $1}')"
+          echo "detekt-cli-${DETEKT_VERSION}.zip sha256=${ACTUAL_SHA256}"
+          if [ -n "${DETEKT_SHA256}" ] && [ "${DETEKT_SHA256}" != "${ACTUAL_SHA256}" ]; then
+            echo "::error::detekt-cli.zip SHA256 mismatch — expected ${DETEKT_SHA256}, got ${ACTUAL_SHA256}"
+            exit 1
+          fi
           unzip -q detekt-cli.zip
           echo "DETEKT=detekt-cli-${DETEKT_VERSION}/bin/detekt-cli" >> "$GITHUB_ENV"
           "detekt-cli-${DETEKT_VERSION}/bin/detekt-cli" --version

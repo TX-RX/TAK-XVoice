@@ -983,7 +983,8 @@ class MumbleSession(
                 if (running.get()) {
                     try {
                         socket?.close()
-                    } catch (_: Throwable) {
+                    } catch (t2: Throwable) {
+                        Log.w(TAG, "socket close after write failure threw", t2)
                     }
                 }
             } catch (t: Throwable) {
