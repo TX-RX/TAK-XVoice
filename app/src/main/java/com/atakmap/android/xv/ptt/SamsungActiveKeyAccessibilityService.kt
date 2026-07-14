@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
+import com.atakmap.android.xv.service.XvVoiceService
 import com.atakmap.android.xv.util.SamsungActiveKey
 
 /**
@@ -155,39 +156,33 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Fire a PTT edge via a local broadcast that [XvVoiceService] picks
-     * up through its `SamsungActiveKeyReader` broadcast receiver.
+     * Deliver a PTT edge directly into the running [XvVoiceService]'s
+     * PttDispatcher via [XvVoiceService.deliverSamsungActiveKeyEdge].
      *
-     * The broadcast is sent with `sendBroadcast` to the same process
-     * (XV's APK UID) so the service separation is preserved — the
-     * accessibility service lives in XV's UID, as does XvVoiceService.
-     * The receiver in XvVoiceService is registered with
-     * `RECEIVER_NOT_EXPORTED`, which is intentional — only the Samsung
-     * framework and now this in-process service need to deliver to it.
-     * Using the existing `HARD_KEY_REPORT` action with the existing
-     * extras format means zero changes to the broadcast reader or the
-     * voice service's PTT dispatch logic.
+     * This service is declared with no `android:process` attribute, so
+     * it runs in XV's APK process — the SAME process as XvVoiceService.
+     * The edge is therefore an in-process method call, not IPC.
+     *
+     * Earlier revisions re-broadcast `HARD_KEY_REPORT` for
+     * [SamsungActiveKeyReader] to pick up. That reader is only
+     * registered while the *foreground* Active Key toggle is enabled
+     * (`setSamsungActiveKeyEnabled(true)` → `startSamsungActiveKey()`),
+     * so an operator who turned on ONLY this accessibility service got
+     * no PTT — the broadcasts had no registered receiver. Delivering
+     * straight to the voice service removes that hidden dependency:
+     * background PTT works whenever the voice service is live,
+     * regardless of the foreground toggle. Dedup with the foreground
+     * KeyEvent path is still handled by the dispatcher's OR-gate (both
+     * paths tag [com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY]).
+     *
+     * No-op — logged, not thrown — when the voice service isn't running,
+     * which is exactly when there is no session to transmit into.
      */
     private fun dispatchEdge(isDown: Boolean) {
         try {
-            val intent =
-                android.content.Intent(SamsungActiveKey.ACTION_HARD_KEY_REPORT).apply {
-                    putExtra(SamsungActiveKey.EXTRA_KEY_CODE, SamsungActiveKey.KEY_CODE_PTT)
-                    putExtra(
-                        SamsungActiveKey.EXTRA_KEY_REPORT_TYPE,
-                        if (isDown) {
-                            SamsungActiveKey.KEY_REPORT_TYPE_PRESSED
-                        } else {
-                            SamsungActiveKey.KEY_REPORT_TYPE_RELEASED
-                        },
-                    )
-                    // Restrict to our own UID so the in-process broadcast
-                    // doesn't escape to other apps on the device.
-                    `package` = packageName
-                }
-            sendBroadcast(intent)
+            XvVoiceService.deliverSamsungActiveKeyEdge(isDown)
         } catch (t: Throwable) {
-            Log.w(TAG, "dispatchEdge(isDown=$isDown) sendBroadcast threw", t)
+            Log.w(TAG, "dispatchEdge(isDown=$isDown) deliver threw", t)
         }
     }
 
