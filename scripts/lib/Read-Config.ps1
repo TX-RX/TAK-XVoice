@@ -91,7 +91,12 @@ function Read-ScriptConfig {
     #                              mentioning "credentials" is not a leak.
     $userForbidden = @()
     if ($userCfg.ContainsKey("forbiddenPatterns")) {
-        $userForbidden = @($userCfg["forbiddenPatterns"])
+        # Drop null / blank entries. A "" left in the list joins into the
+        # scan regex as an empty alternative ('a||b'), and -match "" is
+        # always true — every zip entry would report as tainted, a false
+        # alarm that's maddening to trace back to one stray comma.
+        $userForbidden = @($userCfg["forbiddenPatterns"] |
+            Where-Object { $_ -is [string] -and $_.Trim() -ne "" })
     }
     $merged.forbiddenPatterns        = @($universalForbidden + $userForbidden | Select-Object -Unique)
     $merged.contentForbiddenPatterns = @($userForbidden | Select-Object -Unique)

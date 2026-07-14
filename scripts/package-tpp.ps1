@@ -189,17 +189,37 @@ $textExt = @(
 )
 $maxScanBytes = 4MB
 
-function Test-EntryIsText([System.IO.Compression.ZipArchiveEntry]$entry, [byte[]]$bytes) {
-    $ext = [IO.Path]::GetExtension($entry.Name).ToLower()
-    if ($textExt -contains $ext) { return $true }
-    if ([string]::IsNullOrEmpty($ext)) {
-        # Extensionless tracked files (LICENSE, gradlew, Dockerfile...) —
-        # sniff for a NUL byte in the first 8 KB; NUL ⇒ binary.
-        $probe = [Math]::Min($bytes.Length, 8192)
-        for ($i = 0; $i -lt $probe; $i++) { if ($bytes[$i] -eq 0) { return $false } }
-        return $true
+function Get-ScanText([System.IO.Compression.ZipArchiveEntry]$entry, [byte[]]$bytes) {
+    # Decode an entry's bytes into the text variants worth scanning, or
+    # @() to treat it as binary (path-scan only). UTF-8 is scanned
+    # always; UTF-16 LE/BE are added whenever a BOM or interior NUL byte
+    # signals a UTF-16 text file — otherwise a hostname stored as UTF-16
+    # ("t\0e\0x\0a\0s…") slides straight past a UTF-8-only decode. Note a
+    # NUL sniff alone can't gate this: a legitimate UTF-16 .xml is full
+    # of NULs, so we must decode it as UTF-16 rather than skip it.
+    $ext   = [IO.Path]::GetExtension($entry.Name).ToLower()
+    $known = $textExt -contains $ext
+
+    $bomLE = $bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE
+    $bomBE = $bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF
+    $probe = [Math]::Min($bytes.Length, 8192)
+    $hasNul = $false
+    for ($i = 0; $i -lt $probe; $i++) { if ($bytes[$i] -eq 0) { $hasNul = $true; break } }
+
+    if (-not $known) {
+        # Non-text extension (.png, .jar, ...) → binary, path-scan only.
+        if (-not [string]::IsNullOrEmpty($ext)) { return @() }
+        # Extensionless (LICENSE, gradlew, Dockerfile...): NUL without a
+        # UTF-16 BOM ⇒ a genuine binary; skip it.
+        if ($hasNul -and -not ($bomLE -or $bomBE)) { return @() }
     }
-    return $false
+
+    $texts = @([System.Text.Encoding]::UTF8.GetString($bytes))
+    if ($bomLE -or $bomBE -or $hasNul) {
+        $texts += [System.Text.Encoding]::Unicode.GetString($bytes)          # UTF-16 LE
+        $texts += [System.Text.Encoding]::BigEndianUnicode.GetString($bytes) # UTF-16 BE
+    }
+    return $texts
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -224,10 +244,12 @@ foreach ($z in Get-ChildItem "$out/$($cfg.sourceZipBaseName)-$versionName-*.zip"
             $bytes = $ms.ToArray()
             $ms.Dispose()
 
-            if (-not (Test-EntryIsText $e $bytes)) { continue }
-            $text = [System.Text.Encoding]::UTF8.GetString($bytes)
-            foreach ($m in [regex]::Matches($text, $contentRe)) {
-                $badContent += "$($e.FullName): matched /$($m.Value)/"
+            $hits = foreach ($text in (Get-ScanText $e $bytes)) {
+                foreach ($m in [regex]::Matches($text, $contentRe)) { $m.Value }
+            }
+            # Dedupe: the same secret can surface in more than one decode.
+            foreach ($v in ($hits | Select-Object -Unique)) {
+                $badContent += "$($e.FullName): matched /$v/"
             }
         }
     } finally {

@@ -85,6 +85,18 @@ if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
     throw "adb not found on PATH. Install Android platform-tools and add them to PATH (e.g. %USERPROFILE%\Android\Sdk\platform-tools), then reopen the shell."
 }
 
+# First capture group of the first matching line, or "" if nothing
+# matches. dumpsys output varies across Android versions and often
+# repeats a field (versionName= appears more than once), so a raw
+# `(... | Select-String ...).Matches.Groups[1]` can both mis-index into
+# the wrong match and — on a missing field — surface a confusing error
+# right after a successful install. Degrade to blank instead.
+function Get-FirstMatch([object] $Text, [string] $Pattern) {
+    $m = $Text | Select-String -Pattern $Pattern | Select-Object -First 1
+    if ($m) { return $m.Matches[0].Groups[1].Value }
+    return ""
+}
+
 # -- 1. Enumerate authorized devices -----------------------------------
 
 # `adb devices` returns one row per attached device with a status:
@@ -156,9 +168,9 @@ if ($InstallAtakDev -or $InstallAtakRelease) {
         # Report installed state. Look for DEBUGGABLE flag to confirm
         # it's actually the dev edition when that was requested.
         $after = & adb -s $t shell dumpsys package $cfg.atakPackage 2>$null
-        $ver   = ($after | Select-String -Pattern 'versionName=(\S+)').Matches.Groups[1].Value
-        $sig   = ($after | Select-String -Pattern 'signatures:\[([0-9a-f]+)\]').Matches.Groups[1].Value
-        $flags = ($after | Select-String -Pattern 'flags=\[([^\]]+)\]').Matches.Groups[1].Value
+        $ver   = Get-FirstMatch $after 'versionName=(\S+)'
+        $sig   = Get-FirstMatch $after 'signatures:\[([0-9a-f]+)\]'
+        $flags = Get-FirstMatch $after 'flags=\[([^\]]+)\]'
         $isDbg = $flags -match "DEBUGGABLE"
 
         Write-Host "  Installed: $ver  sig=$sig  DEBUGGABLE=$isDbg" -ForegroundColor Green
@@ -204,8 +216,8 @@ foreach ($t in $targets) {
 
     $existing = & adb -s $t shell dumpsys package $cfg.pluginPackage 2>$null
     if ($existing) {
-        $exVer  = ($existing | Select-String -Pattern 'versionName=(\S+)').Matches.Groups[1].Value
-        $exSig  = ($existing | Select-String -Pattern 'signatures:\[([0-9a-f]+)\]').Matches.Groups[1].Value
+        $exVer  = Get-FirstMatch $existing 'versionName=(\S+)'
+        $exSig  = Get-FirstMatch $existing 'signatures:\[([0-9a-f]+)\]'
         Write-Host "  Currently installed: $exVer sig=$exSig" -ForegroundColor DarkGray
     } else {
         Write-Host "  Plugin not yet installed on this device." -ForegroundColor DarkGray
@@ -230,9 +242,9 @@ foreach ($t in $targets) {
 
     $after = & adb -s $t shell dumpsys package $cfg.pluginPackage 2>$null
     if ($after) {
-        $ver  = ($after | Select-String -Pattern 'versionName=(\S+)').Matches.Groups[1].Value
-        $vc   = ($after | Select-String -Pattern 'versionCode=(\d+)').Matches.Groups[1].Value
-        $sigs = ($after | Select-String -Pattern 'signatures:\[([0-9a-f]+)\]').Matches.Groups[1].Value
+        $ver  = Get-FirstMatch $after 'versionName=(\S+)'
+        $vc   = Get-FirstMatch $after 'versionCode=(\d+)'
+        $sigs = Get-FirstMatch $after 'signatures:\[([0-9a-f]+)\]'
         Write-Host "  Installed: $ver (vc=$vc) sig=$sigs" -ForegroundColor Green
         $results += [PSCustomObject]@{ Serial = $t; Status = "OK"; Version = $ver; Sig = $sigs }
     } else {
