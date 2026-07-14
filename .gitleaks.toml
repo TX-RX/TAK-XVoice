@@ -94,11 +94,10 @@ regexes = [
 id = "xv-tak-hostname"
 description = "TAK server hostname/FQDN — use tak.example"
 regex = '''(?i)\btak[a-z0-9.-]*\.(?:com|net|org|io|mil|gov|us|local|internal)\b'''
-# Tests legitimately carry synthetic example hostnames (and the value
-# used in production is always tak.example*), so exempt the test tree.
-[[rules.allowlists]]
-description = "Test-fixture hostnames"
-paths = ['''app/src/test/.*''']
+# The test tree is NOT exempt: tests must use tak.example too, and a real
+# operator domain slipping into a fixture is exactly what this should
+# catch (it already did once). Only the explicit safe names below and
+# the SDK package namespace are allowlisted.
 [[rules.allowlists]]
 description = "Vendor + placeholder names that are safe to ship"
 regexes = [
