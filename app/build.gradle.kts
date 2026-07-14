@@ -3,10 +3,10 @@ import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("org.jlleitschuh.gradle.ktlint")
-    id("com.google.protobuf")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.ktlint)
+    alias(libs.plugins.protobuf)
 }
 
 val keystorePropsFile = rootProject.file("keystore.properties")
@@ -241,14 +241,14 @@ dependencies {
         testCompileOnly(files("libs/main.jar"))
     }
 
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation(libs.kotlin.stdlib)
+    implementation(libs.kotlinx.coroutines.android)
 
     // core-ktx is intentionally held at 1.13.1: the Dependabot bump to 1.19.0
     // demands compileSdk 37 + AGP 9.1.0, which is well outside the scope of a
     // chore(deps) group. Revisit alongside a coordinated AGP/compileSdk bump.
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
 
     // Pure-Java Opus codec. Slow vs native opus but no NDK setup; fine
     // for Phase 1 RX validation. Replace with native build later.
@@ -260,21 +260,21 @@ dependencies {
     // pinning here doesn't regress on the screech fix). JitPack
     // resolves a commit-hash version by checking out that exact SHA;
     // no more "master-SNAPSHOT moved under us" surprises.
-    implementation("com.github.lostromb:concentus:3885c4e46513ef0fc81fca100189e54f1714c6ca")
+    implementation(libs.concentus)
 
     // Mumble wire protocol uses protobuf. Lite runtime keeps APK small;
     // we don't need reflection-based features.
-    implementation("com.google.protobuf:protobuf-javalite:4.35.1")
+    implementation(libs.protobuf.javalite)
 
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("io.mockk:mockk:1.14.11")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation("androidx.test:core:1.7.0")
-    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.robolectric)
 }
 
 ktlint {
-    version.set("1.3.1")
+    version.set(libs.versions.ktlint.get())
     android.set(true)
     ignoreFailures.set(false)
     reporters {
@@ -296,7 +296,7 @@ afterEvaluate {
 
 protobuf {
     protoc {
-        artifact = "com.google.protobuf:protoc:4.35.1"
+        artifact = "com.google.protobuf:protoc:${libs.versions.protobuf.get()}"
     }
     generateProtoTasks {
         all().forEach { task ->
