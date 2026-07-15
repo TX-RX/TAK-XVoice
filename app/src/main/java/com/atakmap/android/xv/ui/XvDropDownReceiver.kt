@@ -378,6 +378,12 @@ class XvDropDownReceiver(
 
         fun selectMeshChannel(name: String) {}
 
+        // Forget a stored channel: removes its saved multicast override
+        // (pin / interop / crypto) and its shareable key, so it stops
+        // being offered and stops applying its override. The plain
+        // name-derived default still works if rejoined later.
+        fun forgetMeshChannel(name: String) {}
+
         // Live mesh state for the main panel, or null when mesh voice
         // is dormant (off, or no leg up). Rendered as a status line so
         // the operator can see failover/bridge state at a glance — and,
@@ -1944,7 +1950,7 @@ class XvDropDownReceiver(
             val active = controller.meshActiveChannelCanonical()
             candidates.forEach { name ->
                 val canonical = MulticastGroupDerivation.canonicalChannelName(name)
-                list.addView(
+                val row =
                     buildChannelButton(
                         label = name,
                         isCurrent = canonical == active,
@@ -1952,10 +1958,31 @@ class XvDropDownReceiver(
                     ) {
                         controller.selectMeshChannel(name)
                         refreshMeshSection(v)
-                    },
-                )
+                    }
+                // Long-press to forget a stored channel.
+                row.setOnLongClickListener {
+                    confirmForgetMeshChannel(v, name)
+                    true
+                }
+                list.addView(row)
             }
         }
+    }
+
+    private fun confirmForgetMeshChannel(
+        section: View,
+        name: String,
+    ) {
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Forget “$name”?")
+            .setMessage("Removes this channel's saved settings and key from this device. It won't affect anyone else.")
+            .setPositiveButton("Forget") { _, _ ->
+                controller.forgetMeshChannel(name)
+                meshToast("Forgot “$name”.")
+                refreshMeshSection(section)
+            }.setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun sliderTimeoutLabel(s: Int): String = if (s == 0) "off" else "$s s"

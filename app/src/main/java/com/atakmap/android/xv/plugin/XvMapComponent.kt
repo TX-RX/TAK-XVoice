@@ -2762,6 +2762,15 @@ class XvMapComponent : AbstractMapComponent() {
                 cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
             ): String? = saveMeshChannelInternal(name, group, port, wireFormat, cryptoPolicy)
 
+            override fun forgetMeshChannel(name: String) {
+                settings.removeChannelMulticastConfig(name)
+                val canonical =
+                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                        .canonicalChannelName(name)
+                provisionedChannels.remove(canonical)
+                Log.i(TAG, "forgot mesh channel '$canonical'")
+            }
+
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()
 
             override fun requestMissingPermissions() {
