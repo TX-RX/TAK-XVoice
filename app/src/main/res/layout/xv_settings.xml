@@ -527,6 +527,78 @@
                     android:textSize="11sp"
                     android:layout_marginTop="4dp"/>
 
+                <!-- ============================================================
+                     Audio device section. Placed above the device-specific
+                     hardware-button rows below because audio routing is
+                     what the operator adjusts most often (add/swap BT
+                     speakermic, split PTT-input from audio-output for
+                     car-stereo, choose speaker vs. earpiece fallback),
+                     while the device-specific rows below are configure-
+                     once-and-forget.
+                     ============================================================ -->
+
+                <!-- Section header: Audio device -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="AUDIO DEVICE"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.15"
+                    android:layout_marginTop="24dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Where you hear (and speak) — speaker/mic pair. Auto follows the PTT input device when it has audio (e.g. AINA speakermic), otherwise falls back to the built-in route below. Pick a specific Bluetooth device to split: PTT from AINA, audio through car/headphones."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="2dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_bt_audio_override"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <!-- Built-in fallback route (only used when Auto + no
+                     Bluetooth audio device is present) -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Built-in fallback (no BT)"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="16dp"/>
+
+                <Spinner
+                    android:id="@+id/xv_spinner_route"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:popupBackground="@color/xv_surface_alt"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Used when Audio Device above is Auto AND no Bluetooth or wired headset is connected. Choose phone speaker for hands-free, earpiece for hold-to-ear."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- ============================================================
+                     Device-specific hardware-button rows below. Each is
+                     hidden on unsupported hardware so operators only see
+                     the one that matches their device. Configure-once-and-
+                     forget, so intentionally below the more frequently-used
+                     Audio device section above.
+                     ============================================================ -->
+
                 <!-- Samsung ruggedized-device Active Key PTT toggle.
                      Visible ONLY on Samsung Tab Active5 / XCover6 Pro
                      / XCover7 / Tab Active4 Pro / Tab Active3 — the
@@ -716,60 +788,6 @@
                         android:text="Open Accessibility settings"
                         android:layout_marginTop="8dp"/>
                 </LinearLayout>
-
-                <!-- Section header: Audio device -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="AUDIO DEVICE"
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:letterSpacing="0.15"
-                    android:layout_marginTop="24dp"/>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Where you hear (and speak) — speaker/mic pair. Auto follows the PTT input device when it has audio (e.g. AINA speakermic), otherwise falls back to the built-in route below. Pick a specific Bluetooth device to split: PTT from AINA, audio through car/headphones."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="2dp"/>
-
-                <Spinner
-                    android:id="@+id/xv_spinner_bt_audio_override"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:popupBackground="@color/xv_surface_alt"/>
-
-                <!-- Built-in fallback route (only used when Auto + no
-                     Bluetooth audio device is present) -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Built-in fallback (no BT)"
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:textAllCaps="true"
-                    android:letterSpacing="0.1"
-                    android:layout_marginTop="16dp"/>
-
-                <Spinner
-                    android:id="@+id/xv_spinner_route"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:popupBackground="@color/xv_surface_alt"/>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Used when Audio Device above is Auto AND no Bluetooth or wired headset is connected. Choose phone speaker for hands-free, earpiece for hold-to-ear."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="4dp"/>
 
                 <View
                     android:layout_width="match_parent"
