@@ -169,6 +169,19 @@ class VoicePlant(
             cellularCallStateFromAudioMode(
                 audioMode = am?.mode ?: AudioManager.MODE_NORMAL,
                 xvHasActiveTelecomCall = xvOwnCallOrGrace,
+                // Sonim XP10 carrier variants (AT&T XP9900 in
+                // particular) hold MODE_IN_COMMUNICATION as a
+                // steady-state artefact of the resident MCPTT stack
+                // (AT&T EPTT / Dispatch Hub always running).
+                // Field-observed 2026-07-14: the mode stays IN_COMMUNICATION
+                // for minutes at a time with no actual call in
+                // progress, producing an unbroken stream of false-positive
+                // "Cellular call active — hang up before XV PTT"
+                // blocks. Suppress the MODE_IN_COMMUNICATION defensive
+                // block on Sonim hardware; real MODE_IN_CALL and
+                // MODE_RINGTONE still block unconditionally.
+                suppressInCommunicationDefensiveBlock =
+                    com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(context),
             )
         } catch (t: Throwable) {
             android.util.Log.w(
