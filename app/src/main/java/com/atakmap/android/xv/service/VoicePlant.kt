@@ -437,6 +437,12 @@ class VoicePlant(
             },
             tonePreference = { currentTptTone },
             canTransmit = { slot -> canTransmitOnSlot(slot) },
+            // Session-liveness signal so a denied press picks the right
+            // reject cue: no live Mumble session → bonk, live-but-
+            // listen-only → deny. Transport-wide (not per-slot); the
+            // per-slot suppress state is the canSpeakOnSlot half of
+            // canTransmitOnSlot.
+            sessionLive = { mumbleSessionLive },
             isRxActive = { audioPlayback.isActive() },
             telecomActive = {
                 com.atakmap.android.xv.telecom.ActiveCallRegistry
