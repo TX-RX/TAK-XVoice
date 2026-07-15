@@ -663,24 +663,58 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Three Sonim hardware keys can be assigned to ATAK in the phone's Programmable Keys menu:\n\n• PTT key → ATAK — press-to-talk voice. Works in the foreground automatically. For background / screen-off PTT, also grant the XV accessibility service (Settings → Accessibility → XV → enable). Without the grant, background PTT presses are silently dropped.\n• SOS / Emergency key → ATAK — fires ATAK's Alert Tool. Short press starts an emergency beacon; long hold cancels it. Works in all states (foreground, background, screen off) without any additional setup. Does not key voice.\n• Application key → ATAK (optional) — quick-launch ATAK to the foreground from anywhere on the device.\n\nNo XV toggle here — the phone's assignment is the source of truth. XV automatically catches whichever of these the phone forwards. Tap below to open the Programmable Keys settings."
+                        android:text="Three Sonim hardware keys can be assigned to ATAK in the phone's Programmable Keys menu:\n\n• PTT key → ATAK — press-to-talk voice.\n• SOS / Emergency key → ATAK — fires ATAK's Alert Tool. Short press starts an emergency beacon; long hold cancels it. Does not key voice.\n• Application key → ATAK (optional) — quick-launch ATAK to the foreground from anywhere on the device.\n\nNo XV toggle here — the phone's assignment is the source of truth. XV automatically catches whichever of these the phone forwards."
                         android:textColor="@color/xv_text_dim"
                         android:textSize="11sp"
                         android:layout_marginTop="4dp"/>
 
                     <Button
                         android:id="@+id/xv_btn_open_programmable_keys"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:text="Open Programmable Keys settings"
                         android:layout_marginTop="8dp"/>
 
+                    <!-- Sub-section: background-PTT accessibility grant.
+                         Separate from the main assignment story above
+                         because it's a different concern with its own
+                         "why" — the SOS button works in all states
+                         via broadcast delivery, but the PTT KeyEvent
+                         needs the accessibility grant to reach XV
+                         when ATAK isn't foregrounded. Visually
+                         separated so the operator sees it as an
+                         optional add-on rather than a mixed-in caveat
+                         on the assignment guidance. -->
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/xv_text_dim"
+                        android:alpha="0.15"
+                        android:layout_marginTop="12dp"/>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Background PTT (optional)"
+                        android:textColor="@color/xv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:layout_marginTop="12dp"/>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="By default the PTT key only fires while ATAK is in the foreground. To make it work while ATAK is backgrounded or the screen is off, grant XV the Accessibility permission — XV then receives the PTT KeyEvent system-wide. Only the two configured PTT keycodes are acted on; XV does not read screen content, typed text, or any other app data. The SOS button already works in all states without this — Sonim delivers it as a broadcast rather than a KeyEvent."
+                        android:textColor="@color/xv_text_dim"
+                        android:textSize="11sp"
+                        android:layout_marginTop="4dp"/>
+
                     <Button
                         android:id="@+id/xv_btn_open_sonim_accessibility"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Open Accessibility settings (for background PTT)"
-                        android:layout_marginTop="4dp"/>
+                        android:text="Open Accessibility settings"
+                        android:layout_marginTop="8dp"/>
                 </LinearLayout>
 
                 <!-- Section header: Audio device -->
