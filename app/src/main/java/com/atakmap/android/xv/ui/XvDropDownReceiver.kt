@@ -383,6 +383,34 @@ class XvDropDownReceiver(
         // mesh transmission is never invisible.
         fun meshStatus(): MeshStatus? = null
 
+        // Provisioning path 2 ("create a channel", zero config): generate
+        // a named, auto-encrypted channel (endpoint derived from the
+        // name — no IP/port to enter), persist + key + join it, and turn
+        // mesh voice on. Returns the created channel name, or null on
+        // failure. Also enables the mesh master toggle.
+        fun provisionMeshChannel(): String? = null
+
+        // True when this device holds the key for at least one channel
+        // (provisioned or imported), so there is something shareable.
+        fun canShareChannelPlan(): Boolean = false
+
+        // Build a passphrase-locked comms-plan carrier string for every
+        // shareable channel, or null if there's nothing to share. The
+        // plan carries the pre-shared keys, so it is always passphrase-
+        // locked — never handed to a transport in the clear.
+        fun buildChannelPlanCarrier(passphrase: CharArray): String? = null
+
+        // Import a comms-plan carrier string (pasted, scanned, received).
+        // Persists each channel's config, installs its key, joins the
+        // first, and enables mesh voice. Returns a short human summary
+        // on success; throws IllegalArgumentException with an operator-
+        // readable message on any failure (unknown format, wrong
+        // passphrase, unsupported schema).
+        fun importChannelPlanCarrier(
+            text: String,
+            passphrase: CharArray?,
+        ): String = throw UnsupportedOperationException()
+
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
         // currently have. Empty when everything is granted. Used to
@@ -1619,7 +1647,137 @@ class XvDropDownReceiver(
         missionSw.isChecked = controller.missionChannelsEnabled()
         missionSw.setOnCheckedChangeListener { _, on -> controller.setMissionChannelsEnabled(on) }
 
+        // Provisioning path 2: one-tap create. XV picks name + group +
+        // key; the operator configures nothing. Flips the mesh toggle on
+        // (the Controller does the same server-side), so reflect it here.
+        v.findViewById<Button>(R.id.xv_btn_mesh_provision).setOnClickListener {
+            val name = controller.provisionMeshChannel()
+            if (name != null) {
+                meshToast("Created channel “$name” — encrypted, ready. Tap Share to send it to your team.")
+                meshSw.isChecked = controller.meshVoiceEnabled()
+                refreshMeshSection(v)
+            } else {
+                meshToast("Couldn't create a channel.")
+            }
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_share).setOnClickListener {
+            if (!controller.canShareChannelPlan()) {
+                meshToast("No channels to share yet — create one first.")
+            } else {
+                promptPassphraseThenShare()
+            }
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_import).setOnClickListener {
+            promptImportChannelPlan(v)
+        }
+
         refreshMeshSection(v)
+    }
+
+    // Sets a passphrase, builds the locked plan, and hands it to the
+    // Android share sheet (which surfaces Quick Share, messaging, email,
+    // file — every share target the device offers). The plan carries
+    // channel keys, so it is always passphrase-locked; the operator
+    // passes the passphrase to the team out-of-band.
+    private fun promptPassphraseThenShare() {
+        val input =
+            android.widget.EditText(mapView.context).apply {
+                hint = "Passphrase (your team enters this to import)"
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Share channel plan")
+            .setMessage("Set a passphrase to protect the channel keys. Share it with your team separately — they enter it when importing.")
+            .setView(input)
+            .setPositiveButton("Share") { _, _ ->
+                val pass = input.text?.toString().orEmpty()
+                if (pass.isBlank()) {
+                    meshToast("Passphrase can't be empty.")
+                    return@setPositiveButton
+                }
+                val carrier = controller.buildChannelPlanCarrier(pass.toCharArray())
+                if (carrier == null) {
+                    meshToast("Nothing to share.")
+                } else {
+                    shareText(carrier)
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun shareText(text: String) {
+        try {
+            val send =
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "TAK-XVoice channel plan")
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+            val chooser =
+                Intent.createChooser(send, "Share channel plan").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            pluginContext.startActivity(chooser)
+        } catch (t: Throwable) {
+            meshToast("Couldn't open the share sheet: ${t.message}")
+        }
+    }
+
+    // Paste (or receive) a plan + optional passphrase, decode, install.
+    private fun promptImportChannelPlan(section: View) {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        val planField =
+            android.widget.EditText(ctx).apply {
+                hint = "Paste channel plan (XVCP…)"
+                setSingleLine(false)
+                maxLines = 4
+            }
+        val passField =
+            android.widget.EditText(ctx).apply {
+                hint = "Passphrase (if the plan is locked)"
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        val container =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                val pad = (16 * density).toInt()
+                setPadding(pad, pad / 2, pad, 0)
+                addView(planField)
+                addView(passField)
+            }
+        android.app.AlertDialog
+            .Builder(ctx)
+            .setTitle("Import channel plan")
+            .setView(container)
+            .setPositiveButton("Import") { _, _ ->
+                val text = planField.text?.toString().orEmpty().trim()
+                if (text.isEmpty()) {
+                    meshToast("Nothing to import.")
+                    return@setPositiveButton
+                }
+                val pass = passField.text?.toString().orEmpty().takeIf { it.isNotBlank() }?.toCharArray()
+                try {
+                    val summary = controller.importChannelPlanCarrier(text, pass)
+                    meshToast("Imported $summary")
+                    refreshMeshSection(section)
+                } catch (t: Throwable) {
+                    meshToast("Import failed: ${t.message}")
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun meshToast(msg: String) {
+        try {
+            android.widget.Toast
+                .makeText(mapView.context, msg, android.widget.Toast.LENGTH_LONG)
+                .show()
+        } catch (_: Throwable) {
+        }
     }
 
     // Repaints the live mesh status line + the offline channel list.

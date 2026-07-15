@@ -594,6 +594,19 @@ class XvMapComponent : AbstractMapComponent() {
     // refusing creation doesn't re-toast every reconcile cycle.
     private var lastMissionUnavailableToast: String? = null
 
+    // Channels this device provisioned or imported this session, keyed by
+    // canonical name, each holding its pre-shared key. This is what makes
+    // a channel *shareable*: to hand a peer an encrypted channel we must
+    // still hold its key, and the mesh registry deliberately doesn't
+    // expose installed keys. Session-scoped (not persisted) — a shared
+    // secret at rest is a separate decision; the operator shares a
+    // freshly-provisioned channel while it's in hand. Insertion-ordered
+    // so the plan lists channels the way they were created.
+    private val provisionedChannels =
+        java.util.Collections.synchronizedMap(
+            LinkedHashMap<String, com.atakmap.android.xv.provisioning.CommsPlan.Channel>(),
+        )
+
     // Host string of the currently-running Mumble transport, or null when
     // disconnected. Used by the multi-server picker to short-circuit a
     // reconnect when the operator picks the host we're already on.
@@ -2730,6 +2743,17 @@ class XvMapComponent : AbstractMapComponent() {
                 return XvDropDownReceiver.MeshStatus(label = label, cleartext = snap.cleartext)
             }
 
+            override fun provisionMeshChannel(): String? = provisionMeshChannelInternal()
+
+            override fun canShareChannelPlan(): Boolean = provisionedChannels.isNotEmpty()
+
+            override fun buildChannelPlanCarrier(passphrase: CharArray): String? = buildChannelPlanCarrierInternal(passphrase)
+
+            override fun importChannelPlanCarrier(
+                text: String,
+                passphrase: CharArray?,
+            ): String = importChannelPlanCarrierInternal(text, passphrase)
+
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()
 
             override fun requestMissingPermissions() {
@@ -3083,32 +3107,116 @@ class XvMapComponent : AbstractMapComponent() {
         planText: String,
         passphrase: String?,
     ) {
-        val plan =
-            try {
-                com.atakmap.android.xv.provisioning.CommsPlanCarrier.decode(
-                    planText.trim(),
+        try {
+            val summary =
+                importChannelPlanCarrierInternal(
+                    planText,
                     passphrase?.takeIf { it.isNotBlank() }?.toCharArray(),
                 )
+            Log.i(TAG, "MESH_PLAN_IMPORT ok: $summary")
+        } catch (t: Throwable) {
+            // Imports are explicit operator actions — fail loudly.
+            Log.w(TAG, "MESH_PLAN_IMPORT failed: ${t.message}")
+        }
+    }
+
+    // ---- Tier-1 provisioning (release UI: Provision / Share / Import) ----
+
+    // Provisioning path 2 — the zero-config "create a channel" button.
+    // Generate a named, auto-encrypted channel (endpoint derived from the
+    // name, so nothing to type), persist its config, install its key,
+    // record it as shareable, enable mesh voice, and join it. Returns the
+    // created channel name, or null on failure.
+    private fun provisionMeshChannelInternal(): String? {
+        val gen =
+            try {
+                com.atakmap.android.xv.provisioning.RandomChannelFactory.generate()
             } catch (t: Throwable) {
-                // Imports are explicit operator actions — fail loudly.
-                Log.w(TAG, "MESH_PLAN_IMPORT failed: ${t.message}")
-                return
+                Log.w(TAG, "provisionMeshChannel: generate threw", t)
+                return null
             }
+        settings.persistChannelMulticastConfig(gen.config)
+        // Creating a mesh channel is an explicit intent to use mesh —
+        // turn the master toggle on so the channel is live immediately
+        // rather than silently provisioned-but-dormant.
+        settings.persistMeshVoiceEnabled(true)
+        meshVoiceManager?.installPresharedKey(gen.name, gen.preSharedKey)
+        recordShareableChannel(
+            com.atakmap.android.xv.provisioning.CommsPlan.Channel(
+                displayName = gen.name,
+                config = gen.config,
+                preSharedKey = gen.preSharedKey,
+            ),
+        )
+        // Join it as the primary so it goes live and a later Mumble
+        // reconnect lands on the same channel.
+        settings.persistPrimaryChannel(gen.name)
+        meshVoiceManager?.onChannelJoined(0, gen.name)
+        Log.i(TAG, "provisioned mesh channel '${gen.name}'")
+        return gen.name
+    }
+
+    private fun recordShareableChannel(ch: com.atakmap.android.xv.provisioning.CommsPlan.Channel) {
+        val canonical =
+            com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                .canonicalChannelName(ch.config.channelName)
+        provisionedChannels[canonical] = ch
+    }
+
+    // Build a passphrase-locked carrier for every shareable channel, or
+    // null when there's nothing to share. Always locked — the plan
+    // carries pre-shared keys, so it never travels a transport in clear.
+    private fun buildChannelPlanCarrierInternal(passphrase: CharArray): String? {
+        val channels = synchronized(provisionedChannels) { provisionedChannels.values.toList() }
+        if (channels.isEmpty()) return null
+        val identity =
+            try {
+                activeMumbleHost?.let {
+                    com.atakmap.android.xv.transport.multicast.ServerIdentity
+                        .fromHostname(it)
+                        .value
+                }
+            } catch (_: Throwable) {
+                null
+            }
+        val plan =
+            com.atakmap.android.xv.provisioning.CommsPlan(
+                planId = java.util.UUID.randomUUID().toString(),
+                name = "XV channels",
+                createdAtMs = System.currentTimeMillis(),
+                serverIdentity = identity,
+                channels = channels,
+            )
+        return com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeLocked(plan, passphrase)
+    }
+
+    // Decode + install a carrier. Persists each channel's config,
+    // installs its key, records it as shareable, joins the first when
+    // nothing is selected, and enables mesh voice. Returns a short human
+    // summary; throws IllegalArgumentException on any failure.
+    private fun importChannelPlanCarrierInternal(
+        planText: String,
+        passphrase: CharArray?,
+    ): String {
+        val plan =
+            com.atakmap.android.xv.provisioning.CommsPlanCarrier.decode(planText.trim(), passphrase)
         plan.channels.forEach { ch ->
             settings.persistChannelMulticastConfig(ch.config)
             ch.preSharedKey?.let { key ->
                 meshVoiceManager?.installPresharedKey(ch.config.channelName, key)
             }
+            // Re-shareable only if it carries a key we now hold.
+            if (ch.preSharedKey != null) recordShareableChannel(ch)
         }
-        // Land on the plan's first channel when the operator has
-        // nothing selected — the fully server-less first-run case.
+        settings.persistMeshVoiceEnabled(true)
         if (settings.persistedPrimaryChannel().isBlank()) {
             plan.channels.firstOrNull()?.let { first ->
                 settings.persistPrimaryChannel(first.config.channelName)
                 meshVoiceManager?.onChannelJoined(0, first.config.channelName)
             }
         }
-        Log.i(TAG, "MESH_PLAN_IMPORT ok: '${plan.name}' — ${plan.channels.size} channel(s) installed")
+        val names = plan.channels.joinToString(", ") { it.displayName }
+        return "'${plan.name}' — ${plan.channels.size} channel(s): $names"
     }
 
     // Failover health: any inbound server byte (ping acks count) means
