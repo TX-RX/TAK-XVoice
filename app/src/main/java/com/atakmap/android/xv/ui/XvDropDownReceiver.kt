@@ -26,7 +26,9 @@ import com.atakmap.android.xv.R
 import com.atakmap.android.xv.aina.AinaDeviceInfo
 import com.atakmap.android.xv.audio.OutputRoute
 import com.atakmap.android.xv.audio.TptTone
+import com.atakmap.android.xv.transport.multicast.CryptoPolicy
 import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+import com.atakmap.android.xv.transport.multicast.WireFormat
 import com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation
 
 // Main XV control panel. Inspired by FlexRadio + modern SDR UIs:
@@ -410,6 +412,21 @@ class XvDropDownReceiver(
             text: String,
             passphrase: CharArray?,
         ): String = throw UnsupportedOperationException()
+
+        // Provisioning path 3 ("configure manually" / interop): save a
+        // channel with an operator-chosen name and, optionally, a pinned
+        // group/port + wire format + crypto policy for interop with an
+        // external system (OpenMANET, an ATAK VX talkgroup). Leaving the
+        // group/port blank keeps the automatic derivation. Returns null
+        // on success (saved + keyed + joined), or an operator-readable
+        // validation error.
+        fun saveMeshChannel(
+            name: String,
+            group: String?,
+            port: String?,
+            wireFormat: com.atakmap.android.xv.transport.multicast.WireFormat,
+            cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
+        ): String? = "not supported"
 
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
@@ -1661,6 +1678,11 @@ class XvDropDownReceiver(
             }
         }
 
+        // Path 3: name it yourself and (optionally) pin for interop.
+        v.findViewById<Button>(R.id.xv_btn_mesh_configure).setOnClickListener {
+            showChannelConfigDialog(v)
+        }
+
         v.findViewById<Button>(R.id.xv_btn_mesh_share).setOnClickListener {
             if (!controller.canShareChannelPlan()) {
                 meshToast("No channels to share yet — create one first.")
@@ -1778,6 +1800,109 @@ class XvDropDownReceiver(
                 .show()
         } catch (_: Throwable) {
         }
+    }
+
+    // Provisioning path 3 form: name (required) + an optional interop
+    // block (pin group/port, wire format, crypto). Blank group/port keeps
+    // the automatic derivation, so "name it myself" needs no address
+    // entry; the interop fields exist only to match an external system.
+    private fun showChannelConfigDialog(section: View) {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        fun dp(n: Int) = (n * density).toInt()
+
+        fun caption(text: String) =
+            TextView(ctx).apply {
+                this.text = text
+                setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                textSize = 11f
+                setPadding(0, dp(12), 0, dp(2))
+            }
+
+        val nameField =
+            android.widget.EditText(ctx).apply {
+                hint = "Channel name (required)"
+                setSingleLine(true)
+            }
+        val groupField =
+            android.widget.EditText(ctx).apply {
+                hint = "Multicast group (blank = automatic)"
+                setSingleLine(true)
+            }
+        val portField =
+            android.widget.EditText(ctx).apply {
+                hint = "Port (blank = automatic)"
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setSingleLine(true)
+            }
+        val wireSpinner =
+            Spinner(ctx).apply {
+                adapter =
+                    ArrayAdapter(
+                        ctx,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        listOf("XV native (encrypted)", "OpenMANET compatible (cleartext)"),
+                    )
+            }
+        val cryptoSpinner =
+            Spinner(ctx).apply {
+                adapter =
+                    ArrayAdapter(
+                        ctx,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        listOf("Encrypted — preferred", "Encrypted — required", "Cleartext"),
+                    )
+            }
+
+        val container =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(dp(16), dp(8), dp(16), 0)
+                addView(nameField)
+                addView(
+                    caption(
+                        "Interoperability (optional) — pin a group/port to match an external " +
+                            "system like OpenMANET. Leave blank for automatic.",
+                    ),
+                )
+                addView(groupField)
+                addView(portField)
+                addView(caption("Wire format"))
+                addView(wireSpinner)
+                addView(caption("Encryption"))
+                addView(cryptoSpinner)
+            }
+
+        android.app.AlertDialog
+            .Builder(ctx)
+            .setTitle("Configure a channel")
+            .setView(android.widget.ScrollView(ctx).apply { addView(container) })
+            .setPositiveButton("Save") { _, _ ->
+                val wireFormat =
+                    if (wireSpinner.selectedItemPosition == 1) WireFormat.OPENMANET_COMPAT else WireFormat.XV_NATIVE
+                val cryptoPolicy =
+                    when (cryptoSpinner.selectedItemPosition) {
+                        1 -> CryptoPolicy.REQUIRED
+                        2 -> CryptoPolicy.CLEARTEXT
+                        else -> CryptoPolicy.PREFERRED
+                    }
+                val err =
+                    controller.saveMeshChannel(
+                        name = nameField.text?.toString().orEmpty(),
+                        group = groupField.text?.toString(),
+                        port = portField.text?.toString(),
+                        wireFormat = wireFormat,
+                        cryptoPolicy = cryptoPolicy,
+                    )
+                if (err == null) {
+                    meshToast("Channel saved.")
+                    section.findViewById<Switch>(R.id.xv_switch_mesh_voice).isChecked = controller.meshVoiceEnabled()
+                    refreshMeshSection(section)
+                } else {
+                    meshToast(err)
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
     }
 
     // Repaints the live mesh status line + the offline channel list.

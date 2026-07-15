@@ -2754,6 +2754,14 @@ class XvMapComponent : AbstractMapComponent() {
                 passphrase: CharArray?,
             ): String = importChannelPlanCarrierInternal(text, passphrase)
 
+            override fun saveMeshChannel(
+                name: String,
+                group: String?,
+                port: String?,
+                wireFormat: com.atakmap.android.xv.transport.multicast.WireFormat,
+                cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
+            ): String? = saveMeshChannelInternal(name, group, port, wireFormat, cryptoPolicy)
+
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()
 
             override fun requestMissingPermissions() {
@@ -3163,6 +3171,49 @@ class XvMapComponent : AbstractMapComponent() {
         provisionedChannels[canonical] = ch
     }
 
+    // Provisioning path 3 — "configure manually" / interop. Validate the
+    // operator's inputs via the pure MeshChannelSpec, then persist +
+    // (auto-)key + record + join. Returns null on success or an
+    // operator-readable validation error.
+    private fun saveMeshChannelInternal(
+        name: String,
+        group: String?,
+        port: String?,
+        wireFormat: com.atakmap.android.xv.transport.multicast.WireFormat,
+        cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
+    ): String? {
+        val result =
+            com.atakmap.android.xv.provisioning.MeshChannelSpec.build(
+                name = name,
+                group = group,
+                port = port,
+                wireFormat = wireFormat,
+                cryptoPolicy = cryptoPolicy,
+            )
+        val config = result.config ?: return result.error ?: "Invalid channel configuration."
+        settings.persistChannelMulticastConfig(config)
+        settings.persistMeshVoiceEnabled(true)
+        val key =
+            if (result.autoKey) {
+                com.atakmap.android.xv.transport.multicast.AeadCodec
+                    .generateChannelKey()
+            } else {
+                null
+            }
+        key?.let { meshVoiceManager?.installPresharedKey(config.channelName, it) }
+        recordShareableChannel(
+            com.atakmap.android.xv.provisioning.CommsPlan.Channel(
+                displayName = config.channelName,
+                config = config,
+                preSharedKey = key,
+            ),
+        )
+        settings.persistPrimaryChannel(config.channelName)
+        meshVoiceManager?.onChannelJoined(0, config.channelName)
+        Log.i(TAG, "saved mesh channel '${config.channelName}' (pinned=${config.pinnedGroup != null}, keyed=${key != null})")
+        return null
+    }
+
     // Build a passphrase-locked carrier for every shareable channel, or
     // null when there's nothing to share. Always locked — the plan
     // carries pre-shared keys, so it never travels a transport in clear.
@@ -3205,8 +3256,9 @@ class XvMapComponent : AbstractMapComponent() {
             ch.preSharedKey?.let { key ->
                 meshVoiceManager?.installPresharedKey(ch.config.channelName, key)
             }
-            // Re-shareable only if it carries a key we now hold.
-            if (ch.preSharedKey != null) recordShareableChannel(ch)
+            // A received channel is re-shareable — with its key if it
+            // carried one, else its config alone (cleartext/interop).
+            recordShareableChannel(ch)
         }
         settings.persistMeshVoiceEnabled(true)
         if (settings.persistedPrimaryChannel().isBlank()) {

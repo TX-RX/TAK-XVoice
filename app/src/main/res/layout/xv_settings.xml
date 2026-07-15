@@ -958,6 +958,16 @@
                     android:background="@drawable/xv_button_bg"/>
 
                 <Button
+                    android:id="@+id/xv_btn_mesh_configure"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Configure manually / interop…"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <Button
                     android:id="@+id/xv_btn_mesh_share"
                     android:layout_width="match_parent"
                     android:layout_height="44dp"
