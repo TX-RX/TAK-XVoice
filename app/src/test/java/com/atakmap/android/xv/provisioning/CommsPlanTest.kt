@@ -10,7 +10,13 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric for a real org.json — the mockable android.jar returns
+// default values (nulls) from JSONObject, breaking parse + canonical
+// byte-stability assertions.
+@RunWith(RobolectricTestRunner::class)
 class CommsPlanTest {
     private val psk = ByteArray(AeadCodec.KEY_BYTES) // all-zero test key, 32 bytes
 

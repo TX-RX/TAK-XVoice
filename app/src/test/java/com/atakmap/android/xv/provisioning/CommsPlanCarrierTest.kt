@@ -8,7 +8,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric for a real org.json — the mockable android.jar returns
+// default values (nulls) from JSONObject, so carrier round-trips
+// would exercise a corrupted encoding.
+@RunWith(RobolectricTestRunner::class)
 class CommsPlanCarrierTest {
     private fun plainPlan(): CommsPlan =
         CommsPlan(

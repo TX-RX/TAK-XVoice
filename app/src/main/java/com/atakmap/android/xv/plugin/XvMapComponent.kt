@@ -4357,7 +4357,7 @@ class XvMapComponent : AbstractMapComponent() {
                     // A true return (or no mesh manager) plays as before.
                     val play =
                         try {
-                            meshVoiceManager?.onMumbleRxFrame(slot, speakerSession, opus) ?: true
+                            meshVoiceManager?.onMumbleRxFrame(slot, speakerSession.toInt(), opus) ?: true
                         } catch (t: Throwable) {
                             Log.w(TAG, "mesh onMumbleRxFrame threw", t)
                             true

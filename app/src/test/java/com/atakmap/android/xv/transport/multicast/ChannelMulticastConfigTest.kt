@@ -5,7 +5,13 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric for a real org.json — the mockable android.jar returns
+// default values (nulls) from JSONObject, silently corrupting the
+// canonical-JSON assertions this class exists to pin.
+@RunWith(RobolectricTestRunner::class)
 class ChannelMulticastConfigTest {
     private val server = ServerIdentity.fromHostname("tak.example.com")
 
