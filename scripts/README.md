@@ -13,6 +13,36 @@ notepad scripts/config.json
 
 Then edit the values to match your plugin. Every key is optional; falls back to the safe generic defaults in `scripts/lib/Read-Config.ps1` if omitted. Keys you'll almost certainly want to override: `pluginPackage`, `pluginShortName`, `productFlavor`, `sanityApkBaseName`, `sourceZipBaseName`, `sourceZipPrefix`, `defaultBaseline`, `tppBaselines`. Add any operator-specific redaction patterns to `forbiddenPatterns` (e.g. your real TAK server hostname, callsign lists).
 
+Then install the git hooks (see `verify-gates.ps1` below — this is what keeps a broken build off `main`):
+
+```powershell
+pipx install pre-commit                                          # or: python -m pip install --user pre-commit
+pre-commit install --hook-type pre-commit --hook-type pre-push
+Get-ChildItem .git/hooks -File | Where-Object Name -notlike '*.sample'   # expect: pre-commit, pre-push
+```
+
+That last line is not ceremony — verify it. If `core.hooksPath` is set in your clone, `pre-commit install` **refuses and exits non-zero**, and it is easy to miss in scrollback. The result is a clone where `.pre-commit-config.yaml` looks authoritative but no hook has ever run. Clear it with `git config --unset-all core.hooksPath` (check `git config --get core.hooksPath` first — if it points somewhere other than `.git/hooks`, something else owns your hooks and you should find out what before unsetting).
+
+## `verify-gates.ps1` — run the pre-merge build gates
+
+```powershell
+.\scripts\verify-gates.ps1                       # ktlintCheck + assembleCivDebug + testCivDebugUnitTest
+.\scripts\verify-gates.ps1 -Task testCivDebugUnitTest   # one gate
+```
+
+Runs as a **pre-push hook**, so a red tree can't reach the remote. This is the project's only real build gate, and it exists because public CI structurally cannot provide one:
+
+- GitHub runners have no ATAK CIV SDK. The SDK isn't redistributable and the tak.gov maven coordinates need USG-sponsored credentials, so CI cannot compile the main source set — let alone run tests. (`.github/workflows/ci.yml` documents this at length.)
+- What CI *can* run is ktlint, which **parses without resolving symbols**. An unresolved reference is invisible to it.
+- So an entire class of break reaches `main` with CI fully green. PR #72 (e12dc3b) did exactly that: it landed a test source set that didn't compile, and `main` stayed red through #80 and #81 until someone ran the tests by hand.
+
+Two things worth internalizing:
+
+- **`assembleCivDebug` is not a substitute for the test gate.** Assembling the APK does not compile the unit-test source set, so it cannot catch a broken test symbol. #72 built clean APKs the whole time it was red. Don't trim the test task to speed up pushes.
+- **The gate builds the working tree, not the commits being pushed.** Normally identical (you push what you built), but with a dirty tree it verifies what's on disk rather than what's going out. Push from a clean tree.
+
+The task list is derived from `config.productFlavor` (`civ` → `assembleCivDebug`), so the script stays generic across TAK plugins. Override with `config.verifyGateTasks` only if your gates don't follow that shape. `git push --no-verify` bypasses it — an explicit operator decision, per CLAUDE.md.
+
 ## `install-dev.ps1` — build the debug APK and install on connected phones
 
 Fans out to every authorized adb device so multi-device flashing takes one command.

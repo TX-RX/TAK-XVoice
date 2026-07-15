@@ -133,11 +133,33 @@ ready for review:
 ./gradlew testCivDebugUnitTest
 ```
 
+Or just `./scripts/verify-gates.ps1`, which runs all three and is
+wired to a pre-push hook.
+
 `ktlintCheck` enforces the formatting baseline. `assembleCivDebug`
 exercises the takdev SDK wiring + manifest, which is the most common
 way a refactor breaks plugin loading. `testCivDebugUnitTest` is the
 JUnit/MockK/Robolectric unit suite for the state machines listed in
 the initial commit.
+
+**These gates are local-only, and that is load-bearing.** GitHub CI
+cannot compile this project — no redistributable ATAK SDK on public
+runners — so `.github/workflows/ci.yml` runs ktlint and nothing more.
+ktlint parses Kotlin without resolving symbols, so it cannot see an
+unresolved reference. Never infer build health from a green PR check
+or a merged PR; the only evidence that `main` builds is someone
+running these locally and reading the output.
+
+Two traps this has already sprung:
+
+- **`assembleCivDebug` does not compile the test source set.** A
+  broken test symbol is invisible to it. Run `testCivDebugUnitTest`
+  explicitly — it is the gate that catches this class of break.
+- **A red `main` is a real state, not a hypothetical.** PR #72
+  (e12dc3b) landed a non-compiling test source set; CI was green and
+  `main` stayed red through #80 and #81. When asked to "fix the
+  build," reproduce all three gates first — the reported symptom may
+  live in a different gate than the one named.
 
 ## Scripting recurring workflows
 
@@ -203,11 +225,23 @@ commits. Install once per clone:
 
 ```sh
 pipx install pre-commit
-pre-commit install
+pre-commit install --hook-type pre-commit --hook-type pre-push
+ls .git/hooks/pre-commit .git/hooks/pre-push   # verify — see below
 ```
 
-After that, `git commit` will run `gitleaks` + `end-of-file-fixer`
-locally and refuse commits that trip either hook. If a hook trips,
-**investigate the underlying content** — do not bypass with
-`--no-verify` unless the operator explicitly approves it for a
-specific commit, and even then prefer fixing the content.
+After that, `git commit` runs `gitleaks` + `end-of-file-fixer` and
+refuses commits that trip either hook, and `git push` runs the
+build gate (`scripts/verify-gates.ps1`) so a red tree can't reach the
+remote. If a hook trips, **investigate the underlying content** — do
+not bypass with `--no-verify` unless the operator explicitly approves
+it for a specific commit, and even then prefer fixing the content.
+
+**Verify the install actually took.** `pre-commit install` refuses to
+do anything while `core.hooksPath` is set, and the failure is one line
+that is trivial to miss. This clone sat in exactly that state until
+2026-07-14: `.pre-commit-config.yaml` and `.gitleaks.toml` were
+committed and looked authoritative, `core.hooksPath` was pointing at
+`.git/hooks` (git's own default — a no-op that still tripped the
+check), and no hook had ever run. An uninstalled hook fails open and
+protects nothing. If `git config --get core.hooksPath` returns
+anything, find out what owns it before clearing it.
