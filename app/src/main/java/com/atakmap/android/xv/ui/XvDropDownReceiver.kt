@@ -344,6 +344,14 @@ class XvDropDownReceiver(
 
         fun setMeshVoiceEnabled(enabled: Boolean)
 
+        // Mission auto-channels: the operator's active ATAK Data Sync
+        // mission drives the primary voice channel (name derived from
+        // the mission, created server-side when allowed). Reconciled
+        // on the same ~1 Hz tick as mesh voice.
+        fun missionChannelsEnabled(): Boolean
+
+        fun setMissionChannelsEnabled(enabled: Boolean)
+
         // Offline channel selection. When Mumble can't connect the
         // picker has no server directory to list, but mesh voice can
         // still run: candidates are the operator's last-joined channel
@@ -1553,6 +1561,10 @@ class XvDropDownReceiver(
         val meshSw = v.findViewById<Switch>(R.id.xv_switch_mesh_voice)
         meshSw.isChecked = controller.meshVoiceEnabled()
         meshSw.setOnCheckedChangeListener { _, on -> controller.setMeshVoiceEnabled(on) }
+
+        val missionSw = v.findViewById<Switch>(R.id.xv_switch_mission_channels)
+        missionSw.isChecked = controller.missionChannelsEnabled()
+        missionSw.setOnCheckedChangeListener { _, on -> controller.setMissionChannelsEnabled(on) }
     }
 
     private fun sliderTimeoutLabel(s: Int): String = if (s == 0) "off" else "$s s"

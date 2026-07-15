@@ -566,8 +566,18 @@ class MeshVoiceManager(
             }
         }
 
-        // Tear down legs no longer wanted.
-        val stale = legs.keys.filter { it !in desired.keys }
+        // Tear down legs no longer wanted — including legs whose
+        // RESOLVED endpoint no longer matches what they're bound to:
+        // switching servers while staying on the same channel name
+        // re-derives to a different group, and a leg keyed only by
+        // channel name would otherwise silently stay on the old
+        // server's multicast group forever.
+        val stale =
+            legs.filter { (channel, leg) ->
+                val cfg = desired[channel] ?: return@filter true
+                val endpoint = resolveEndpoint(cfg)
+                endpoint != null && endpoint != leg.endpoint
+            }.keys
         stale.forEach { channel ->
             legs.remove(channel)?.let { runCatching { it.close() } }
         }

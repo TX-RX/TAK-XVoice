@@ -1066,6 +1066,13 @@ class XvMapComponent : AbstractMapComponent() {
                         }
                     }
 
+                    override fun exportCommsPlan(passphrase: String?) = exportCommsPlanInternal(passphrase)
+
+                    override fun importCommsPlan(
+                        planText: String,
+                        passphrase: String?,
+                    ) = importCommsPlanInternal(planText, passphrase)
+
                     override fun describeAudioState(): String = "service"
 
                     override fun connectAina(
@@ -1212,6 +1219,8 @@ class XvMapComponent : AbstractMapComponent() {
                     addAction(DebugReceiver.ACTION_STOP_MULTICAST)
                     addAction(DebugReceiver.ACTION_MESH_VOICE)
                     addAction(DebugReceiver.ACTION_MESH_STATUS)
+                    addAction(DebugReceiver.ACTION_MESH_PLAN_EXPORT)
+                    addAction(DebugReceiver.ACTION_MESH_PLAN_IMPORT)
                     addAction(DebugReceiver.ACTION_AUDIO_STATE)
                     addAction(DebugReceiver.ACTION_AINA_CONNECT)
                     addAction(DebugReceiver.ACTION_AINA_DISCONNECT)
@@ -2641,6 +2650,14 @@ class XvMapComponent : AbstractMapComponent() {
                 // in reconcileLegs() on its next ~1 Hz tick.
             }
 
+            override fun missionChannelsEnabled(): Boolean = settings.persistedMissionChannelsEnabled()
+
+            override fun setMissionChannelsEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setMissionChannelsEnabled($enabled)")
+                settings.persistMissionChannelsEnabled(enabled)
+                // Reconciled on the next ~1 Hz mesh/mission tick.
+            }
+
             override fun meshChannelCandidates(): List<String> {
                 // canonical → first display spelling seen. Last-joined
                 // first, then the persisted server directory, then
@@ -2669,6 +2686,32 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun selectMeshChannel(name: String) {
                 Log.i(TAG, "Controller.selectMeshChannel($name)")
+                // A channel known only from peer beacons (fully
+                // offline: no server identity to derive from) must be
+                // pinned to the ADVERTISED endpoint or the leg can
+                // never resolve one. For channels this device can
+                // derive itself, the pin and the derivation agree —
+                // the advertiser derived it the same way.
+                val canonical =
+                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                        .canonicalChannelName(name)
+                val discovered =
+                    meshVoiceManager
+                        ?.discoveredChannels()
+                        ?.firstOrNull {
+                            com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                                .canonicalChannelName(it.name) == canonical
+                        }
+                if (discovered != null && settings.channelMulticastConfigFor(name) == null) {
+                    val pinned =
+                        com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+                            .defaultFor(name)
+                            .copy(pinnedGroup = discovered.group, pinnedPort = discovered.port)
+                    if (pinned.validate() == null) {
+                        settings.persistChannelMulticastConfig(pinned)
+                        Log.i(TAG, "selectMeshChannel: pinned discovered endpoint for '$canonical'")
+                    }
+                }
                 // Persist as the primary so a later Mumble reconnect
                 // lands on the same channel the operator picked while
                 // offline; the mesh leg rebinds on the next tick.
@@ -2972,6 +3015,98 @@ class XvMapComponent : AbstractMapComponent() {
         meshTickHandler.removeCallbacks(meshTickRunnable)
         meshTickHandler.postDelayed(meshTickRunnable, MESH_TICK_MS)
         Log.i(TAG, "mesh voice started: uid=$deviceUid enrolled=${ourCertDer != null}")
+    }
+
+    // ---- comms-plan provisioning (debug carrier; UI carriers reuse these) ----
+
+    // Snapshot the channel set as a carrier string the operator can
+    // hand to a peer. No pre-shared keys are exported here — the
+    // clear carrier refuses them by design, and key distribution for
+    // REQUIRED-crypto offline channels is a deliberate future step
+    // (the import side already installs PSKs when a plan carries them).
+    private fun exportCommsPlanInternal(passphrase: String?) {
+        val channelNames = LinkedHashSet<String>()
+        settings
+            .persistedPrimaryChannel()
+            .takeIf { it.isNotBlank() && !it.startsWith("TAK PRIVATE - ") }
+            ?.let { channelNames += it }
+        channelNames += settings.persistedKnownChannels()
+        if (channelNames.isEmpty()) {
+            Log.w(TAG, "MESH_PLAN_EXPORT: no channels known — connect once or select a channel first")
+            return
+        }
+        val channels =
+            channelNames.map { name ->
+                com.atakmap.android.xv.provisioning.CommsPlan.Channel(
+                    displayName = name,
+                    config =
+                    settings.channelMulticastConfigFor(name)
+                        ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+                            .defaultFor(name),
+                )
+            }
+        val identity =
+            try {
+                TakServerDiscovery.pickPreferred(settings.persistedPreferredTakHost())?.host?.let {
+                    com.atakmap.android.xv.transport.multicast.ServerIdentity.fromHostname(it).value
+                }
+            } catch (_: Throwable) {
+                null
+            }
+        val plan =
+            com.atakmap.android.xv.provisioning.CommsPlan(
+                planId = java.util.UUID.randomUUID().toString(),
+                name = "XV export",
+                createdAtMs = System.currentTimeMillis(),
+                serverIdentity = identity,
+                channels = channels,
+            )
+        val text =
+            try {
+                if (passphrase.isNullOrBlank()) {
+                    com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeClear(plan)
+                } else {
+                    com.atakmap.android.xv.provisioning.CommsPlanCarrier
+                        .encodeLocked(plan, passphrase.toCharArray())
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "MESH_PLAN_EXPORT failed: ${t.message}")
+                return
+            }
+        Log.i(TAG, "MESH_PLAN_EXPORT (${channels.size} channel(s)):")
+        Log.i(TAG, text)
+    }
+
+    private fun importCommsPlanInternal(
+        planText: String,
+        passphrase: String?,
+    ) {
+        val plan =
+            try {
+                com.atakmap.android.xv.provisioning.CommsPlanCarrier.decode(
+                    planText.trim(),
+                    passphrase?.takeIf { it.isNotBlank() }?.toCharArray(),
+                )
+            } catch (t: Throwable) {
+                // Imports are explicit operator actions — fail loudly.
+                Log.w(TAG, "MESH_PLAN_IMPORT failed: ${t.message}")
+                return
+            }
+        plan.channels.forEach { ch ->
+            settings.persistChannelMulticastConfig(ch.config)
+            ch.preSharedKey?.let { key ->
+                meshVoiceManager?.installPresharedKey(ch.config.channelName, key)
+            }
+        }
+        // Land on the plan's first channel when the operator has
+        // nothing selected — the fully server-less first-run case.
+        if (settings.persistedPrimaryChannel().isBlank()) {
+            plan.channels.firstOrNull()?.let { first ->
+                settings.persistPrimaryChannel(first.config.channelName)
+                meshVoiceManager?.onChannelJoined(0, first.config.channelName)
+            }
+        }
+        Log.i(TAG, "MESH_PLAN_IMPORT ok: '${plan.name}' — ${plan.channels.size} channel(s) installed")
     }
 
     // Failover health: any inbound server byte (ping acks count) means
