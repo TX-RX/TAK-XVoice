@@ -69,6 +69,10 @@ class MeshVoiceManager(
     private val deviceUidForMumbleSession: (Int) -> String? = { null },
     /** CoT presence: is this uid currently server-connected? */
     private val uidMumbleConnected: (String) -> Boolean = { false },
+    /** CoT presence: display callsign for an XV/ATAK peer uid. */
+    private val callsignForUid: (String) -> String? = { null },
+    /** Mumble roster: display username for a live session id (uuid suffix stripped). */
+    private val mumbleUsernameForSession: (Int) -> String? = { null },
     /** CoT presence: all currently-known XV peer uids (for SSRC mapping). */
     private val knownPeerUids: () -> Collection<String> = { emptyList() },
     /**
@@ -155,6 +159,27 @@ class MeshVoiceManager(
     private var lastBeaconAtMs = Long.MIN_VALUE
     private val ssrcKeyToUid = HashMap<String, String>()
     private val relayLastFrameMs = HashMap<String, Long>() // canonical speaker → last relayed frame
+
+    // ---- speaker attribution ----
+
+    // uid → callsign learned from peer beacons; covers mesh-only XV
+    // peers whose CoT presence hasn't reached us (or never will,
+    // fully offline).
+    private val beaconCallsigns = HashMap<String, String>()
+
+    // speakerKey → display name learned from SpeakerName control
+    // packets — a bridge announcing who its relayed frames belong to
+    // (non-XV Mumble clients have no presence and no beacon).
+    private val announcedSpeakerNames = HashMap<String, String>()
+
+    // canonical speaker → (speakerKey, last mesh frame we PLAYED).
+    // Backs meshActiveSpeakers() for the channel-row talker display.
+    private data class MeshTalker(
+        val speakerKey: String,
+        var lastFrameMs: Long,
+    )
+
+    private val meshTalking = HashMap<String, MeshTalker>()
 
     // ---- channel membership (from the plugin's Mumble events) ----
 
@@ -344,7 +369,42 @@ class MeshVoiceManager(
             relayBurstStart = last == null || now - last > RELAY_BURST_GAP_MS
             relayLastFrameMs[canonical] = now
         }
+        meshTalking.getOrPut(canonical) { MeshTalker(speakerKey, now) }.lastFrameMs = now
         return VoiceRxAction(play = true, relay = relay, relayBurstStart = relayBurstStart)
+    }
+
+    /**
+     * Human display names of speakers whose mesh audio we played
+     * within the talking TTL. Resolution order: CoT presence callsign
+     * (ATAK users) → beacon callsign (mesh-only XV peers) → Mumble
+     * roster username (server clients heard via a bridge, resolvable
+     * when we're connected ourselves) → bridge-announced SpeakerName →
+     * the raw canonical id as last resort. Merged into the channel
+     * row's talker list alongside the Mumble roster names.
+     */
+    @Synchronized
+    fun meshActiveSpeakers(): List<String> {
+        val now = nowMs()
+        meshTalking.entries.removeAll { now - it.value.lastFrameMs > TALKING_TTL_MS }
+        return meshTalking.map { (canonical, talker) -> displayNameFor(canonical, talker.speakerKey) }
+    }
+
+    private fun displayNameFor(
+        canonical: String,
+        speakerKey: String,
+    ): String {
+        callsignForUid(canonical)?.takeIf { it.isNotBlank() }?.let { return it }
+        beaconCallsigns[canonical]?.let { return it }
+        if (canonical.startsWith("mumble:")) {
+            canonical
+                .removePrefix("mumble:")
+                .toIntOrNull()
+                ?.let(mumbleUsernameForSession)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+        }
+        announcedSpeakerNames[speakerKey]?.let { return it }
+        return canonical
     }
 
     @Synchronized
@@ -359,6 +419,13 @@ class MeshVoiceManager(
             is ControlPacket.Message.KeyOffer -> handleKeyOffer(channelName, msg)
             is ControlPacket.Message.CertReq -> handleCertReq(channelName, msg)
             is ControlPacket.Message.CertReply -> handleCertReply(msg)
+            is ControlPacket.Message.SpeakerName -> {
+                // Bounded: one entry per distinct relayed speaker;
+                // deployments have tens, not thousands. Reset rather
+                // than evict on (never-expected) overflow.
+                if (announcedSpeakerNames.size >= MAX_ANNOUNCED_NAMES) announcedSpeakerNames.clear()
+                announcedSpeakerNames[msg.speakerKey] = msg.name
+            }
         }
     }
 
@@ -610,6 +677,12 @@ class MeshVoiceManager(
         if (msg.uid == ourUid) return
         val now = nowMs()
         bridgeElection.observePeer(msg.uid, msg.mumbleConnected, now)
+        // Callsign directory for talker attribution — covers mesh-only
+        // peers whose CoT presence hasn't reached us. Beacons default
+        // the callsign to the uid; only store real display names.
+        if (msg.callsign.isNotBlank() && msg.callsign != msg.uid) {
+            beaconCallsigns[msg.uid] = msg.callsign
+        }
         msg.channels.forEach { ch ->
             discovered[ch.name] =
                 DiscoveredChannel(
@@ -802,6 +875,22 @@ class MeshVoiceManager(
         val last = relayLastFrameMs[canonicalSpeaker]
         val burstStart = last == null || now - last > RELAY_BURST_GAP_MS
         relayLastFrameMs[canonicalSpeaker] = now
+        if (burstStart) {
+            // Tell mesh receivers who this relayed burst belongs to.
+            // Non-XV Mumble clients have no presence and no beacon, so
+            // without this a mesh-only device shows a bare SSRC where
+            // the Mumble username belongs. Once per burst — cheap.
+            val name = displayNameFor(canonicalSpeaker, speakerKey = "")
+            if (name != canonicalSpeaker) {
+                leg.sendControl(
+                    ControlPacket.Message.SpeakerName(
+                        channelId = stableChannelId(channel),
+                        speakerKey = "ssrc:%08x".format(RtpFraming.fnv1aSsrc(canonicalSpeaker)),
+                        name = name,
+                    ),
+                )
+            }
+        }
         leg.sendRelayOpus(canonicalSpeaker, opus, burstStart)
     }
 
@@ -911,5 +1000,15 @@ class MeshVoiceManager(
          * the new epoch and converge before we rotate again.
          */
         private const val CONFLICT_ROTATE_THROTTLE_MS = 10_000L
+
+        /**
+         * A mesh speaker unheard for this long stops showing in the
+         * talker list. Matches MumbleTransport.TALKING_TTL_MS so mesh
+         * and server talkers age out of the channel row identically.
+         */
+        private const val TALKING_TTL_MS = 600L
+
+        /** Sanity cap on the bridge-announced name directory. */
+        private const val MAX_ANNOUNCED_NAMES = 256
     }
 }

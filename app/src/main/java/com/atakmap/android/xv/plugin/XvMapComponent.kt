@@ -2214,8 +2214,17 @@ class XvMapComponent : AbstractMapComponent() {
             }
 
             override fun activeSpeakers(slot: Int): List<String> {
-                val t = mumbleTransport() ?: return emptyList()
-                return t.activeSpeakers(slot)
+                val mumble = mumbleTransport()?.activeSpeakers(slot).orEmpty()
+                if (slot != 0) return mumble
+                // Mesh talkers ride the primary channel row too —
+                // callsign for ATAK/XV peers, Mumble username for
+                // server clients heard via a bridge. The dedup layer
+                // already guarantees one leg plays per speaker, and
+                // resolved names collide across lists only when they
+                // genuinely refer to the same person — distinct()
+                // keeps the row clean either way.
+                val mesh = meshVoiceManager?.meshActiveSpeakers().orEmpty()
+                return (mumble + mesh).distinct()
             }
 
             override fun connectedTakHost(): String? =
@@ -2900,6 +2909,10 @@ class XvMapComponent : AbstractMapComponent() {
                 },
                 uidMumbleConnected = { uid ->
                     presenceRegistry?.get(uid)?.mumbleSession != null
+                },
+                callsignForUid = { uid -> presenceRegistry?.get(uid)?.callsign },
+                mumbleUsernameForSession = { session ->
+                    mumbleTransport()?.peerDisplayName(session)?.takeIf { !it.startsWith("session:") }
                 },
                 knownPeerUids = { presenceRegistry?.all()?.map { it.deviceUid }.orEmpty() },
                 freshPeerUids = {

@@ -39,6 +39,19 @@ class ControlPacketPeerBeaconTest {
     }
 
     @Test
+    fun `speaker name announcement round-trips`() {
+        val msg =
+            ControlPacket.Message.SpeakerName(
+                channelId = 0x1234,
+                speakerKey = "ssrc:00c0ffee",
+                name = "Desktop-Dan",
+            )
+        val wire = ControlPacket.encode(msg)
+        assertTrue(ControlPacket.isControl(wire))
+        assertEquals(msg, ControlPacket.decode(wire))
+    }
+
+    @Test
     fun `truncated beacon decodes to null not a crash`() {
         val wire = ControlPacket.encode(sample())
         assertNull(ControlPacket.decode(wire.copyOfRange(0, wire.size - 3)))

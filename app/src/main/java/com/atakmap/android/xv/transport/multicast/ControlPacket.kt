@@ -91,6 +91,7 @@ object ControlPacket {
         CertReq(0x03),
         CertReply(0x04),
         PeerBeacon(0x05),
+        SpeakerName(0x06),
         ;
 
         companion object {
@@ -127,6 +128,7 @@ object ControlPacket {
                 Type.CertReq -> decodeCertReq(buf)
                 Type.CertReply -> decodeCertReply(buf)
                 Type.PeerBeacon -> decodePeerBeacon(buf)
+                Type.SpeakerName -> decodeSpeakerName(buf)
             }
         } catch (_: Throwable) {
             null
@@ -142,6 +144,7 @@ object ControlPacket {
                 is Message.CertReq -> encodeCertReq(msg)
                 is Message.CertReply -> encodeCertReply(msg)
                 is Message.PeerBeacon -> encodePeerBeacon(msg)
+                is Message.SpeakerName -> encodeSpeakerName(msg)
             }
         val out = ByteArray(HEADER_LEN + body.size)
         out[0] = MAGIC_X
@@ -217,6 +220,28 @@ object ControlPacket {
         val buf = ByteBuffer.allocate(4 + msg.certDer.size).order(ByteOrder.BIG_ENDIAN)
         buf.putInt(msg.certDer.size)
         buf.put(msg.certDer)
+        return buf.array()
+    }
+
+    private fun decodeSpeakerName(buf: ByteBuffer): Message.SpeakerName {
+        val channelId = buf.int
+        val speakerKey = readLengthPrefixedString(buf)
+        val name = readLengthPrefixedString(buf)
+        return Message.SpeakerName(channelId, speakerKey, name)
+    }
+
+    private fun encodeSpeakerName(msg: Message.SpeakerName): ByteArray {
+        val keyBytes = msg.speakerKey.toByteArray(Charsets.UTF_8)
+        val nameBytes = msg.name.toByteArray(Charsets.UTF_8)
+        val buf =
+            ByteBuffer
+                .allocate(4 + 4 + keyBytes.size + 4 + nameBytes.size)
+                .order(ByteOrder.BIG_ENDIAN)
+        buf.putInt(msg.channelId)
+        buf.putInt(keyBytes.size)
+        buf.put(keyBytes)
+        buf.putInt(nameBytes.size)
+        buf.put(nameBytes)
         return buf.array()
     }
 
@@ -381,6 +406,22 @@ object ControlPacket {
             }
 
             override fun hashCode(): Int = certDer.contentHashCode()
+        }
+
+        /**
+         * "The speaker whose frames carry [speakerKey] on this channel
+         * is called [name]." Sent by a bridge on each relayed burst
+         * start: relayed frames carry the ORIGINAL speaker's SSRC, but
+         * a non-XV Mumble client has no CoT presence and no beacon, so
+         * mesh-only receivers would otherwise show a bare SSRC where a
+         * name belongs. Cleartext like beacons — display names only.
+         */
+        data class SpeakerName(
+            val channelId: Int,
+            val speakerKey: String,
+            val name: String,
+        ) : Message() {
+            override val type = Type.SpeakerName
         }
 
         /**

@@ -65,6 +65,8 @@ class MeshVoiceManagerTest {
         val peerUids = mutableSetOf<String>()
         val connectedUids = mutableSetOf<String>()
         val certFps = mutableMapOf<String, String>()
+        val callsigns = mutableMapOf<String, String>() // uid → presence callsign
+        val mumbleNames = mutableMapOf<Int, String>() // session → roster username
 
         val manager =
             MeshVoiceManager(
@@ -82,6 +84,8 @@ class MeshVoiceManagerTest {
                 onMeshTxStateChanged = { meshTxStateChanges += it },
                 deviceUidForMumbleSession = { peerSessions[it] },
                 uidMumbleConnected = { it in connectedUids },
+                callsignForUid = { callsigns[it] },
+                mumbleUsernameForSession = { mumbleNames[it] },
                 knownPeerUids = { peerUids },
                 certFpForUid = { certFps[it] },
                 ourCertDer = { byteArrayOf(1, 2, 3) },
@@ -342,6 +346,75 @@ class MeshVoiceManagerTest {
         h.joinAndTick()
         h.manager.sendTxOpus(byteArrayOf(7), targetSlot = 0)
         assertTrue(h.channelLeg().sentOpus.isEmpty())
+    }
+
+    // ---- speaker attribution ----
+
+    @Test
+    fun `mesh talkers resolve to presence callsigns for ATAK peers`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.peerUids += "uid-zzz"
+        h.callsigns["uid-zzz"] = "Bravo-2"
+        h.now += 1_000
+        h.manager.tick() // refreshSsrcMap picks up uid-zzz
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKeyOf("uid-zzz"), seqInBurst = 0)
+        assertEquals(listOf("Bravo-2"), h.manager.meshActiveSpeakers())
+    }
+
+    @Test
+    fun `mesh talkers fall back to beacon callsigns when presence has none`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.peerUids += "uid-yyy"
+        h.manager.onControl(
+            "ops-1",
+            ControlPacket.Message.PeerBeacon(
+                uid = "uid-yyy",
+                callsign = "Charlie-3",
+                mumbleConnected = false,
+                bridging = false,
+                channels = emptyList(),
+            ),
+            sourceHost = "198.51.100.7",
+        )
+        h.now += 1_000
+        h.manager.tick()
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKeyOf("uid-yyy"), seqInBurst = 0)
+        assertEquals(listOf("Charlie-3"), h.manager.meshActiveSpeakers())
+    }
+
+    @Test
+    fun `bridge announces the mumble username of speakers it relays`() {
+        val h = Harness()
+        h.makeUsBridge()
+        h.mumbleNames[53] = "Desktop-Dan"
+        h.manager.onMumbleRxFrame(0, speakerSession = 53, opus = byteArrayOf(1))
+        val announced =
+            h
+                .channelLeg()
+                .sentControl
+                .filterIsInstance<ControlPacket.Message.SpeakerName>()
+                .single()
+        assertEquals("Desktop-Dan", announced.name)
+        assertEquals(ssrcKeyOf("mumble:53"), announced.speakerKey)
+    }
+
+    @Test
+    fun `announced names attribute relayed speakers on mesh-only receivers`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.manager.onControl(
+            "ops-1",
+            ControlPacket.Message.SpeakerName(
+                channelId = MeshVoiceManager.stableChannelId("ops-1"),
+                speakerKey = ssrcKeyOf("mumble:53"),
+                name = "Desktop-Dan",
+            ),
+            sourceHost = "198.51.100.7",
+        )
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKeyOf("mumble:53"), seqInBurst = 0)
+        assertEquals(listOf("Desktop-Dan"), h.manager.meshActiveSpeakers())
     }
 
     // ---- same-epoch/different-key split-brain resolution ----
