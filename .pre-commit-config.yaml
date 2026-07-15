@@ -1,17 +1,27 @@
 # Pre-commit framework configuration for TAK-XVoice.
 #
-# Install once per clone:
+# Install once per clone — note BOTH hook types:
 #   pipx install pre-commit
-#   pre-commit install
+#   pre-commit install --hook-type pre-commit --hook-type pre-push
 #
-# After install, `git commit` runs the hooks below and refuses commits
-# that trip them. See CLAUDE.md for the project-wide sensitive-content
-# rules these hooks back up.
+# `git commit` then runs the commit-stage hooks below and refuses
+# commits that trip them; `git push` runs the build gate. See CLAUDE.md
+# for the project-wide sensitive-content rules these hooks back up.
+#
+# Verify the install actually took — an uninstalled hook fails open and
+# is worth exactly nothing:
+#   ls .git/hooks/pre-commit .git/hooks/pre-push
 #
 # Tag pins are deliberate: floating refs (HEAD / main) make builds
 # non-reproducible and let upstream silently change behavior between
 # clones.
 ---
+# Stage names below ('pre-commit' / 'pre-push') are the modern spelling
+# introduced in pre-commit 3.2; older releases called them 'commit' /
+# 'push' and would misparse this file. Fail fast with a clear message
+# rather than silently skipping hooks.
+minimum_pre_commit_version: '3.2.0'
+
 repos:
   # Secret scanner. Backed by .gitleaks.toml at the repo root, which
   # extends the gitleaks default ruleset with project-specific
@@ -20,6 +30,7 @@ repos:
     rev: v8.21.2
     hooks:
       - id: gitleaks
+        stages: [pre-commit]
 
   # Whitespace / EOL hygiene. Catches files committed without a
   # trailing newline, which trips diff tools and editor configs.
@@ -27,3 +38,59 @@ repos:
     rev: v5.0.0
     hooks:
       - id: end-of-file-fixer
+        # Commit stage only: this hook *rewrites* files. At push time a
+        # rewrite lands in the working tree without amending anything
+        # that's actually being pushed, which is confusing and useless.
+        stages: [pre-commit]
+
+  # Local build gate. THIS is the defense that public CI cannot provide.
+  #
+  # GitHub can't compile XV (no redistributable ATAK SDK on runners), so
+  # ci.yml runs ktlint only — and ktlint parses without resolving
+  # symbols. An unresolved reference is invisible to it. That gap let
+  # PR #72 land a non-compiling test source set and kept main red
+  # through #80 and #81 with CI green the whole way.
+  #
+  # Running at pre-push rather than pre-commit is deliberate: a full
+  # gradle run costs ~40-60s, which is intolerable per-commit but fine
+  # per-push, and push is the boundary that actually matters — it's the
+  # point where a break stops being local.
+  - repo: local
+    hooks:
+      - id: gradle-gates
+        name: Gradle gates (ktlint + assemble + unit tests)
+        entry: pwsh -NoProfile -File scripts/verify-gates.ps1
+        language: system
+        stages: [pre-push]
+        # The gate builds the whole project, so per-file arguments are
+        # meaningless — it takes none.
+        pass_filenames: false
+        # Only fire when something that can actually break the build is
+        # in the push. A docs- or workflow-only push shouldn't pay 60s.
+        # Covers Kotlin/KTS, the AIDL + proto sources that generate
+        # code, Android resources and manifests, and the gradle
+        # toolchain/version-catalog files.
+        #
+        # Plus the gate's own machinery — verify-gates.ps1, the lib/ it
+        # sources, and this config — so a change to the gate at least
+        # runs the gate once before it lands. Scoped to exactly those
+        # three, NOT a blanket ^scripts/: the gate dot-sources only
+        # lib/Read-Config.ps1 and reads scripts/config.json (gitignored,
+        # so it never appears in a push). install-dev / package-tpp /
+        # upload-tak-plugin / config.example.json / this directory's
+        # README cannot affect the build, and billing a docs typo for a
+        # full gradle run is exactly what the line above says not to do.
+        #
+        # Be honest about what this buys: on a green tree the gate only
+        # runs its SUCCESS path, so this catches a syntax error or crash
+        # in the gate — not a logic bug. Both bugs found while verifying
+        # #83 (the missing-SDK hint firing on every failure; Tee-Object
+        # swallowing gradle's output) lived on the FAILURE path and
+        # would sail straight through this. Self-exercise is a smoke
+        # test, not a proof.
+        files: >-
+          (\.kts?$|\.aidl$|\.proto$|^gradle/|^gradle\.properties$|^app/src/.*\.xml$|^scripts/verify-gates\.ps1$|^scripts/lib/|^\.pre-commit-config\.yaml$)
+        # Surface the gradle output on success too — a silent gate is
+        # one nobody trusts, and the timing line is how you notice the
+        # daemon went cold.
+        verbose: true

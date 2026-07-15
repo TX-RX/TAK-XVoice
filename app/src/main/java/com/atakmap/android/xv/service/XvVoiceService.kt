@@ -2281,6 +2281,27 @@ class XvVoiceService : Service() {
             }
         }
 
+    /**
+     * Outcome of the placement decision in [placeTelecomCallInternal].
+     *  - [PLACE]           — no live call and none in flight: issue a
+     *                        fresh [android.telecom.TelecomManager.placeCall].
+     *  - [REUSE_ACTIVE]    — a live [com.atakmap.android.xv.telecom.XvConnection]
+     *                        is registered: keep it ACTIVE, do not
+     *                        place again.
+     *  - [REUSE_IN_FLIGHT] — our `telecomState` says a call is
+     *                        active/warming but the connection has
+     *                        not registered yet (the first placeCall
+     *                        is still inside its async
+     *                        onCreateOutgoingConnection gap): suppress
+     *                        the duplicate placeCall.
+     *
+     * Declared at class level rather than inside [Companion]: Kotlin does
+     * not surface a companion's nested classifiers as `XvVoiceService.X`,
+     * so nesting this in the companion makes it unreferenceable from the
+     * unit tests that pin [decidePlacement]'s truth table.
+     */
+    internal enum class PlaceDecision { PLACE, REUSE_ACTIVE, REUSE_IN_FLIGHT }
+
     companion object {
         private const val TAG = "XvVoiceSvc"
 
@@ -2550,22 +2571,6 @@ class XvVoiceService : Service() {
             if (hasActiveConnection) return false
             return hasHadOwnCallInProcess
         }
-
-        /**
-         * Outcome of the placement decision in [placeTelecomCallInternal].
-         *  - [PLACE]           — no live call and none in flight: issue a
-         *                        fresh [android.telecom.TelecomManager.placeCall].
-         *  - [REUSE_ACTIVE]    — a live [com.atakmap.android.xv.telecom.XvConnection]
-         *                        is registered: keep it ACTIVE, do not
-         *                        place again.
-         *  - [REUSE_IN_FLIGHT] — our `telecomState` says a call is
-         *                        active/warming but the connection has
-         *                        not registered yet (the first placeCall
-         *                        is still inside its async
-         *                        onCreateOutgoingConnection gap): suppress
-         *                        the duplicate placeCall.
-         */
-        internal enum class PlaceDecision { PLACE, REUSE_ACTIVE, REUSE_IN_FLIGHT }
 
         /**
          * Pure decision for [placeTelecomCallInternal]. Extracted so the
