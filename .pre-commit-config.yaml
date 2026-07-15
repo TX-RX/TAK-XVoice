@@ -70,8 +70,26 @@ repos:
         # Covers Kotlin/KTS, the AIDL + proto sources that generate
         # code, Android resources and manifests, and the gradle
         # toolchain/version-catalog files.
+        #
+        # Plus the gate's own machinery — verify-gates.ps1, the lib/ it
+        # sources, and this config — so a change to the gate at least
+        # runs the gate once before it lands. Scoped to exactly those
+        # three, NOT a blanket ^scripts/: the gate dot-sources only
+        # lib/Read-Config.ps1 and reads scripts/config.json (gitignored,
+        # so it never appears in a push). install-dev / package-tpp /
+        # upload-tak-plugin / config.example.json / this directory's
+        # README cannot affect the build, and billing a docs typo for a
+        # full gradle run is exactly what the line above says not to do.
+        #
+        # Be honest about what this buys: on a green tree the gate only
+        # runs its SUCCESS path, so this catches a syntax error or crash
+        # in the gate — not a logic bug. Both bugs found while verifying
+        # #83 (the missing-SDK hint firing on every failure; Tee-Object
+        # swallowing gradle's output) lived on the FAILURE path and
+        # would sail straight through this. Self-exercise is a smoke
+        # test, not a proof.
         files: >-
-          (\.kts?$|\.aidl$|\.proto$|^gradle/|^gradle\.properties$|^app/src/.*\.xml$)
+          (\.kts?$|\.aidl$|\.proto$|^gradle/|^gradle\.properties$|^app/src/.*\.xml$|^scripts/verify-gates\.ps1$|^scripts/lib/|^\.pre-commit-config\.yaml$)
         # Surface the gradle output on success too — a silent gate is
         # one nobody trusts, and the timing line is how you notice the
         # daemon went cold.
