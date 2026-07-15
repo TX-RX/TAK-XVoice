@@ -741,6 +741,31 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `status snapshot exposes structured flags for the UI`() {
+        val h = Harness()
+        assertNull("dormant mesh has no snapshot", h.manager.statusSnapshot())
+        h.joinAndTick()
+        val ready = h.manager.statusSnapshot()!!
+        assertFalse(ready.active)
+        assertTrue("default channel is PREFERRED with no key yet → cleartext", ready.cleartext)
+        assertEquals(1, ready.legCount)
+
+        h.mumbleUp = false
+        h.now += 1_000
+        h.manager.tick()
+        assertTrue("mumble down → mesh is the live TX leg", h.manager.statusSnapshot()!!.active)
+    }
+
+    @Test
+    fun `status snapshot clears the cleartext flag once a key is live`() {
+        val h = Harness()
+        h.joinAndTick()
+        assertTrue(h.manager.statusSnapshot()!!.cleartext)
+        h.manager.installPresharedKey("Ops-1", ByteArray(AeadCodec.KEY_BYTES) { 0x42 })
+        assertFalse("keyed PREFERRED leg is encrypted", h.manager.statusSnapshot()!!.cleartext)
+    }
+
+    @Test
     fun `shutdown closes every leg and clears state`() {
         val h = Harness()
         h.joinAndTick()

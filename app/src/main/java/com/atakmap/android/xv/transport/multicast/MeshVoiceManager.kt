@@ -514,19 +514,50 @@ class MeshVoiceManager(
             .sortedBy { it.name }
 
     /**
-     * Short status badge for the dropdown, or null when mesh voice is
-     * dormant. Examples: "MESH READY", "MESH ACTIVE · CLEAR",
-     * "MESH READY · BRIDGING".
+     * Structured mesh state for the operator UI, or null when mesh
+     * voice is dormant (no legs). The UI renders [cleartext] as a
+     * distinct warning so an operator can never transmit unencrypted
+     * over the mesh without knowing.
+     *
+     * @property active mesh is the live TX leg right now (Mumble down /
+     *   failover engaged), vs. merely joined and standing by.
+     * @property bridging this device is relaying between the server and
+     *   the mesh for server-less peers.
+     * @property cleartext at least one live leg is sending unencrypted
+     *   (crypto policy CLEARTEXT, or keying hasn't converged on a
+     *   PREFERRED channel).
+     */
+    data class StatusSnapshot(
+        val active: Boolean,
+        val bridging: Boolean,
+        val cleartext: Boolean,
+        val legCount: Int,
+    )
+
+    @Synchronized
+    fun statusSnapshot(): StatusSnapshot? {
+        if (legs.isEmpty()) return null
+        return StatusSnapshot(
+            active = meshTxActive,
+            bridging = bridging,
+            cleartext = legs.values.any { !it.encryptedNow },
+            legCount = legs.size,
+        )
+    }
+
+    /**
+     * Short status badge for diagnostics (MESH_STATUS debug dump), or
+     * null when mesh voice is dormant. Examples: "MESH READY",
+     * "MESH ACTIVE · CLEAR", "MESH READY · BRIDGING". The operator UI
+     * uses [statusSnapshot] instead so it can colour the CLEAR state.
      */
     @Synchronized
     fun statusBadge(): String? {
-        if (legs.isEmpty()) return null
-        val base = if (meshTxActive) "MESH ACTIVE" else "MESH READY"
-        val clear = legs.values.any { !it.encryptedNow }
+        val snap = statusSnapshot() ?: return null
         return buildString {
-            append(base)
-            if (bridging) append(" · BRIDGING")
-            if (clear) append(" · CLEAR")
+            append(if (snap.active) "MESH ACTIVE" else "MESH READY")
+            if (snap.bridging) append(" · BRIDGING")
+            if (snap.cleartext) append(" · CLEAR")
         }
     }
 

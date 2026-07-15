@@ -50,6 +50,16 @@ class XvDropDownReceiver(
         val nextDelayMs: Long,
     )
 
+    // Live mesh-voice state for the main panel status line.
+    // [label] is the short human string (e.g. "MESH ACTIVE · BRIDGE");
+    // [cleartext] drives the safety-critical unencrypted warning colour
+    // so an operator can never transmit in the clear over the mesh
+    // without an unmistakable on-screen cue.
+    data class MeshStatus(
+        val label: String,
+        val cleartext: Boolean,
+    )
+
     interface Controller {
         fun isMumbleConnected(): Boolean
 
@@ -365,6 +375,13 @@ class XvDropDownReceiver(
         fun meshActiveChannelCanonical(): String? = null
 
         fun selectMeshChannel(name: String) {}
+
+        // Live mesh state for the main panel, or null when mesh voice
+        // is dormant (off, or no leg up). Rendered as a status line so
+        // the operator can see failover/bridge state at a glance — and,
+        // critically, the [MeshStatus.cleartext] flag so an unencrypted
+        // mesh transmission is never invisible.
+        fun meshStatus(): MeshStatus? = null
 
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
@@ -682,6 +699,28 @@ class XvDropDownReceiver(
                 else -> "🎙️"
             }
         v.findViewById<TextView>(R.id.xv_audio_route).text = "$routeGlyph $routeLabel"
+
+        // Mesh-voice status line. Hidden entirely in the common
+        // (mesh-off / no leg) case so it adds no clutter; when a leg is
+        // live it shows failover/bridge state, and renders a red
+        // "· CLEAR" when any leg is unencrypted so the operator can
+        // never transmit in the clear over the mesh unaware. This is the
+        // one on-screen signal that voice is still flowing when the
+        // connection line above reads "no TAK server".
+        val meshStatusView = v.findViewById<TextView>(R.id.xv_mesh_status)
+        val mesh = controller.meshStatus()
+        if (mesh == null) {
+            meshStatusView.visibility = View.GONE
+        } else {
+            meshStatusView.visibility = View.VISIBLE
+            meshStatusView.text = "🕸 ${mesh.label}"
+            meshStatusView.setTextColor(
+                pluginContext.resources.getColor(
+                    if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
+                    null,
+                ),
+            )
+        }
 
         // VS1 PTT card — channel name lives on the header above the
         // PTT button. RX speaker indicator is appended when peers are

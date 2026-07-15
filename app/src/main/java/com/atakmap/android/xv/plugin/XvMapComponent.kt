@@ -2719,6 +2719,17 @@ class XvMapComponent : AbstractMapComponent() {
                 meshVoiceManager?.onChannelJoined(0, name)
             }
 
+            override fun meshStatus(): XvDropDownReceiver.MeshStatus? {
+                val snap = meshVoiceManager?.statusSnapshot() ?: return null
+                val label =
+                    buildString {
+                        append(if (snap.active) "MESH ACTIVE" else "MESH READY")
+                        if (snap.bridging) append(" · BRIDGE")
+                        if (snap.cleartext) append(" · CLEAR")
+                    }
+                return XvDropDownReceiver.MeshStatus(label = label, cleartext = snap.cleartext)
+            }
+
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()
 
             override fun requestMissingPermissions() {
