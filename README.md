@@ -88,14 +88,28 @@ and feature polish.
    fleet-managed deployments — no need to re-open and re-join after every
    ATAK restart.
 
-3. **External button registration.** XV registers BT speakermic buttons
-   per-MAC for the curated device list — SPP-based hardware (AINA APTT
-   V1 and similar Pryme speakermics) and BLE GATT devices (AINA APTT V2,
-   Pryme BT-PTT-Z). On Samsung ruggedized hardware (Galaxy Tab Active5,
-   XCover6 Pro / 7, Tab Active4 Pro, Tab Active3) the programmable
-   side Active Key can be enabled as an additional PTT source alongside
-   any bonded speakermic — the toggle only appears on hardware that
-   actually has the key.
+3. **Bluetooth and on-device PTT buttons.** XV registers BT speakermic
+   buttons per-MAC for the curated device list — SPP-based hardware
+   (AINA APTT V1 and similar Pryme speakermics) and BLE GATT devices
+   (AINA APTT V2, Pryme BT-PTT-Z). It also drives the programmable
+   hardware keys built into curated ruggedized handsets, alongside any
+   bonded speakermic:
+   - **Samsung Active Key** (Galaxy Tab Active5, XCover6 Pro / 7, Tab
+     Active4 Pro, Tab Active3) — the side Active Key becomes a PTT
+     source. See [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
+   - **Sonim XP10 (XP9900)** — the dedicated side PTT / Yellow key drives
+     PTT and the SOS key fires the ATAK emergency alert. Works with the
+     classic Sonim key broadcasts, MCX / MCPTT carrier firmware, and the
+     handset's "assign key to ATAK" Programmable-Keys mode. See
+     [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
+
+   These toggles appear only on hardware that actually has the keys. An
+   optional, tightly-scoped accessibility service — enabled once by the
+   operator in system settings, reading no screen content and acting only
+   on the PTT keycode — extends these hardware buttons to keep working
+   while ATAK is backgrounded or the screen is off. XV deep-links
+   straight to the relevant system settings page to reduce setup
+   friction.
 
 4. **Reachability-aware BT device picker.** On plugin load, XV restores
    the last-connected speakermic when it's actually reachable and
@@ -114,7 +128,8 @@ XV also adds:
   button, prev/next channel) so a fresh pairing "just works." Operators
   edit the defaults; overrides persist by BT address.
 - **LMR-style emergency button** — short press fires the emergency
-  configured in ATAK's Alert Tool; long press (1 s) cancels.
+  configured in ATAK's Alert Tool; long press (1 s) cancels. On Sonim
+  handsets the dedicated SOS key maps to the same emergency.
 - **Configurable Talk Permit Tones** (ASTRO 25 / Nextel / DMR / MOTOTRBO
   / None) for operators transitioning from public-safety LMR systems.
 - **Mumble + multicast channels under a single UX** — transport is an
@@ -193,9 +208,20 @@ Curated / validated speakermics:
 - AINA APTT V2 (BLE GATT)
 - Pryme BT-PTT-Z (HM-10 UART)
 
+Curated / validated ruggedized handsets (on-device hardware keys):
+
+- Samsung Galaxy Tab Active5 (SM-X308U) — Active Key PTT, foreground and
+  background (accessibility). See
+  [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
+- Sonim XP10 (XP9900, AT&T carrier / Android 12) — side PTT / Yellow key
+  and SOS key, via MCX / MCPTT firmware and the assign-to-ATAK mode. See
+  [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
+
 This list only includes devices that have been integrated end-to-end
 and validated against event traffic. Additional hardware is added the
-same way — one device at a time, once it's been tested.
+same way — one device at a time, once it's been tested. Other chassis
+that share these keys (other XCover / Tab Active models, non-carrier
+Sonim variants) are gated on by model prefix but are not yet validated.
 
 ## License
 

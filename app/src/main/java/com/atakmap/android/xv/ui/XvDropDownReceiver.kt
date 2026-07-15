@@ -281,6 +281,16 @@ class XvDropDownReceiver(
 
         fun setSamsungActiveKeyEnabled(enabled: Boolean) {}
 
+        // True when the XV accessibility service for background Active Key
+        // PTT is currently enabled (as reported by AccessibilityManager).
+        // Read-only from the Controller's perspective — the operator must
+        // grant / revoke the permission via the system Accessibility dialog.
+        fun samsungActiveKeyBgServiceEnabled(): Boolean = false
+
+        // Launch the system Accessibility settings page so the operator
+        // can enable or disable the XV accessibility service.
+        fun openAccessibilitySettings() {}
+
         // ---- Sonim ruggedized-device dedicated hardware buttons ----
         // True only when the current device is a Sonim ruggedized
         // model (XP10 / XP9900 and XP-family peers) that carries the
@@ -1530,8 +1540,8 @@ class XvDropDownReceiver(
         wireBlePttScanButton(v)
         wireAutoConnectBtSwitch(v)
         wireSamsungActiveKeySwitch(v)
-        wireSonimPttButtonSwitch(v)
-        wireSonimEmergencyButtonSwitch(v)
+        wireSamsungActiveKeyBgSwitch(v)
+        wireSonimHardwareButtonsRow(v)
         wireBtAudioOverridePicker(v)
     }
 
@@ -1969,17 +1979,22 @@ class XvDropDownReceiver(
         }
     }
 
-    // Sonim ruggedized-device dedicated PTT side button toggle. The
-    // whole row is hidden entirely on any device that isn't a
-    // supported Sonim model — per operator direction, non-Sonim
-    // hardware never sees the option. On Sonim XP10 / XP9900 / XP-
-    // family peers the row is shown, reflects the persisted toggle,
-    // and updates the service on flip.
-    private fun wireSonimPttButtonSwitch(v: View) {
-        val row = v.findViewById<View>(R.id.xv_row_sonim_ptt_button) ?: return
-        val help = v.findViewById<View>(R.id.xv_label_sonim_ptt_button_help)
-        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_sonim_ptt_button) ?: return
-        val supported = controller.sonimHardwareButtonsSupported()
+    // Samsung Active Key background PTT toggle (Accessibility service).
+    // Only visible on Samsung ruggedized hardware — same isSupported()
+    // gate as the row above.  The toggle reflects whether the XV
+    // accessibility service is currently enabled (via AccessibilityManager)
+    // and is read-only in the traditional sense: tapping it opens the
+    // system Accessibility settings page rather than toggling directly,
+    // because Android does not allow apps to enable / disable accessibility
+    // services programmatically.  The switch read-state updates on each
+    // inflateSettings call so it stays in sync after the operator returns
+    // from the system settings page.
+    @Suppress("ReturnCount")
+    private fun wireSamsungActiveKeyBgSwitch(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_samsung_active_key_bg) ?: return
+        val help = v.findViewById<View>(R.id.xv_label_samsung_active_key_bg_help)
+        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_samsung_active_key_bg) ?: return
+        val supported = controller.samsungActiveKeySupported()
         if (!supported) {
             row.visibility = View.GONE
             help?.visibility = View.GONE
@@ -1987,35 +2002,99 @@ class XvDropDownReceiver(
         }
         row.visibility = View.VISIBLE
         help?.visibility = View.VISIBLE
-        // Detach any previous listener before pushing state so restoring
-        // the persisted value doesn't spuriously call setSonimPttButtonEnabled.
+        // Reflect current OS-level enabled state — no listener that
+        // would try to set it programmatically (Android disallows that).
         sw.setOnCheckedChangeListener(null)
-        sw.isChecked = controller.sonimPttButtonEnabled()
-        sw.setOnCheckedChangeListener { _, isChecked ->
-            controller.setSonimPttButtonEnabled(isChecked)
+        sw.isChecked = controller.samsungActiveKeyBgServiceEnabled()
+        // Any tap on the row or the switch opens the system Accessibility
+        // settings so the operator can enable / disable the service there.
+        // Reset the switch to the current OS-reported value before launching
+        // Settings — a Switch tap briefly toggles the visual state before
+        // the click listener fires, so we must correct it immediately to
+        // avoid showing a misleading checked state while Settings opens.
+        row.setOnClickListener { controller.openAccessibilitySettings() }
+        sw.setOnClickListener {
+            sw.isChecked = controller.samsungActiveKeyBgServiceEnabled()
+            controller.openAccessibilitySettings()
         }
     }
 
-    // Sonim ruggedized-device dedicated Emergency / SOS button toggle.
-    // Same gate as the PTT-button switch above. Currently a plain PTT
-    // source with a distinct log tag; a follow-up may upgrade it to
-    // fire an emergency CoT event.
-    private fun wireSonimEmergencyButtonSwitch(v: View) {
-        val row = v.findViewById<View>(R.id.xv_row_sonim_emergency_button) ?: return
-        val help = v.findViewById<View>(R.id.xv_label_sonim_emergency_button_help)
-        val sw = v.findViewById<android.widget.Switch>(R.id.xv_switch_sonim_emergency_button) ?: return
+    // Sonim ruggedized-device hardware-buttons entry point. Visible
+    // only on Sonim XP10 / XP9900 / XP-family peers. Replaces two
+    // former XV-local toggles ("Use Sonim PTT button as PTT",
+    // "Sonim Emergency / SOS button fires ATAK Alert") with a single
+    // row that deep-links to Android Settings.
+    //
+    // Rationale (2026-07-14 field session): the phone's own
+    // Programmable Keys menu is the source of truth for which app
+    // each Sonim hardware key routes to. Duplicating that assignment
+    // as an XV-local toggle caused false-negatives (the toggle was
+    // wiped by adb -Uninstall between dev iterations, leaving the
+    // operator confused about why the button had "stopped working").
+    // XV now listens unconditionally on supported Sonim hardware and
+    // this row just launches the phone's settings so the operator
+    // can assign PTT / SOS to ATAK where the OS asks for it.
+    private fun wireSonimHardwareButtonsRow(v: View) {
+        val row = v.findViewById<View>(R.id.xv_row_sonim_hardware_buttons) ?: return
+        val btn = v.findViewById<android.widget.Button>(R.id.xv_btn_open_programmable_keys)
+        val a11yBtn = v.findViewById<android.widget.Button>(R.id.xv_btn_open_sonim_accessibility)
         val supported = controller.sonimHardwareButtonsSupported()
         if (!supported) {
             row.visibility = View.GONE
-            help?.visibility = View.GONE
             return
         }
         row.visibility = View.VISIBLE
-        help?.visibility = View.VISIBLE
-        sw.setOnCheckedChangeListener(null)
-        sw.isChecked = controller.sonimEmergencyButtonEnabled()
-        sw.setOnCheckedChangeListener { _, isChecked ->
-            controller.setSonimEmergencyButtonEnabled(isChecked)
+        // Accessibility settings shortcut — mirror of the Samsung
+        // Active Key background-PTT row. Required for the Sonim PTT
+        // key (KEYCODE_PTT / 228) to work while ATAK is backgrounded
+        // or the screen is off; see the SamsungActiveKeyAccessibilityService
+        // kdoc for the mechanism.
+        a11yBtn?.setOnClickListener { controller.openAccessibilitySettings() }
+        btn?.setOnClickListener {
+            // Try increasingly-general deep links until one lands.
+            // Field-verified 2026-07-14 on Sonim XP9900 (AT&T carrier,
+            // Android 12): the Programmable Keys page is
+            // com.android.settings/.Settings\$ProgrammableKeyActivity
+            // — a Sonim-added inner-class Activity under the standard
+            // Settings package. Discovered via
+            // `adb shell pm dump com.android.settings | grep ProgrammableKey`.
+            // Fallbacks handle other Sonim firmware variants and
+            // eventually top-level Settings.
+            val ctx = it.context
+            val candidates =
+                listOf(
+                    // Sonim XP10 Programmable Keys page — direct component launch.
+                    android.content.Intent().setComponent(
+                        android.content.ComponentName(
+                            "com.android.settings",
+                            "com.android.settings.Settings\$ProgrammableKeyActivity",
+                        ),
+                    ),
+                    // Hypothetical Sonim-published action (some
+                    // variants may honour this even without the
+                    // specific inner-class name above).
+                    android.content.Intent("com.sonim.settings.action.PROGRAMMABLE_KEYS"),
+                    // Fallback — top-level Android Settings.
+                    android.content.Intent("android.settings.SETTINGS"),
+                )
+            for (intent in candidates) {
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    ctx.startActivity(intent)
+                    return@setOnClickListener
+                } catch (_: android.content.ActivityNotFoundException) {
+                    // Try next
+                } catch (_: SecurityException) {
+                    // Try next
+                }
+            }
+            // If even the top-level Settings intent failed something
+            // is very wrong; surface a Toast rather than silently fail.
+            android.widget.Toast.makeText(
+                ctx,
+                "Could not open Settings — navigate manually to System → Buttons → Programmable keys",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
         }
     }
 

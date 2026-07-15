@@ -223,6 +223,34 @@
             </intent-filter>
         </service>
 
+        <!-- Background PTT for the Samsung Active Key via the Accessibility
+             framework.  Only the system accessibility framework can bind
+             this service — enforced by the BIND_ACCESSIBILITY_SERVICE
+             permission, the same pattern used by XvConnectionService.
+             exported=true is required by the framework (the system binder
+             crosses UIDs); the permission is the real enforcement.
+
+             The service discards all dispatched events (typeWindowStateChanged
+             in xv_accessibility_service.xml, the minimum AAPT accepts) and never reads screen content
+             or typed text.  Only KEY_CODE_PTT (1015) is acted on in
+             onKeyEvent; all other keycodes are passed through untouched.
+
+             The corresponding Settings row is only visible to operators on
+             Samsung ruggedized hardware (SamsungActiveKey.isSupported()
+             gate) and cannot be enabled programmatically — the operator
+             must accept the system Accessibility dialog. -->
+        <service
+            android:name=".ptt.SamsungActiveKeyAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/xv_accessibility_service"/>
+        </service>
+
         <!-- adb-driven debug surface lives in app/src/debug/AndroidManifest.xml
              so it's never declared in release builds. The dynamic
              registerReceiver() in XvMapComponent is also gated on

@@ -527,133 +527,15 @@
                     android:textSize="11sp"
                     android:layout_marginTop="4dp"/>
 
-                <!-- Samsung ruggedized-device Active Key PTT toggle.
-                     Visible ONLY on Samsung Tab Active5 / XCover6 Pro
-                     / XCover7 / Tab Active4 Pro / Tab Active3 — the
-                     row is hidden (`View.GONE`) at inflate time on
-                     every other device via
-                     XvDropDownReceiver.wireSamsungActiveKeySwitch,
-                     which consults
-                     `SamsungActiveKey.isSupported(context)`. Non-
-                     Samsung operators never see this row. Default
-                     OFF; the operator opts in explicitly. -->
-                <LinearLayout
-                    android:id="@+id/xv_row_samsung_active_key"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:padding="12dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:layout_marginTop="12dp"
-                    android:visibility="gone">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Use Samsung Active Key as PTT"
-                        android:textColor="@color/xv_text"
-                        android:textSize="14sp"/>
-
-                    <Switch
-                        android:id="@+id/xv_switch_samsung_active_key"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"/>
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/xv_label_samsung_active_key_help"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Use the programmable side button on your Samsung ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end. Turn OFF to restore the key's default Samsung behaviour."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="4dp"
-                    android:visibility="gone"/>
-
-                <!-- Sonim ruggedized-device dedicated PTT side button
-                     toggle. Visible ONLY on Sonim XP10 / XP9900 and
-                     XP-family peers — the row is hidden (`View.GONE`)
-                     at inflate time on every other device via
-                     XvDropDownReceiver.wireSonimPttButtonSwitch, which
-                     consults `SonimHardwareButtons.isSupported(context)`.
-                     Non-Sonim operators never see this row. Default OFF;
-                     the operator opts in explicitly. -->
-                <LinearLayout
-                    android:id="@+id/xv_row_sonim_ptt_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:padding="12dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:layout_marginTop="12dp"
-                    android:visibility="gone">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Use Sonim PTT button as PTT"
-                        android:textColor="@color/xv_text"
-                        android:textSize="14sp"/>
-
-                    <Switch
-                        android:id="@+id/xv_switch_sonim_ptt_button"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"/>
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/xv_label_sonim_ptt_button_help"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Use the dedicated PTT side button on your Sonim ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end. Turn OFF to restore the button's default Sonim behaviour."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="4dp"
-                    android:visibility="gone"/>
-
-                <!-- Sonim ruggedized-device dedicated Emergency / SOS
-                     button toggle. Same gate as the PTT-button row
-                     above. Currently a plain additional PTT source; a
-                     future PR may promote it to fire an emergency CoT
-                     event or SOS broadcast without changing this row. -->
-                <LinearLayout
-                    android:id="@+id/xv_row_sonim_emergency_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:padding="12dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:layout_marginTop="12dp"
-                    android:visibility="gone">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Use Sonim Emergency button as PTT"
-                        android:textColor="@color/xv_text"
-                        android:textSize="14sp"/>
-
-                    <Switch
-                        android:id="@+id/xv_switch_sonim_emergency_button"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"/>
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/xv_label_sonim_emergency_button_help"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Use the dedicated red Emergency / SOS button on your Sonim ruggedized device as an additional PTT source. For now, press to talk; release to end. A future update may add an emergency CoT event or SOS broadcast."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="4dp"
-                    android:visibility="gone"/>
+                <!-- ============================================================
+                     Audio device section. Placed above the device-specific
+                     hardware-button rows below because audio routing is
+                     what the operator adjusts most often (add/swap BT
+                     speakermic, split PTT-input from audio-output for
+                     car-stereo, choose speaker vs. earpiece fallback),
+                     while the device-specific rows below are configure-
+                     once-and-forget.
+                     ============================================================ -->
 
                 <!-- Section header: Audio device -->
                 <TextView
@@ -708,6 +590,204 @@
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="4dp"/>
+
+                <!-- ============================================================
+                     Device-specific hardware-button rows below. Each is
+                     hidden on unsupported hardware so operators only see
+                     the one that matches their device. Configure-once-and-
+                     forget, so intentionally below the more frequently-used
+                     Audio device section above.
+                     ============================================================ -->
+
+                <!-- Samsung ruggedized-device Active Key PTT toggle.
+                     Visible ONLY on Samsung Tab Active5 / XCover6 Pro
+                     / XCover7 / Tab Active4 Pro / Tab Active3 — the
+                     row is hidden (`View.GONE`) at inflate time on
+                     every other device via
+                     XvDropDownReceiver.wireSamsungActiveKeySwitch,
+                     which consults
+                     `SamsungActiveKey.isSupported(context)`. Non-
+                     Samsung operators never see this row. Default
+                     OFF; the operator opts in explicitly. -->
+                <LinearLayout
+                    android:id="@+id/xv_row_samsung_active_key"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Use Samsung Active Key as PTT"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_samsung_active_key"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/xv_label_samsung_active_key_help"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Use the programmable side button on your Samsung ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end. Turn OFF to restore the key's default Samsung behaviour."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone"/>
+
+                <!-- Background Active Key PTT via Accessibility service.
+                     Visible ONLY on Samsung ruggedized hardware (same
+                     isSupported() gate as the row above).  When enabled,
+                     the Samsung Active Key fires PTT even while ATAK is
+                     backgrounded.  Requires the operator to grant XV the
+                     Accessibility permission via the system settings
+                     dialog — cannot be enabled programmatically.
+                     The button deep-links to the system Accessibility
+                     settings page; the toggle reflects whether the
+                     service is currently enabled (read-only — toggling
+                     navigates to OS settings rather than toggling in-
+                     place, because the OS permission cannot be granted
+                     or revoked by the app). -->
+                <LinearLayout
+                    android:id="@+id/xv_row_samsung_active_key_bg"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Use Active Key while ATAK is in the background"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_samsung_active_key_bg"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/xv_label_samsung_active_key_bg_help"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Requires granting XV the Accessibility permission so the Active Key fires PTT while ATAK is in the background. Does NOT read screen content, typed text, or any other app data — only the Active Key button is intercepted. Tap the toggle to open Android Accessibility Settings to enable or disable the XV service."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone"/>
+
+                <!-- Sonim ruggedized-device hardware-button entry point.
+                     Visible ONLY on Sonim XP10 / XP9900 and XP-family
+                     peers — hidden (`View.GONE`) on every other device
+                     at inflate time via
+                     XvDropDownReceiver.wireSonimHardwareButtonsRow,
+                     which consults SonimHardwareButtons.isSupported(context).
+                     Non-Sonim operators never see this row.
+
+                     No XV-local toggles: the phone's own Programmable
+                     Keys menu is the source of truth for which app
+                     each key routes to. XV listens whenever it runs
+                     on Sonim hardware; if the operator hasn't assigned
+                     a key to ATAK the corresponding broadcast never
+                     arrives and XV silently ignores the button.
+
+                     Field-verified 2026-07-14: previous XV-local
+                     toggles caused false-negatives (toggle wiped by
+                     -Uninstall → operator confused why button stopped
+                     working) and duplicated the phone's authoritative
+                     assignment. The single row below just deep-links
+                     into Android Settings for the operator to
+                     configure. -->
+                <LinearLayout
+                    android:id="@+id/xv_row_sonim_hardware_buttons"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="12dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Sonim hardware buttons"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"
+                        android:textStyle="bold"/>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Three Sonim hardware keys can be assigned to ATAK in the phone's Programmable Keys menu:\n\n• PTT key → ATAK — press-to-talk voice.\n• SOS / Emergency key → ATAK — fires ATAK's Alert Tool. Short press starts an emergency beacon; long hold cancels it. Does not key voice.\n• Application key → ATAK (optional) — quick-launch ATAK to the foreground from anywhere on the device.\n\nNo XV toggle here — the phone's assignment is the source of truth. XV automatically catches whichever of these the phone forwards."
+                        android:textColor="@color/xv_text_dim"
+                        android:textSize="11sp"
+                        android:layout_marginTop="4dp"/>
+
+                    <Button
+                        android:id="@+id/xv_btn_open_programmable_keys"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Open Programmable Keys settings"
+                        android:layout_marginTop="8dp"/>
+
+                    <!-- Sub-section: background-PTT accessibility grant.
+                         Separate from the main assignment story above
+                         because it's a different concern with its own
+                         "why" — the SOS button works in all states
+                         via broadcast delivery, but the PTT KeyEvent
+                         needs the accessibility grant to reach XV
+                         when ATAK isn't foregrounded. Visually
+                         separated so the operator sees it as an
+                         optional add-on rather than a mixed-in caveat
+                         on the assignment guidance. -->
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/xv_text_dim"
+                        android:alpha="0.15"
+                        android:layout_marginTop="12dp"/>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Background PTT (optional)"
+                        android:textColor="@color/xv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:layout_marginTop="12dp"/>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="By default the PTT key only fires while ATAK is in the foreground. To make it work while ATAK is backgrounded or the screen is off, grant XV the Accessibility permission — XV then receives the PTT KeyEvent system-wide. Only the two configured PTT keycodes are acted on; XV does not read screen content, typed text, or any other app data. The SOS button already works in all states without this — Sonim delivers it as a broadcast rather than a KeyEvent."
+                        android:textColor="@color/xv_text_dim"
+                        android:textSize="11sp"
+                        android:layout_marginTop="4dp"/>
+
+                    <Button
+                        android:id="@+id/xv_btn_open_sonim_accessibility"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Open Accessibility settings"
+                        android:layout_marginTop="8dp"/>
+                </LinearLayout>
 
                 <View
                     android:layout_width="match_parent"

@@ -28,25 +28,23 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  *
  * ---
  *
- * ### Distinct source, plain-PTT behaviour for now
+ * ### Emergency-alert wiring (AINA-PTTE parity)
  *
- * This reader currently treats the Emergency button as a plain
- * additional PTT source — press = PTT down, release = PTT up — but
- * fires under the distinct [PttSource.SONIM_EMERGENCY] enum value.
- * That distinction is deliberate:
+ * Press / release edges are delivered to the caller's [onEdge]
+ * lambda tagged with [PttSource.SONIM_EMERGENCY]. As of 2026-07-14
+ * the caller ([com.atakmap.android.xv.service.VoicePlant.startSonimEmergencyButton])
+ * routes those edges into
+ * [com.atakmap.android.xv.emergency.EmergencyController.onEmergencyButton]
+ * via [com.atakmap.android.xv.service.PlantCallbacks.onEmergencyButton]
+ * — the same emergency-dispatch path the AINA PTTE key uses.
  *
- *   - Distinct source tag → distinct log strings ("XvSonimEmergency")
- *     so on-device debugging can tell which physical button drove a
- *     given TX burst.
- *   - Distinct source tag → distinct future path. A follow-up PR can
- *     upgrade Emergency-button presses to fire an emergency CoT event
- *     or SOS broadcast without disturbing the plain PTT path or
- *     changing this reader's shape.
- *
- * The AINA PTTE key already has an emergency-dispatch coupling in
- * [com.atakmap.android.xv.emergency]; wiring the Sonim SOS button
- * into the same subsystem is deliberately out of scope for the PR
- * that introduces this file.
+ * A short press fires ATAK's Alert Tool via
+ * [com.atakmap.android.xv.emergency.AtakEmergencyDispatcher.firePanic];
+ * a long-hold cancels. The button does NOT open a Telecom call or
+ * transmit voice — the "SOS" chassis label is treated as literal
+ * alert semantics, matching AINA PTTE behaviour. The
+ * [PttSource.SONIM_EMERGENCY] tag survives on the [onEdge] boundary
+ * for distinct log strings ("XvSonimEmergency") and future analytics.
  *
  * ---
  *

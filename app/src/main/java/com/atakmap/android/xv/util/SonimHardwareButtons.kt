@@ -21,15 +21,23 @@ import android.view.KeyEvent
  *      target app in Settings → Programmable keys. This path is
  *      backgrounded-safe. Sonim device intents (well-documented on
  *      Sonim SDK / community reference sites):
- *        - PTT press / release:
+ *        - PTT press / release (classic Sonim-namespaced):
  *            `com.sonim.intent.action.PTT_KEY_DOWN`
  *            `com.sonim.intent.action.PTT_KEY_UP`
+ *        - PTT press / release (MCX / MCPTT mode, AT&T carrier firmware):
+ *            `com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY`
+ *            Uses a `"state"` integer extra: 1 = pressed, 0 = released.
+ *            First observed on XP9900 (AT&T carrier, Android 12) where
+ *            the Sonim SDK policy engine checks for this action rather
+ *            than the classic `PTT_KEY_DOWN` / `PTT_KEY_UP` strings.
  *        - SOS press / release:
  *            `android.intent.action.SOS.down`
  *            `android.intent.action.SOS.up`
- *      The PTT_KEY intents are the Sonim-namespaced actions; the SOS
- *      broadcast reuses the Android-style `.down` / `.up` convention
- *      that other ruggedized OEMs also emit.
+ *      `SonimPttButtonReader` registers for all three PTT actions so
+ *      both classic and MCX-mode firmware work without separate code
+ *      paths. `PttDispatcher`'s source-based OR-gate prevents double-
+ *      fire if a firmware emits more than one of the three actions for
+ *      a single physical press.
  *
  *   2) **Plain [KeyEvent]s** delivered to the foreground activity via
  *      `PhoneWindowManager.interceptKeyTq` → `InputDispatcher`. This
@@ -86,6 +94,17 @@ import android.view.KeyEvent
  *   - Sonim SPCC overview (confirms the SDK is optional and buttons
  *     have a programmable API, not an SDK-only path):
  *     https://developer.firstnet.com/firstnet/apis-sdks/sonim-spcc
+ *   - On-device validation (XP9900 AT&T carrier, Android 12, 2026-07-11):
+ *     Confirmed `Build.MODEL = XP9900`, `Build.BRAND = Sonim`,
+ *     `Build.MANUFACTURER = Sonimtech`. AT&T carrier firmware activates
+ *     the MCX/MCPTT policy engine — PTT button fires under
+ *     `com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY` with
+ *     a `"state"` extra (1 = pressed, 0 = released) rather than the
+ *     classic Sonim-namespaced `PTT_KEY_DOWN` / `PTT_KEY_UP` actions.
+ *     `isSupported()` correctly returns `true` (BRAND check catches
+ *     `Sonimtech` manufacturer via the OR path). Prerequisite: operator
+ *     must set Settings → System → Buttons (Programmable keys) → PTT
+ *     key → No Action to release the button from AT&T Dispatch Hub.
  *
  * ---
  *
@@ -127,9 +146,84 @@ object SonimHardwareButtons {
     /** Broadcast action fired when the SOS button is released. */
     const val ACTION_SOS_UP: String = "android.intent.action.SOS.up"
 
-    // ============================================================
-    // KeyEvent surface (foreground fallback)
-    // ============================================================
+    /**
+     * MCX / MCPTT broadcast action for the PTT side button on
+     * carrier-branded Sonim firmware (AT&T XP9900, Android 12). Used
+     * by the Sonim SDK policy engine on MCPTT-mode handsets instead of
+     * (or in addition to) the classic [ACTION_PTT_KEY_DOWN] /
+     * [ACTION_PTT_KEY_UP] pair. Unlike the classic actions, this is a
+     * single action that carries a [MCX_EXTRA_STATE] integer extra
+     * indicating the button edge: [MCX_STATE_PRESSED] on press,
+     * [MCX_STATE_RELEASED] on release.
+     *
+     * `SonimPttButtonReader` registers for this action alongside the
+     * classic Sonim actions so the PTT button works on both firmware
+     * variants. `PttDispatcher`'s source-based OR-gate prevents double-
+     * fire if a firmware happens to emit both forms for the same press.
+     */
+    const val ACTION_MCX_KEY: String =
+        "com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY"
+
+    /**
+     * Intent extra key carried with [ACTION_MCX_KEY] broadcasts.
+     * Integer value: [MCX_STATE_PRESSED] when the button is pressed,
+     * [MCX_STATE_RELEASED] when the button is released. If the extra
+     * is absent the broadcast is ignored (treated as malformed).
+     */
+    const val MCX_EXTRA_STATE: String = "state"
+
+    /** [MCX_EXTRA_STATE] value indicating the PTT button was pressed. */
+    const val MCX_STATE_PRESSED: Int = 1
+
+    /** [MCX_EXTRA_STATE] value indicating the PTT button was released. */
+    const val MCX_STATE_RELEASED: Int = 0
+
+    // -- "Assigned to ATAK" broadcast actions ---------------------------
+    //
+    // On the XP9900 (AT&T carrier firmware, Android 12) the operator
+    // configures which app receives PTT / SOS / Yellow-key presses via
+    // Settings → System → Buttons → Programmable Keys. When set to ATAK,
+    // Sonim's WindowManager fires the following broadcasts with
+    // `Intent.setPackage("com.atakmap.app.civ")` — pkg-scoped, so only
+    // receivers running in ATAK's process see them. XV registers a
+    // matching receiver from XvMapComponent (which runs inside ATAK's
+    // process) via SonimAssignedAppReader. The service-process
+    // SonimEmergencyButtonReader / SonimPttButtonReader do NOT receive
+    // these because they live in the plugin's own process.
+    //
+    // Field-verified 2026-07-14 on the operator's XP9900 with keys
+    // assigned to ATAK; Yellow key is what the operator uses as their
+    // effective PTT trigger on this chassis.
+
+    /** Yellow-key press when the Yellow key is assigned to the receiving app. */
+    const val ACTION_YELLOW_KEY_DOWN: String = "com.sonim.intent.action.YELLOW_KEY_DOWN"
+
+    /** Yellow-key release when the Yellow key is assigned to the receiving app. */
+    const val ACTION_YELLOW_KEY_UP: String = "com.sonim.intent.action.YELLOW_KEY_UP"
+
+    /** SOS-key press when the SOS key is assigned to the receiving app. */
+    const val ACTION_SOS_KEY_DOWN: String = "com.sonim.intent.action.SOS_KEY_DOWN"
+
+    /** SOS-key release when the SOS key is assigned to the receiving app. */
+    const val ACTION_SOS_KEY_UP: String = "com.sonim.intent.action.SOS_KEY_UP"
+
+    /**
+     * Kodiak MCPTT-stack redundant SOS broadcast. Fires alongside the
+     * Sonim SOS_KEY_DOWN / _UP actions on the same press (both are
+     * emitted from the same WindowManager sendKeyEventBroadcast call
+     * on the XP9900). The reader dedupes: whichever action arrives
+     * first wins the down/up edge, the redundant one is dropped by
+     * the held-state guard.
+     */
+    const val ACTION_KODIAK_SOS: String = "com.kodiak.intent.action.KEYCODE_SOS"
+
+    /**
+     * Sentinel returned by [android.content.Intent.getIntExtra] when
+     * the [MCX_EXTRA_STATE] extra is absent from an [ACTION_MCX_KEY]
+     * broadcast. Any value other than [MCX_STATE_PRESSED] or
+     * [MCX_STATE_RELEASED] is treated as unknown and ignored.
+     */
+    const val MCX_STATE_UNKNOWN: Int = -1
 
     /**
      * Best-effort primary KeyEvent code for the Sonim PTT side button.
@@ -155,6 +249,29 @@ object SonimHardwareButtons {
      * the other to reduce noise in log output.
      */
     const val PTT_KEY_CODE_ALT: Int = KeyEvent.KEYCODE_CALL
+
+    /**
+     * Second alternative KeyEvent code: the Android platform
+     * `KEYCODE_PTT` (228). Field-verified 2026-07-14 on Sonim XP9900
+     * (AT&T carrier firmware, Android 12): the physical PTT side key
+     * emits keyCode 228 through `PhoneWindowManager.interceptKeyBeforeDispatching`
+     * as `KEYCODE_PTT received`, and — because ATAK isn't a registered
+     * MCPTT app in Sonim's `SonimSdkPolicy.isMCPTTApp` check — the
+     * event is delivered ONLY as a KeyEvent to the top activity, not
+     * as a broadcast. Adding it to the accepted set here is what makes
+     * the button work when the operator assigns Programmable Keys →
+     * PTT key → ATAK on the XP9900. Chosen as PTT_KEY_CODE_ALT2 rather
+     * than a rename because 79 / 5 remain the correct primary/alt for
+     * older Sonim units.
+     */
+    // 228 = the vendor-space "PTT" keycode reported by Sonim XP10
+    // firmware for the physical PTT side key. NOT referenced by
+    // symbolic name — `KeyEvent.KEYCODE_PTT` is not present in the
+    // public Android SDK (compileSdk 34 doesn't export it; verified
+    // 2026-07-15 by build failure "Unresolved reference 'KEYCODE_PTT'").
+    // Even though 228 is used by Android internals for the same
+    // meaning, only the integer literal is portable.
+    const val PTT_KEY_CODE_ALT2: Int = 228
 
     /**
      * KeyEvent code for the Sonim / ruggedized-Android SOS button.
@@ -189,13 +306,13 @@ object SonimHardwareButtons {
         listOf(
             // XP10 — commercial model number XP9900. Regional variants
             // (AT&T / Verizon / T-Mobile / global) share the XP9900
-            // prefix in Build.MODEL.
+            // prefix in Build.MODEL. Confirmed on-device: AT&T carrier
+            // XP9900 (Android 12) reports `Build.MODEL = "XP9900"`.
             "XP9900",
-            // Alternative Build.MODEL forms we've seen referenced in
-            // Sonim documentation; include so a firmware quirk that
-            // reports "XP10" or "XP10-A" instead of "XP9900" still
-            // lights up the toggle. TODO: verify on-device which
-            // form the shipping XP10 firmware actually reports.
+            // Alternative Build.MODEL form observed in Sonim
+            // documentation and some community references. Keep as
+            // belt-and-suspenders in case a firmware variant reports
+            // "XP10" rather than "XP9900" in Build.MODEL.
             "XP10",
         )
 
@@ -210,9 +327,10 @@ object SonimHardwareButtons {
      * The check is intentionally lenient — matches on
      * [android.os.Build.MANUFACTURER] `equals "sonim"` OR
      * [android.os.Build.BRAND] `equals "sonim"` AND a model prefix
-     * from the allow-list. Empirically Sonim firmware reports both
-     * `MANUFACTURER` and `BRAND` as `sonim` (lowercase), but be
-     * defensive.
+     * from the allow-list. On-device validation (XP9900 AT&T, Android
+     * 12) confirmed `BRAND = "Sonim"` and `MANUFACTURER = "Sonimtech"`.
+     * The OR-gate via BRAND means `Sonimtech` is handled without a
+     * separate manufacturer entry.
      *
      * [context] is accepted for symmetry with the Android-runtime
      * shape and future extension (a Sonim system feature flag, if
@@ -293,10 +411,12 @@ object SonimHardwareButtons {
     /**
      * Pure classification of a single Android [KeyEvent] tuple for the
      * Sonim PTT foreground path. Returns [FallbackAction.PTT_DOWN] on
-     * the initial press of either [PTT_KEY_CODE_PRIMARY] or
-     * [PTT_KEY_CODE_ALT] (both accepted because on-device confirmation
-     * of the exact XP10 mapping is pending), [FallbackAction.PTT_UP] on
-     * release, and [FallbackAction.IGNORE] for everything else.
+     * the initial press of [PTT_KEY_CODE_PRIMARY], [PTT_KEY_CODE_ALT],
+     * or [PTT_KEY_CODE_ALT2] — accepted in parallel because different
+     * Sonim firmwares report the PTT key under different Android
+     * keycodes and we don't want a firmware-variant check at input
+     * time. [FallbackAction.PTT_UP] on release, [FallbackAction.IGNORE]
+     * for everything else.
      *
      * Auto-repeat (repeatCount > 0) is dropped so a physically held key
      * doesn't spam the dispatcher with duplicate down edges after the
@@ -309,7 +429,10 @@ object SonimHardwareButtons {
         action: Int,
         repeatCount: Int,
     ): FallbackAction {
-        if (keyCode != PTT_KEY_CODE_PRIMARY && keyCode != PTT_KEY_CODE_ALT) {
+        if (keyCode != PTT_KEY_CODE_PRIMARY &&
+            keyCode != PTT_KEY_CODE_ALT &&
+            keyCode != PTT_KEY_CODE_ALT2
+        ) {
             return FallbackAction.IGNORE
         }
         return when (action) {

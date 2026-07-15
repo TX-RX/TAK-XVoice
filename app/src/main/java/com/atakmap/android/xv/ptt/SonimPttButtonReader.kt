@@ -29,32 +29,41 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  *
  * ---
  *
+ * ### MCX / MCPTT carrier firmware (AT&T XP9900)
+ *
+ * On-device validation (XP9900 AT&T carrier, Android 12, 2026-07-11)
+ * showed that the Sonim SDK policy engine on MCX/MCPTT-mode firmware
+ * checks for apps registered under
+ * `com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY` rather
+ * than the classic `com.sonim.intent.action.PTT_KEY_DOWN` / `_UP`
+ * actions. The MCX action carries a single `"state"` integer extra
+ * (1 = pressed, 0 = released) instead of using separate DOWN / UP
+ * action strings. This reader registers for both forms so the PTT
+ * button works on both classic Sonim and MCX-mode carrier firmware
+ * without requiring a firmware-variant check at startup. The central
+ * [com.atakmap.android.xv.audio.PttDispatcher] OR-gate deduplicates
+ * edges if a firmware emits both forms for the same press.
+ *
+ * Prerequisite on AT&T XP9900: operator must go to Settings → System
+ * → Buttons (Programmable keys) → PTT key → set to "No Action" before
+ * enabling this toggle. AT&T Dispatch Hub (`com.att.dh`) is
+ * preinstalled and intercepts the PTT button by default; unsetting it
+ * releases the key to the registered broadcast receiver.
+ *
+ * ---
+ *
  * ### On-device validation status
  *
- * As of 2026-07-10 the XV operator does NOT have a Sonim XP10 on hand
- * for direct validation. The action strings, keycodes, and general
- * "no SDK required" story are grounded in the Sonim / Android
- * community references cited in
- * [com.atakmap.android.xv.util.SonimHardwareButtons]. When the
- * operator does obtain an XP10, the on-device validation TODOs are:
+ * Classic Sonim intent path (`PTT_KEY_DOWN` / `PTT_KEY_UP`):
+ * pending — no non-carrier XP9900 or XP10 confirmed yet.
  *
- *   - Confirm the exact action strings (`_DOWN` / `_UP`) fire on both
- *     edges. Some Sonim firmwares emit only a single "PTT_KEY" action
- *     with a `state` extra rather than two distinct actions; if that
- *     turns out to be the case, extend the receiver to consult
- *     `intent.getIntExtra("state", -1)` (0/1) inside a single
- *     `onReceive` branch.
- *   - Confirm the operator DOES need to visit Settings → Programmable
- *     keys and assign PTT to XV, versus the intents being emitted
- *     unconditionally. If the intents are unconditional the toggle
- *     works out-of-the-box; if they're gated on a Sonim system
- *     setting, the Settings row help text should say so.
+ * MCX path (`CRITICAL_COMMUNICATION_CONTROL_KEY` + `state` extra):
+ * confirmed working on XP9900 AT&T carrier (Android 12) after
+ * setting Programmable keys → PTT key → No Action.
  *
- * Both TODOs are non-blocking — the code compiles and behaves
- * correctly under the most-likely mapping. The KeyEvent fallback
- * ([SonimPttForegroundReader]) is registered in parallel so the
- * operator always has at least one working path if one of the two
- * turns out to be firmware-quirked.
+ * Both TODO items from the original PR are resolved: the MCX action
+ * string is confirmed; the KeyEvent fallback ([SonimPttForegroundReader])
+ * remains registered in parallel for foreground coverage.
  *
  * ---
  *
@@ -93,7 +102,7 @@ class SonimPttButtonReader(
             ) {
                 when (intent.action) {
                     SonimHardwareButtons.ACTION_PTT_KEY_DOWN -> {
-                        Log.i(TAG, "Sonim PTT DOWN (broadcast)")
+                        Log.i(TAG, "Sonim PTT DOWN (broadcast, classic)")
                         try {
                             onEdge(true, PttSource.SONIM_PTT)
                         } catch (t: Throwable) {
@@ -101,17 +110,47 @@ class SonimPttButtonReader(
                         }
                     }
                     SonimHardwareButtons.ACTION_PTT_KEY_UP -> {
-                        Log.i(TAG, "Sonim PTT UP (broadcast)")
+                        Log.i(TAG, "Sonim PTT UP (broadcast, classic)")
                         try {
                             onEdge(false, PttSource.SONIM_PTT)
                         } catch (t: Throwable) {
                             Log.w(TAG, "onEdge(up) threw", t)
                         }
                     }
+                    SonimHardwareButtons.ACTION_MCX_KEY -> {
+                        // MCX / MCPTT carrier firmware (e.g. AT&T XP9900):
+                        // single action with a "state" integer extra.
+                        // state=1 → pressed, state=0 → released.
+                        // Missing or unknown state values are ignored with
+                        // a warning so a malformed broadcast doesn't strand
+                        // the OR-gate in a stuck-down condition.
+                        val state = intent.getIntExtra(SonimHardwareButtons.MCX_EXTRA_STATE, SonimHardwareButtons.MCX_STATE_UNKNOWN)
+                        when (state) {
+                            SonimHardwareButtons.MCX_STATE_PRESSED -> {
+                                Log.i(TAG, "Sonim PTT DOWN (broadcast, MCX state=1)")
+                                try {
+                                    onEdge(true, PttSource.SONIM_PTT)
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "onEdge(down/MCX) threw", t)
+                                }
+                            }
+                            SonimHardwareButtons.MCX_STATE_RELEASED -> {
+                                Log.i(TAG, "Sonim PTT UP (broadcast, MCX state=0)")
+                                try {
+                                    onEdge(false, PttSource.SONIM_PTT)
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "onEdge(up/MCX) threw", t)
+                                }
+                            }
+                            else -> {
+                                Log.w(TAG, "MCX_KEY broadcast — unknown state=$state — ignoring")
+                            }
+                        }
+                    }
                     else -> {
                         // Ignore anything else the filter happens to
-                        // deliver — defensive; the filter above only
-                        // subscribes to the two actions.
+                        // deliver — defensive; the filter only subscribes
+                        // to the three PTT actions.
                         Log.d(TAG, "unexpected action=${intent.action} — ignoring")
                     }
                 }
@@ -122,10 +161,11 @@ class SonimPttButtonReader(
     private var registered: Boolean = false
 
     /**
-     * Begin listening for `com.sonim.intent.action.PTT_KEY_DOWN/_UP`
-     * broadcasts. Idempotent: a second call while already listening is
-     * a no-op and logs at INFO so the redundancy is visible in field
-     * logs without spamming.
+     * Begin listening for Sonim PTT broadcasts on all supported action
+     * strings: the classic `com.sonim.intent.action.PTT_KEY_DOWN/_UP`
+     * pair and the MCX / MCPTT carrier firmware action
+     * `com.mcx.intent.action.CRITICAL_COMMUNICATION_CONTROL_KEY`.
+     * Idempotent: a second call while already listening is a no-op.
      *
      * Returns `true` if the receiver is now registered (either newly
      * or was already registered), `false` if registration failed
@@ -142,6 +182,10 @@ class SonimPttButtonReader(
                 IntentFilter().apply {
                     addAction(SonimHardwareButtons.ACTION_PTT_KEY_DOWN)
                     addAction(SonimHardwareButtons.ACTION_PTT_KEY_UP)
+                    // MCX / MCPTT carrier firmware (e.g. AT&T XP9900):
+                    // fires this single action with a "state" extra
+                    // instead of separate _DOWN / _UP actions.
+                    addAction(SonimHardwareButtons.ACTION_MCX_KEY)
                 }
             return try {
                 // NOT_EXPORTED: the broadcast originates from the Sonim
@@ -156,10 +200,10 @@ class SonimPttButtonReader(
                     ContextCompat.RECEIVER_NOT_EXPORTED,
                 )
                 registered = true
-                Log.i(TAG, "Sonim PTT reader started (broadcast listener registered)")
+                Log.i(TAG, "Sonim PTT reader started (classic + MCX broadcast listener registered)")
                 true
             } catch (t: Throwable) {
-                Log.w(TAG, "registerReceiver(PTT_KEY_DOWN/UP) threw", t)
+                Log.w(TAG, "registerReceiver(PTT_KEY_DOWN/UP + MCX_KEY) threw", t)
                 false
             }
         }

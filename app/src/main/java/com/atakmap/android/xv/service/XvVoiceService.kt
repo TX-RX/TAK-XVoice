@@ -56,6 +56,77 @@ class XvVoiceService : Service() {
             }
         }
 
+    /**
+     * Route a background Samsung Active Key PTT edge from the in-process
+     * [com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService]
+     * straight into the [PttDispatcher] via the plant.
+     *
+     * This deliberately skips the AIDL authorized-caller gate: the
+     * accessibility service is declared with no `android:process`
+     * attribute, so it runs in THIS service's UID/process — this is an
+     * in-process method call, not a cross-UID binder call, so there is
+     * no untrusted caller to authenticate. It reuses the already-
+     * constructed [plant] and must never lazily create one: a stray key
+     * event with no live session should not spin up voice
+     * infrastructure. Same source tag [PttSource.SAMSUNG_ACTIVE_KEY] as
+     * the foreground KeyEvent path, so the dispatcher OR-gate collapses
+     * duplicate edges when both paths fire (a11y enabled + ATAK
+     * foreground).
+     */
+    private fun dispatchSamsungActiveKeyEdgeInProcess(isDown: Boolean) {
+        val p = plant
+        if (p == null) {
+            Log.d(TAG, "Samsung Active Key edge (a11y, isDown=$isDown) dropped — plant not constructed")
+            return
+        }
+        try {
+            if (isDown) {
+                p.pttDown(0, com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY)
+            } else {
+                p.pttUp(0, com.atakmap.android.xv.audio.PttSource.SAMSUNG_ACTIVE_KEY)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "dispatchSamsungActiveKeyEdgeInProcess(isDown=$isDown) threw", t)
+        }
+    }
+
+    /**
+     * In-process dispatch for the Sonim PTT key (KEYCODE_PTT / 228)
+     * background path. Called by
+     * [com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.onKeyEvent]
+     * when the accessibility service catches keyCode 228 on Sonim
+     * hardware — needed because Sonim's SonimSdkPolicy.isMCPTTApp
+     * check returns false for ATAK (ATAK doesn't declare the MCPTT
+     * intent-filter), so the PTT key is delivered ONLY as a KeyEvent
+     * to the top activity, not as a broadcast. That means
+     * [com.atakmap.android.xv.ptt.SonimPttForegroundReader] catches
+     * it while ATAK is foregrounded but nothing catches it while
+     * ATAK is backgrounded or the screen is off. The accessibility
+     * service's `flagRequestFilterKeyEvents` capability receives
+     * hardware key events system-wide regardless of focus / screen
+     * state, closing that gap.
+     *
+     * Same source tag [PttSource.SONIM_PTT] as the foreground and
+     * broadcast paths so the dispatcher OR-gate collapses duplicate
+     * edges when multiple paths fire for a single press.
+     */
+    private fun dispatchSonimPttEdgeInProcess(isDown: Boolean) {
+        val p = plant
+        if (p == null) {
+            Log.d(TAG, "Sonim PTT edge (a11y, isDown=$isDown) dropped — plant not constructed")
+            return
+        }
+        try {
+            if (isDown) {
+                p.pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
+            } else {
+                p.pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "dispatchSonimPttEdgeInProcess(isDown=$isDown) threw", t)
+        }
+    }
+
     // Caller-UID allowlist for the AIDL surface. Resolved once at
     // onCreate. Any binder call from a UID outside this set throws
     // SecurityException — see assertAuthorizedCaller(). Without this
@@ -220,6 +291,13 @@ class XvVoiceService : Service() {
         } catch (t: Throwable) {
             Log.w(TAG, "registerReceiver(btAdapterStateReceiver) threw", t)
         }
+        // Publish this running instance for the in-process
+        // SamsungActiveKeyAccessibilityService seam (see
+        // deliverSamsungActiveKeyEdge in the companion object). Set last
+        // in onCreate so a background Active Key edge only ever reaches a
+        // fully-initialised service; edges that arrive before this drop
+        // harmlessly (the seam null-checks). Cleared in onDestroy.
+        activeInstance = this
     }
 
     // Dedup guard state for the adapter-state broadcast — see
@@ -561,6 +639,11 @@ class XvVoiceService : Service() {
             .activeConnection()
             ?.teardownLocal()
         releaseVoiceFocus()
+        // Stop the in-process Samsung Active Key a11y seam from routing
+        // into a torn-down plant. Guard on identity so a fast
+        // stop/start that already published a newer instance isn't
+        // clobbered by the older instance's teardown.
+        if (activeInstance === this) activeInstance = null
         try {
             plant?.shutdown()
         } catch (t: Throwable) {
@@ -2108,11 +2191,11 @@ class XvVoiceService : Service() {
 
             override fun notifySonimEmergencyEdge(isDown: Boolean) {
                 assertAuthorizedCaller()
-                if (isDown) {
-                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
-                } else {
-                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_EMERGENCY)
-                }
+                // SOS button is an emergency-alert trigger, not PTT —
+                // route through the same shim the broadcast path uses
+                // (VoicePlant.onSonimEmergencyEdge → callbacks.onEmergencyButton
+                // → EmergencyController → ATAK Alert Tool). Matches AINA PTTE.
+                plant().onSonimEmergencyEdge(isDown)
             }
 
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
@@ -2200,6 +2283,64 @@ class XvVoiceService : Service() {
 
     companion object {
         private const val TAG = "XvVoiceSvc"
+
+        // The currently-running service instance, published at the end
+        // of onCreate and cleared in onDestroy. Exists solely so the
+        // in-process SamsungActiveKeyAccessibilityService (same UID/
+        // process — no android:process attribute in the manifest) can
+        // hand background Active Key edges to the live PttDispatcher
+        // without an IPC hop. Null whenever the voice service isn't
+        // running, which is exactly when background PTT is a no-op.
+        @Volatile
+        private var activeInstance: XvVoiceService? = null
+
+        /**
+         * In-process delivery seam for the Samsung Active Key background
+         * PTT path. Called by
+         * [com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.onKeyEvent]
+         * for keyCode 1015 while ATAK is backgrounded.
+         *
+         * Replaces the earlier design where the accessibility service
+         * re-broadcast `HARD_KEY_REPORT` for [SamsungActiveKeyReader] to
+         * receive: that reader is only registered while the *foreground*
+         * Active Key toggle is on, so an operator who enabled only the
+         * accessibility service got no PTT (edges broadcast into the
+         * void). Delivering straight to the plant removes that hidden
+         * coupling — background PTT now works whenever the voice service
+         * is live, independent of the foreground toggle.
+         *
+         * No-op when no service is running (background PTT is only
+         * meaningful during a live session). Thread-safe: the plant's
+         * dispatcher is documented callable from any thread, and the
+         * accessibility framework delivers onKeyEvent off the main
+         * thread.
+         */
+        fun deliverSamsungActiveKeyEdge(isDown: Boolean) {
+            val svc = activeInstance
+            if (svc == null) {
+                Log.d(TAG, "deliverSamsungActiveKeyEdge(isDown=$isDown) — no running voice service; dropping")
+                return
+            }
+            svc.dispatchSamsungActiveKeyEdgeInProcess(isDown)
+        }
+
+        /**
+         * In-process delivery seam for the Sonim PTT key (KEYCODE_PTT
+         * / 228) background PTT path. Called by
+         * [com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.onKeyEvent]
+         * when the accessibility service catches keyCode 228 on
+         * Sonim hardware. Mirrors [deliverSamsungActiveKeyEdge] —
+         * see [dispatchSonimPttEdgeInProcess] for the routing
+         * rationale.
+         */
+        fun deliverSonimPttEdge(isDown: Boolean) {
+            val svc = activeInstance
+            if (svc == null) {
+                Log.d(TAG, "deliverSonimPttEdge(isDown=$isDown) — no running voice service; dropping")
+                return
+            }
+            svc.dispatchSonimPttEdgeInProcess(isDown)
+        }
 
         // AIDL contract version. Bump on every breaking schema change
         // (method removed, signature changed, semantics changed).

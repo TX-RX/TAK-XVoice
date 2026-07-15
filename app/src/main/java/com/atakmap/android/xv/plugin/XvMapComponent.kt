@@ -580,6 +580,18 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var sonimEmergencyFg: com.atakmap.android.xv.ptt.SonimEmergencyForegroundReader? = null
 
+    // Assigned-app broadcast reader (Sonim Programmable Keys → ATAK
+    // mode). Runs in ATAK's process so the pkg-scoped intents Sonim
+    // fires (pkg=com.atakmap.app.civ) reach it. Dispatch is
+    // unconditional — there is no XV toggle for the assigned-app path;
+    // the phone's Programmable Keys → app assignment is the
+    // authoritative on/off (if a key isn't assigned to ATAK no broadcast
+    // arrives and the callback never fires). A single reader instance
+    // covers both PTT (Yellow) and Emergency (SOS+Kodiak) routing. See
+    // SonimAssignedAppReader kdoc for the full mapping.
+    @Volatile
+    private var sonimAssignedApp: com.atakmap.android.xv.ptt.SonimAssignedAppReader? = null
+
     private var presenceRegistry: XvPresenceRegistry? = null
     private var presencePublisher: XvCotPublisher? = null
     private var presenceListener: XvCotListener? = null
@@ -1356,6 +1368,10 @@ class XvMapComponent : AbstractMapComponent() {
         }
         try {
             stopSonimEmergencyForeground()
+        } catch (_: Throwable) {
+        }
+        try {
+            stopSonimAssignedApp()
         } catch (_: Throwable) {
         }
         presenceListener?.stop()
@@ -2354,6 +2370,23 @@ class XvMapComponent : AbstractMapComponent() {
                 if (enabled) startSamsungActiveKeyForeground() else stopSamsungActiveKeyForeground()
             }
 
+            override fun samsungActiveKeyBgServiceEnabled(): Boolean {
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return false
+                return isSamsungActiveKeyAccessibilityServiceEnabled(ctx)
+            }
+
+            override fun openAccessibilitySettings() {
+                val ctx = heldMapView?.context ?: heldPluginContext ?: return
+                try {
+                    val intent = android.content.Intent(
+                        android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS,
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ctx.startActivity(intent)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "openAccessibilitySettings: startActivity threw", t)
+                }
+            }
+
             override fun sonimHardwareButtonsSupported(): Boolean {
                 val ctx = heldMapView?.context ?: heldPluginContext ?: return false
                 return com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)
@@ -2626,20 +2659,21 @@ class XvMapComponent : AbstractMapComponent() {
             Log.i(TAG, "autoStartSonimButtons: device is not a supported Sonim ruggedized model — skipping")
             return
         }
-        if (settings.persistedSonimPttButtonEnabled()) {
-            Log.i(TAG, "autoStartSonimButtons: enabling Sonim PTT button")
-            voiceClient?.setPersistent("sonimPttButton") { it.setSonimPttButtonEnabled(true) }
-            startSonimPttForeground()
-        } else {
-            Log.i(TAG, "autoStartSonimButtons: PTT-button toggle OFF — skipping PTT reader")
-        }
-        if (settings.persistedSonimEmergencyButtonEnabled()) {
-            Log.i(TAG, "autoStartSonimButtons: enabling Sonim Emergency button")
-            voiceClient?.setPersistent("sonimEmergencyButton") { it.setSonimEmergencyButtonEnabled(true) }
-            startSonimEmergencyForeground()
-        } else {
-            Log.i(TAG, "autoStartSonimButtons: Emergency-button toggle OFF — skipping Emergency reader")
-        }
+        // No XV-local toggle gate — the phone's own Programmable Keys
+        // menu is the source of truth for whether XV should catch a
+        // given key. Start all three readers unconditionally on
+        // supported Sonim hardware; if the operator hasn't assigned a
+        // key to ATAK, no broadcast / KeyEvent arrives and the
+        // corresponding reader silently sits idle. Removes the dev-
+        // iteration foot-gun where `adb -Uninstall` wiped the toggle
+        // and left the operator confused about why a hardware button
+        // "stopped working."
+        Log.i(TAG, "autoStartSonimButtons: starting Sonim readers (PTT foreground, Emergency foreground, AssignedApp broadcast)")
+        voiceClient?.setPersistent("sonimPttButton") { it.setSonimPttButtonEnabled(true) }
+        startSonimPttForeground()
+        voiceClient?.setPersistent("sonimEmergencyButton") { it.setSonimEmergencyButtonEnabled(true) }
+        startSonimEmergencyForeground()
+        startSonimAssignedApp()
     }
 
     /**
@@ -2715,6 +2749,36 @@ class XvMapComponent : AbstractMapComponent() {
             voiceClient?.ifBound { it.notifySamsungActiveKeyEdge(false) }
         } catch (t: Throwable) {
             Log.w(TAG, "defensive notifySamsungActiveKeyEdge(false) threw", t)
+        }
+    }
+
+    /**
+     * Returns true when the [SamsungActiveKeyAccessibilityService] is
+     * currently listed in the system's enabled-accessibility-services
+     * set. Uses [android.view.accessibility.AccessibilityManager] so
+     * the check reflects the actual OS-level state rather than any
+     * XV-side persisted flag.
+     *
+     * Safe to call on any thread; [AccessibilityManager] is thread-safe.
+     */
+    private fun isSamsungActiveKeyAccessibilityServiceEnabled(context: android.content.Context): Boolean {
+        return try {
+            val am = context.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE)
+                as? android.view.accessibility.AccessibilityManager
+                ?: return false
+            val enabled = am.getEnabledAccessibilityServiceList(
+                android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK,
+            )
+            val targetComponent =
+                com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.COMPONENT_NAME
+            enabled.any { info ->
+                info.resolveInfo?.serviceInfo?.let { si ->
+                    android.content.ComponentName(si.packageName, si.name).flattenToString() == targetComponent
+                } ?: false
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "isSamsungActiveKeyAccessibilityServiceEnabled: query threw", t)
+            false
         }
     }
 
@@ -2806,6 +2870,77 @@ class XvMapComponent : AbstractMapComponent() {
         } catch (t: Throwable) {
             Log.w(TAG, "defensive notifySonimEmergencyEdge(false) threw", t)
         }
+    }
+
+    /**
+     * Start the SonimAssignedAppReader — the receiver for pkg-scoped
+     * broadcasts Sonim fires when the operator assigns Programmable
+     * Keys → ATAK. Runs in ATAK's process because the intents carry
+     * `pkg=com.atakmap.app.civ` and pkg-scoped delivery only reaches
+     * receivers in that package's process. Field-verified on the AT&T
+     * XP9900 (2026-07-14): Yellow key emits YELLOW_KEY_DOWN/_UP and
+     * SOS key emits SOS_KEY_DOWN/_UP + KODIAK_SOS.
+     *
+     * Kept live from plugin load through destroy; the callbacks gate
+     * on the individual Sonim toggle settings so a single reader
+     * covers both PTT and Emergency routing. Idempotent.
+     */
+    @Suppress("ReturnCount")
+    private fun startSonimAssignedApp() {
+        val ctx = heldMapView?.context ?: return
+        if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {
+            return
+        }
+        if (sonimAssignedApp != null) {
+            Log.i(TAG, "startSonimAssignedApp: already registered — ignoring")
+            return
+        }
+        val reader =
+            com.atakmap.android.xv.ptt.SonimAssignedAppReader(
+                context = ctx,
+                onPttKeyEdge = { isDown ->
+                    // Assigned-app PTT — delivered as the YELLOW_KEY
+                    // broadcast (Sonim's API naming is backwards; the
+                    // "Yellow" action is the physical PTT button).
+                    // Source-implicit across the AIDL — the service side
+                    // tags SONIM_PTT, same as SonimPttForegroundReader.
+                    voiceClient?.ifBound { it.notifySonimPttEdge(isDown) }
+                },
+                onSosKeyEdge = { isDown ->
+                    // SOS key → emergency-alert path (matches
+                    // AINA-PTTE parity from commit 4e12933). Not
+                    // gated on an XV settings toggle — the phone's
+                    // Programmable Keys → app assignment is the
+                    // authoritative on/off (if the operator hasn't
+                    // assigned SOS to ATAK, no broadcast arrives and
+                    // this callback never fires).
+                    voiceClient?.ifBound { it.notifySonimEmergencyEdge(isDown) }
+                },
+            )
+        if (reader.start()) {
+            sonimAssignedApp = reader
+        } else {
+            Log.w(TAG, "startSonimAssignedApp: reader.start() failed — leaving detached")
+        }
+    }
+
+    /** Idempotent. */
+    private fun stopSonimAssignedApp() {
+        val reader = sonimAssignedApp ?: return
+        try {
+            reader.stop()
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimAssignedApp: reader.stop() threw", t)
+        }
+        // Defensive release so a PTT held at teardown doesn't strand
+        // SONIM_PTT in the dispatcher's held-source set (mirrors
+        // stopSonimPttForeground).
+        try {
+            voiceClient?.ifBound { it.notifySonimPttEdge(false) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimAssignedApp: defensive notifySonimPttEdge(false) threw", t)
+        }
+        sonimAssignedApp = null
     }
 
     private fun autoConnectMumble() {

@@ -28,6 +28,24 @@ class AtakEmergencyDispatcher(
         mainHandler.post {
             try {
                 val mgr = EmergencyManager.getInstance()
+                // Guard against repeat fires when an emergency is
+                // already active. Field-observed 2026-07-14: pressing
+                // the SOS button repeatedly created orphaned emergency
+                // records on the TAK server because every short-press
+                // fired initiateRepeat unconditionally. An emergency
+                // has a well-defined lifecycle (start → cancel);
+                // firing "start" while already active leaves the peer
+                // side with no matching end.
+                //
+                // Uses EmergencyManager.isEmergencyOn() (returns
+                // java.lang.Boolean — can be null before first ever
+                // interaction) as the source of truth so a cancel
+                // done through ATAK's own Alert Tool UI is reflected
+                // here without our own bookkeeping.
+                if (mgr.isEmergencyOn == true) {
+                    Log.i(TAG, "firePanic skipped — emergency already active — $reason")
+                    return@post
+                }
                 val sdkType = mgr.emergencyType ?: EmergencyType.getDefault()
                 Log.w(TAG, "fire ${sdkType.name} (live AlertTool type) — $reason")
                 mgr.initiateRepeat(sdkType, true)
@@ -38,10 +56,18 @@ class AtakEmergencyDispatcher(
     }
 
     override fun cancelEmergency(reason: String) {
-        Log.w(TAG, "cancel — $reason")
         mainHandler.post {
             try {
-                EmergencyManager.getInstance().cancelRepeat()
+                val mgr = EmergencyManager.getInstance()
+                // cancelRepeat is intentionally NOT gated on
+                // isEmergencyOn — a redundant cancel is a no-op at the
+                // ATAK layer, and this way an out-of-sync perceived
+                // state (e.g. cancel via UI didn't reflect here yet)
+                // still lets the operator affirmatively clear it via
+                // the hardware button. Skipping cancel on the other
+                // hand could leave a beacon stuck.
+                Log.w(TAG, "cancel — $reason (isEmergencyOn was ${mgr.isEmergencyOn})")
+                mgr.cancelRepeat()
             } catch (t: Throwable) {
                 Log.e(TAG, "cancelRepeat failed", t)
             }

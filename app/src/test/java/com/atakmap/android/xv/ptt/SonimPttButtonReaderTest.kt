@@ -156,4 +156,97 @@ class SonimPttButtonReaderTest {
             seenSources.all { it.second == PttSource.SONIM_PTT },
         )
     }
+
+    // ------------------------------------------------------------------
+    // MCX / MCPTT carrier firmware path (AT&T XP9900)
+    // ------------------------------------------------------------------
+
+    private fun mcxPressBroadcast(): Intent =
+        Intent(SonimHardwareButtons.ACTION_MCX_KEY).apply {
+            putExtra(SonimHardwareButtons.MCX_EXTRA_STATE, SonimHardwareButtons.MCX_STATE_PRESSED)
+        }
+
+    private fun mcxReleaseBroadcast(): Intent =
+        Intent(SonimHardwareButtons.ACTION_MCX_KEY).apply {
+            putExtra(SonimHardwareButtons.MCX_EXTRA_STATE, SonimHardwareButtons.MCX_STATE_RELEASED)
+        }
+
+    @Test
+    fun `MCX state=1 broadcast fires slot-0 TX start`() {
+        reader.start()
+        RuntimeEnvironment.getApplication().sendBroadcast(mcxPressBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        verify(exactly = 1) { txController.start(slot = 0) }
+    }
+
+    @Test
+    fun `MCX press then release fires start then stop`() {
+        reader.start()
+        val app = RuntimeEnvironment.getApplication()
+        app.sendBroadcast(mcxPressBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        app.sendBroadcast(mcxReleaseBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        verify(exactly = 1) { txController.start(slot = 0) }
+        verify(exactly = 1) { txController.stop() }
+    }
+
+    @Test
+    fun `MCX broadcast with unknown state is ignored`() {
+        reader.start()
+        val bad = Intent(SonimHardwareButtons.ACTION_MCX_KEY).apply {
+            putExtra(SonimHardwareButtons.MCX_EXTRA_STATE, 99)
+        }
+        RuntimeEnvironment.getApplication().sendBroadcast(bad)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        verify(exactly = 0) { txController.start(slot = 0) }
+        verify(exactly = 0) { txController.stop() }
+    }
+
+    @Test
+    fun `MCX broadcast with missing state extra is ignored`() {
+        reader.start()
+        // No extra at all — getIntExtra returns the default (-1).
+        RuntimeEnvironment.getApplication().sendBroadcast(Intent(SonimHardwareButtons.ACTION_MCX_KEY))
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        verify(exactly = 0) { txController.start(slot = 0) }
+    }
+
+    @Test
+    fun `MCX edges are tagged with SONIM_PTT source`() {
+        val seenSources = mutableListOf<Pair<Boolean, PttSource>>()
+        val r =
+            SonimPttButtonReader(
+                context = RuntimeEnvironment.getApplication(),
+                onEdge = { isDown, source -> seenSources.add(isDown to source) },
+            )
+        r.start()
+        val app = RuntimeEnvironment.getApplication()
+        app.sendBroadcast(mcxPressBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        app.sendBroadcast(mcxReleaseBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        r.stop()
+        assertTrue("expected one down and one up edge", seenSources.size == 2)
+        assertTrue("first edge is down", seenSources[0].first)
+        assertFalse("second edge is up", seenSources[1].first)
+        assertTrue(
+            "MCX edges must be tagged SONIM_PTT",
+            seenSources.all { it.second == PttSource.SONIM_PTT },
+        )
+    }
+
+    @Test
+    fun `classic and MCX broadcasts deduplicate via dispatcher OR-gate`() {
+        // Simulate a firmware that emits both classic PTT_KEY_DOWN and
+        // MCX_KEY(state=1) for the same physical press. The dispatcher's
+        // OR-gate must absorb the second edge so TX is only started once.
+        reader.start()
+        val app = RuntimeEnvironment.getApplication()
+        app.sendBroadcast(pressBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        app.sendBroadcast(mcxPressBroadcast())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        verify(exactly = 1) { txController.start(slot = 0) }
+    }
 }

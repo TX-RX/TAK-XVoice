@@ -213,6 +213,7 @@ const val CELLULAR_BLOCK_TOAST_THROTTLE_MS: Long = 3_000L
 fun cellularCallStateFromAudioMode(
     audioMode: Int,
     xvHasActiveTelecomCall: Boolean,
+    suppressInCommunicationDefensiveBlock: Boolean = false,
 ): Int =
     when (audioMode) {
         AudioManager.MODE_IN_CALL -> TelephonyManager.CALL_STATE_OFFHOOK
@@ -223,14 +224,33 @@ fun cellularCallStateFromAudioMode(
                 // Do not gate the operator out of their own follow-up
                 // presses inside a burst / the end-debounce window.
                 TelephonyManager.CALL_STATE_IDLE
+            } else if (suppressInCommunicationDefensiveBlock) {
+                // Device-specific suppression — the defensive
+                // "somebody else's VoIP call is holding
+                // MODE_IN_COMMUNICATION" mapping is a false positive
+                // on hardware where MODE_IN_COMMUNICATION is a
+                // steady-state artefact rather than a real call
+                // indicator. Field-observed 2026-07-14 on Sonim XP10
+                // (AT&T carrier XP9900, Android 12): the resident
+                // AT&T EPTT + Dispatch Hub apps hold
+                // MODE_IN_COMMUNICATION continuously for minutes,
+                // producing an unbroken stream of "Cellular call
+                // active" blocks that don't correspond to any actual
+                // call. Callers pass suppressInCommunicationDefensiveBlock=true
+                // for known-false-positive device classes.
+                //
+                // Real cellular calls (MODE_IN_CALL, above) and
+                // incoming rings (MODE_RINGTONE) still block
+                // unconditionally regardless of this flag.
+                TelephonyManager.CALL_STATE_IDLE
             } else {
-                // Nobody in XV placed a call, yet the device is in
-                // MODE_IN_COMMUNICATION. Somebody else did — VoLTE
-                // cellular is the field-observed case, but any other
-                // VoIP app in the foreground would land here too.
-                // Treat as an active external call: block the
-                // accident-prone on-screen PTT so we do not
-                // auto-hold their call by placing our own.
+                // Default: nobody in XV placed a call, yet the
+                // device is in MODE_IN_COMMUNICATION. Somebody else
+                // did — VoLTE cellular is the field-observed case,
+                // but any other VoIP app in the foreground would
+                // land here too. Treat as an active external call:
+                // block the accident-prone on-screen PTT so we do
+                // not auto-hold their call by placing our own.
                 TelephonyManager.CALL_STATE_OFFHOOK
             }
         else -> TelephonyManager.CALL_STATE_IDLE

@@ -95,6 +95,25 @@ class SonimHardwareButtonsTest {
     }
 
     @Test
+    fun `Sonimtech manufacturer with Sonim brand (AT&T XP9900) still matches`() {
+        // On-device confirmed (XP9900 AT&T carrier, Android 12):
+        //   Build.MANUFACTURER = "Sonimtech"
+        //   Build.BRAND       = "Sonim"
+        //   Build.MODEL       = "XP9900"
+        // The manufacturer check does NOT match "Sonimtech" against
+        // "sonim", but the OR-gate falls through to the brand check
+        // which does. isSupported() must return true.
+        assertTrue(
+            SonimHardwareButtons.isSupportedInternal(
+                manufacturer = "Sonimtech",
+                brand = "Sonim",
+                model = "XP9900",
+                features = emptySet(),
+            ),
+        )
+    }
+
+    @Test
     fun `mixed-case manufacturer still matches`() {
         // Build.MANUFACTURER is empirically all-lowercase "sonim" on
         // real hardware, but be tolerant of a future firmware quirk.
@@ -320,6 +339,48 @@ class SonimHardwareButtonsTest {
     }
 
     @Test
+    fun `PTT alt2 keycode 228 DOWN repeat 0 → PTT_DOWN`() {
+        // The XP10 physical PTT side key emits keyCode 228 (the
+        // vendor-space "PTT" keycode). The classifier MUST accept it —
+        // this is the keycode that makes the foreground KeyEvent path
+        // key TX on the XP9900, and it is the same constant the
+        // accessibility service matches for background / screen-off PTT.
+        assertEquals(
+            SonimHardwareButtons.FallbackAction.PTT_DOWN,
+            SonimHardwareButtons.handlePttKeyEvent(
+                keyCode = SonimHardwareButtons.PTT_KEY_CODE_ALT2,
+                action = KeyEvent.ACTION_DOWN,
+                repeatCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `PTT alt2 keycode 228 UP → PTT_UP`() {
+        assertEquals(
+            SonimHardwareButtons.FallbackAction.PTT_UP,
+            SonimHardwareButtons.handlePttKeyEvent(
+                keyCode = SonimHardwareButtons.PTT_KEY_CODE_ALT2,
+                action = KeyEvent.ACTION_UP,
+                repeatCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `PTT alt2 keycode 228 DOWN repeat 1 → IGNORE`() {
+        // Auto-repeat dropped, same as the primary/alt keycodes.
+        assertEquals(
+            SonimHardwareButtons.FallbackAction.IGNORE,
+            SonimHardwareButtons.handlePttKeyEvent(
+                keyCode = SonimHardwareButtons.PTT_KEY_CODE_ALT2,
+                action = KeyEvent.ACTION_DOWN,
+                repeatCount = 1,
+            ),
+        )
+    }
+
+    @Test
     fun `PTT wrong keycode DOWN → IGNORE`() {
         // Volume keys, navigation keys etc. must pass through so
         // ATAK and any downstream OnKeyListener still handle them.
@@ -423,5 +484,24 @@ class SonimHardwareButtonsTest {
         // Guard against a copy-paste regression that changes the
         // constant to something the firmware doesn't emit.
         assertEquals(1079, SonimHardwareButtons.SOS_KEY_CODE)
+    }
+
+    @Test
+    fun `PTT_KEY_CODE_ALT2 is the literal 228 — do NOT swap for KeyEvent_KEYCODE_PTT`() {
+        // 228 is the vendor-space "PTT" keycode the Sonim XP10 firmware
+        // reports for the physical PTT side key. It MUST stay a bare int
+        // literal.
+        //
+        // Do NOT "clean this up" by referencing KeyEvent.KEYCODE_PTT
+        // (which also equals 228). That symbol is NOT present in the
+        // ATAK/public Android compile SDK — compileSdk 34 does not
+        // export it — so the swap fails the build with
+        //   "Unresolved reference 'KEYCODE_PTT'"
+        // (tried and reverted 2026-07-15, commit 00fb6a1). The compiler
+        // catches the swap, but this test + name make the reason
+        // discoverable so the refactor isn't attempted (or flagged as a
+        // "magic number" bug) again, and it locks the numeric contract
+        // so the XP10 button keeps matching its firmware keycode.
+        assertEquals(228, SonimHardwareButtons.PTT_KEY_CODE_ALT2)
     }
 }
