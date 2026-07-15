@@ -1263,6 +1263,7 @@ class XvDropDownReceiver(
 
         wireSettingsTabs(v)
         wireTxRxSection(v)
+        wireMeshSection(v)
         wireChannelSelectors(v)
         wirePreferencesSection(v)
         wireBtOffBanner(v)
@@ -1515,18 +1516,21 @@ class XvDropDownReceiver(
         val tabTxRx = v.findViewById<Button>(R.id.xv_tab_txrx)
         val tabCalls = v.findViewById<Button>(R.id.xv_tab_calls)
         val tabPrefs = v.findViewById<Button>(R.id.xv_tab_prefs)
+        val tabMesh = v.findViewById<Button>(R.id.xv_tab_mesh)
         val sectionTxRx = v.findViewById<View>(R.id.xv_section_txrx)
         val sectionCalls = v.findViewById<View>(R.id.xv_section_calls)
         val sectionPrefs = v.findViewById<View>(R.id.xv_section_prefs)
+        val sectionMesh = v.findViewById<View>(R.id.xv_section_mesh)
         // List order MUST match the tab strip's visual order so
         // select(0) puts the first tab up. Operator-visible ordering
-        // is Devices (prefs) | TX/RX | Server (calls) — Devices leads
-        // because it carries the AINA / external-button / audio-device
-        // pickers operators touch every session. The XML id names
-        // still say "prefs" for backward compatibility with the
-        // findViewById calls above.
-        val tabs = listOf(tabPrefs, tabTxRx, tabCalls)
-        val sections = listOf(sectionPrefs, sectionTxRx, sectionCalls)
+        // is Devices (prefs) | TX/RX | Server (calls) | Mesh — Devices
+        // leads because it carries the AINA / external-button /
+        // audio-device pickers operators touch every session; Mesh
+        // (server-less voice + channel provisioning/sharing) sits last.
+        // The XML id names still say "prefs" for backward compatibility
+        // with the findViewById calls above.
+        val tabs = listOf(tabPrefs, tabTxRx, tabCalls, tabMesh)
+        val sections = listOf(sectionPrefs, sectionTxRx, sectionCalls, sectionMesh)
 
         fun select(idx: Int) {
             sections.forEachIndexed { i, s -> s.visibility = if (i == idx) View.VISIBLE else View.GONE }
@@ -1535,6 +1539,7 @@ class XvDropDownReceiver(
         tabPrefs.setOnClickListener { select(0) }
         tabTxRx.setOnClickListener { select(1) }
         tabCalls.setOnClickListener { select(2) }
+        tabMesh.setOnClickListener { select(3) }
         select(0)
     }
 
@@ -1596,14 +1601,78 @@ class XvDropDownReceiver(
         val hotMicSw = v.findViewById<Switch>(R.id.xv_switch_hot_mic)
         hotMicSw.isChecked = controller.hotMicMode()
         hotMicSw.setOnCheckedChangeListener { _, on -> controller.setHotMicMode(on) }
+    }
 
+    // Mesh & Offline tab: server-less voice toggles + live status +
+    // offline channel list. Everything here works with no TAK server.
+    // Mesh voice + mission auto-channels moved off the TX/RX tab so the
+    // server-less feature set has one coherent home.
+    private fun wireMeshSection(v: View) {
         val meshSw = v.findViewById<Switch>(R.id.xv_switch_mesh_voice)
         meshSw.isChecked = controller.meshVoiceEnabled()
-        meshSw.setOnCheckedChangeListener { _, on -> controller.setMeshVoiceEnabled(on) }
+        meshSw.setOnCheckedChangeListener { _, on ->
+            controller.setMeshVoiceEnabled(on)
+            refreshMeshSection(v)
+        }
 
         val missionSw = v.findViewById<Switch>(R.id.xv_switch_mission_channels)
         missionSw.isChecked = controller.missionChannelsEnabled()
         missionSw.setOnCheckedChangeListener { _, on -> controller.setMissionChannelsEnabled(on) }
+
+        refreshMeshSection(v)
+    }
+
+    // Repaints the live mesh status line + the offline channel list.
+    // Called on open and whenever the mesh toggle flips.
+    private fun refreshMeshSection(v: View) {
+        val statusView = v.findViewById<TextView>(R.id.xv_settings_mesh_status)
+        val mesh = controller.meshStatus()
+        if (mesh == null) {
+            statusView.text = if (controller.meshVoiceEnabled()) "Standing by — no channel joined yet" else "Mesh voice is off"
+            statusView.setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+        } else {
+            statusView.text = "🕸 ${mesh.label}"
+            statusView.setTextColor(
+                pluginContext.resources.getColor(
+                    if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
+                    null,
+                ),
+            )
+        }
+
+        val list = v.findViewById<android.widget.LinearLayout>(R.id.xv_mesh_channel_list)
+        list.removeAllViews()
+        val candidates = controller.meshChannelCandidates()
+        if (candidates.isEmpty()) {
+            list.addView(
+                TextView(pluginContext).apply {
+                    text =
+                        if (controller.meshVoiceEnabled()) {
+                            "No channels yet — provision one below, or wait for a peer to advertise theirs."
+                        } else {
+                            "Turn on mesh voice to use channels without a server."
+                        }
+                    setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                    textSize = 12f
+                    setPadding(4, 8, 4, 8)
+                },
+            )
+        } else {
+            val active = controller.meshActiveChannelCanonical()
+            candidates.forEach { name ->
+                val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+                list.addView(
+                    buildChannelButton(
+                        label = name,
+                        isCurrent = canonical == active,
+                        participation = Participation.PARTICIPATE,
+                    ) {
+                        controller.selectMeshChannel(name)
+                        refreshMeshSection(v)
+                    },
+                )
+            }
+        }
     }
 
     private fun sliderTimeoutLabel(s: Int): String = if (s == 0) "off" else "$s s"
