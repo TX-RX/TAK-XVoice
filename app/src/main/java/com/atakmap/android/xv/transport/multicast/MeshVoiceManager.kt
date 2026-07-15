@@ -282,18 +282,54 @@ class MeshVoiceManager(
 
     // ---- mesh leg RX (MeshLegSink) ----
 
-    @Synchronized
+    // NOT synchronized: the playback IPC (AIDL onRxOpus → service
+    // AudioTrack.write, which paces at real time) and the Mumble relay
+    // (TCP write) MUST NOT run under the manager lock. At 50 frames/s
+    // a lock held ~20 ms per frame saturates the (unfair) monitor and
+    // starves the main-thread 1 Hz tick indefinitely — field repro
+    // 2026-07-15 14:43: sustained mesh RX froze ATAK's main thread,
+    // input dispatch timed out (ANR), and the PTT release was never
+    // delivered ("stuck transmitting"). Decisions happen under the
+    // lock in [decideVoiceRx]; side effects happen out here.
     override fun onVoice(
         channelName: String,
         opus: ByteArray,
         speakerKey: String,
         seqInBurst: Int?,
     ) {
-        if (channelName == RENDEZVOUS_CHANNEL) return // control-plane only
+        val action = decideVoiceRx(channelName, speakerKey)
+        if (!action.play) return
+        onRxOpus(opus, "mcast:$channelName:$speakerKey")
+        if (action.relay) {
+            // Server-less speaker heard on the mesh while we hold the
+            // bridge: relay onto the Mumble channel. The frame rides
+            // OUR Mumble session (protocol limitation); mesh-side
+            // attribution stays intact for everyone on the group.
+            // Per-speaker frame order is preserved: a speaker's frames
+            // all arrive on their leg's single RX thread.
+            relayToMumble(opus, action.relayBurstStart)
+        }
+    }
+
+    private data class VoiceRxAction(
+        val play: Boolean,
+        val relay: Boolean,
+        val relayBurstStart: Boolean,
+    )
+
+    @Synchronized
+    private fun decideVoiceRx(
+        channelName: String,
+        speakerKey: String,
+    ): VoiceRxAction {
+        if (channelName == RENDEZVOUS_CHANNEL) {
+            return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
+        }
         val now = nowMs()
         val canonical = ssrcKeyToUid[speakerKey] ?: speakerKey
-        if (!deduper.shouldPlay(legId = "mesh:$channelName", speaker = canonical, nowMs = now)) return
-        onRxOpus(opus, "mcast:$channelName:$speakerKey")
+        if (!deduper.shouldPlay(legId = "mesh:$channelName", speaker = canonical, nowMs = now)) {
+            return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
+        }
         // Relay eligibility: never bounce server-originated audio back
         // onto the server. A "mumble:<session>" canonical id exists
         // ONLY because the speaker was heard on a live Mumble session
@@ -301,16 +337,14 @@ class MeshVoiceManager(
         // already dropped leg-side; another bridge's can slip through
         // during a handoff overlap).
         val serverOriginated = canonical.startsWith("mumble:")
-        if (bridging && canonical != ourUid && !serverOriginated && !uidMumbleConnected(canonical)) {
-            // Server-less speaker heard on the mesh while we hold the
-            // bridge: relay onto the Mumble channel. The frame rides
-            // OUR Mumble session (protocol limitation); mesh-side
-            // attribution stays intact for everyone on the group.
+        val relay = bridging && canonical != ourUid && !serverOriginated && !uidMumbleConnected(canonical)
+        var relayBurstStart = false
+        if (relay) {
             val last = relayLastFrameMs[canonical]
-            val burstStart = last == null || now - last > RELAY_BURST_GAP_MS
+            relayBurstStart = last == null || now - last > RELAY_BURST_GAP_MS
             relayLastFrameMs[canonical] = now
-            relayToMumble(opus, burstStart)
         }
+        return VoiceRxAction(play = true, relay = relay, relayBurstStart = relayBurstStart)
     }
 
     @Synchronized
