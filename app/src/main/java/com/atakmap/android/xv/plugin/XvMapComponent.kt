@@ -4489,6 +4489,16 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun onDisconnected(reason: String?) {
                 Log.i(TAG, "transport disconnected: $reason")
+                // Clear the service-side session-live flag the moment the
+                // transport drops (deliberate OR unexpected). Without this
+                // it stayed true until the next channel-change event, so a
+                // PTT press on a dead link played the talk-permit tone —
+                // misleading the operator into talking into a pipe that
+                // goes nowhere. With the flag false, canTransmit() is
+                // false and TxController plays the deny tone instead. The
+                // post-ServerSync channel-rejoin re-drives this true on a
+                // successful reconnect, so recovery restores TPT.
+                voiceClient?.ifBound { it.setMumbleSessionState(false) }
                 if (!deliberateDisconnectInProgress) {
                     // Tell the voice service so it can cut off any
                     // in-flight TX with the emphatic cutoff tone via
@@ -4509,6 +4519,10 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun onConnectionFailed(error: Throwable) {
                 Log.e(TAG, "transport connect failed", error)
+                // Still not connected — keep the session-live flag false
+                // so PTT keeps playing the deny tone (not the permit tone)
+                // for the whole outage, until a reconnect rejoins a channel.
+                voiceClient?.ifBound { it.setMumbleSessionState(false) }
                 // A failed reconnect attempt never coincides with an
                 // in-flight burst (the burst ended when the link first
                 // dropped), so no notifyTransportLost here — just feed
