@@ -402,6 +402,55 @@ class PttCellularGateTest {
     }
 
     @Test
+    fun `MODE_IN_COMMUNICATION with suppression flag maps to IDLE (Sonim carrier false-positive)`() {
+        // Device-specific suppression, field-observed 2026-07-14 on
+        // Sonim XP9900 (AT&T carrier, Android 12): the resident AT&T
+        // EPTT / Dispatch Hub apps hold MODE_IN_COMMUNICATION
+        // continuously with no actual call, so the default OFFHOOK
+        // mapping above produced an unbroken stream of false-positive
+        // "hang up before PTT" blocks. Callers pass
+        // suppressInCommunicationDefensiveBlock=true for those device
+        // classes; the mapping then falls through to IDLE so PTT is not
+        // gated.
+        assertEquals(
+            TelephonyManager.CALL_STATE_IDLE,
+            cellularCallStateFromAudioMode(
+                audioMode = AudioManager.MODE_IN_COMMUNICATION,
+                xvHasActiveTelecomCall = false,
+                suppressInCommunicationDefensiveBlock = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `suppression flag does NOT relax MODE_IN_CALL — real cellular still blocks`() {
+        // The suppression only touches the ambiguous
+        // MODE_IN_COMMUNICATION artefact. A real cellular call
+        // (MODE_IN_CALL) must still block unconditionally regardless of
+        // the flag.
+        assertEquals(
+            TelephonyManager.CALL_STATE_OFFHOOK,
+            cellularCallStateFromAudioMode(
+                audioMode = AudioManager.MODE_IN_CALL,
+                xvHasActiveTelecomCall = false,
+                suppressInCommunicationDefensiveBlock = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `suppression flag does NOT relax MODE_RINGTONE — incoming ring still blocks`() {
+        assertEquals(
+            TelephonyManager.CALL_STATE_RINGING,
+            cellularCallStateFromAudioMode(
+                audioMode = AudioManager.MODE_RINGTONE,
+                xvHasActiveTelecomCall = false,
+                suppressInCommunicationDefensiveBlock = true,
+            ),
+        )
+    }
+
+    @Test
     fun `unknown audio-mode fails open to CALL_STATE_IDLE regardless of own-call state`() {
         // Same fail-open rationale as shouldGateForCellularCall — a
         // silent PTT lockout with no visible cause is worse than the
