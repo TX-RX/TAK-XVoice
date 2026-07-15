@@ -50,7 +50,9 @@ baseline is solid, the roadmap moves toward **multicast and
 decentralized voice**: server-optional operation, mesh-radio
 interoperability via standard RTP framing, and per-frame AEAD with
 distributed key election so a channel can keep running when the server
-is gone.
+is gone. The mesh-voice failover path that delivers this is now
+implemented behind an opt-in toggle (see "What's different"); it stays
+off by default until it has been validated against real event traffic.
 
 ## Hardware philosophy — curated, not exhaustive
 
@@ -134,24 +136,43 @@ XV also adds:
   / None) for operators transitioning from public-safety LMR systems.
 - **Mumble + multicast channels under a single UX** — transport is an
   implementation detail. Mumble uses the device's ATAK enrollment cert
-  for TLS auth; multicast joins a deterministic UDP group derived from
-  the Mumble channel + server cert fingerprint.
+  for TLS auth; the multicast leg joins a deterministic UDP group
+  derived from the server hostname + channel name (the `xv-mcast-v1`
+  scheme), so any two devices on the same server and channel compute
+  the same group and port with zero coordination. An operator can pin
+  a specific group/port per channel instead — required for
+  OpenMANET-compatible interop groups.
 - **Direct calling** — Notification.CallStyle ring + full-screen call
   surface, VX-compatible private-call signaling.
-- **Mesh-voice-bridge foundation** — per-frame AEAD (ChaCha20-Poly1305),
-  TAK-cert-wrapped channel keys, distributed key election. Standard
-  RTP framing (RFC 3550 + 7587) for mesh-radio interop.
+- **Mesh-voice failover (opt-in, not yet field-validated)** — behind a
+  master toggle that defaults off. When enabled, every joined channel
+  gets an auto-derived multicast leg that carries voice when the Mumble
+  server is unreachable, with automatic failback once the server
+  recovers. Includes per-frame AEAD (ChaCha20-Poly1305) with
+  TAK-cert-wrapped channel keys and distributed key election;
+  active-active and auto-derived-failover per-channel modes; auto-bridge
+  election so a server-connected client relays voice to peers who have
+  gone dark; and an offline comms-plan carrier (QR / passphrase-locked)
+  plus peer-beacon discovery for fully server-less operation. Standard
+  RTP framing (RFC 3550 + 7587) and a raw-Opus wire mode provide
+  mesh-radio / OpenMANET interop. Implemented and unit-tested; **not
+  yet validated against real event traffic**, so it stays off by
+  default until it graduates.
 
 ## Roadmap
 
 - **Now:** mobile-connectivity reliability — Wi-Fi/cell handoff, fast
   reconnect, BT stability across audio-plant edge cases, background
-  behavior on locked phones.
-- **Next:** multicast channel operation, offline / server-optional
-  calling, mesh-radio RTP bridge.
-- **Later:** decentralized channel key management (already scaffolded
-  via distributed key election and AEAD), and additional curated
-  hardware as devices are validated in the field.
+  behavior on locked phones. Field-validating the opt-in mesh-voice
+  failover path against real event traffic before it graduates to on
+  by default.
+- **Next:** promote mesh-voice failover to a supported feature once
+  validated; comms-plan import UX (QR scan / passphrase entry) and the
+  discovered-channels picker; OpenMANET interop testing against live
+  mesh hardware.
+- **Later:** additional curated hardware as devices are validated in
+  the field, and NFC / data-package comms-plan carriers alongside the
+  QR and passphrase forms.
 
 ## Reporting issues
 

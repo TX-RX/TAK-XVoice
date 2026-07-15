@@ -34,6 +34,8 @@ import com.atakmap.android.xv.transport.TransportListener
 import com.atakmap.android.xv.transport.VoiceFrame
 import com.atakmap.android.xv.transport.VoiceTransport
 import com.atakmap.android.xv.transport.VxCompat
+import com.atakmap.android.xv.transport.multicast.MeshVoiceManager
+import com.atakmap.android.xv.transport.multicast.MulticastMeshLeg
 import com.atakmap.android.xv.transport.mumble.MumbleAuth
 import com.atakmap.android.xv.transport.mumble.TakServerDiscovery
 import com.atakmap.android.xv.ui.XvDropDownReceiver
@@ -539,6 +541,24 @@ class XvMapComponent : AbstractMapComponent() {
             }
         }
     private var activeTransport: VoiceTransport? = null
+
+    // Mesh-voice activation layer (multicast failover, bridge election,
+    // offline discovery). Null until [startMeshVoice] runs; survives
+    // Mumble teardown by design (that IS the failover case). Owns its
+    // own multicast legs, key elections, and the ~1 Hz tick below.
+    private var meshVoiceManager: MeshVoiceManager? = null
+    private val meshTickHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val meshTickRunnable =
+        object : Runnable {
+            override fun run() {
+                try {
+                    meshVoiceManager?.tick()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "mesh tick threw", t)
+                }
+                meshTickHandler.postDelayed(this, MESH_TICK_MS)
+            }
+        }
 
     // Host string of the currently-running Mumble transport, or null when
     // disconnected. Used by the multi-server picker to short-circuit a
@@ -1204,6 +1224,12 @@ class XvMapComponent : AbstractMapComponent() {
         // others' CoT to build a registry of XV-callable peers.
         // Independent of Mumble — works even when Mumble is down.
         startPresenceLayer()
+        // Mesh voice sits alongside presence — both work Mumble-down.
+        // The manager no-ops internally until the operator enables the
+        // mesh-voice master toggle, so starting it unconditionally is
+        // free and lets a mid-session enable bring legs up on the next
+        // tick without a plugin reload.
+        startMeshVoice()
 
         Log.i(TAG, "XV loaded — voice plant lives in service")
         // One-shot diagnostic at load: dump the bonded-device picker
@@ -1374,6 +1400,7 @@ class XvMapComponent : AbstractMapComponent() {
             stopSonimAssignedApp()
         } catch (_: Throwable) {
         }
+        stopMeshVoice()
         presenceListener?.stop()
         presenceListener = null
         presencePublisher?.stop()
@@ -1948,6 +1975,13 @@ class XvMapComponent : AbstractMapComponent() {
             activeTransport = null
             activeMumbleHost = null
             joinedChannelsBySlot.clear()
+            // Tell mesh voice the server leg is gone. Legs deliberately
+            // survive — this is the failover trigger, not a teardown.
+            try {
+                meshVoiceManager?.onChannelsCleared()
+            } catch (th: Throwable) {
+                Log.w(TAG, "mesh onChannelsCleared threw", th)
+            }
             // Clear the published Mumble session id; peers should not
             // try to call us via a stale session number after we've
             // dropped off the server.
@@ -1969,8 +2003,9 @@ class XvMapComponent : AbstractMapComponent() {
         opus: ByteArray,
         targetSlot: Int,
     ) {
-        val t = activeTransport ?: return
-        t.sendFrame(
+        // Mumble copy: unconditional when a transport is live. A dead
+        // transport drops it; the mesh leg carries the burst instead.
+        activeTransport?.sendFrame(
             com.atakmap.android.xv.transport.VoiceFrame(
                 opusPayload = opus,
                 senderId = "self",
@@ -1978,6 +2013,13 @@ class XvMapComponent : AbstractMapComponent() {
                 targetSlot = targetSlot,
             ),
         )
+        // Mesh copy: the manager decides per channel mode + failover
+        // state whether the frame also goes on the multicast leg.
+        try {
+            meshVoiceManager?.sendTxOpus(opus, targetSlot)
+        } catch (t: Throwable) {
+            Log.w(TAG, "mesh sendTxOpus threw", t)
+        }
     }
 
     private fun sendTerminatorToActiveTransport(targetSlot: Int) {
@@ -1991,6 +2033,13 @@ class XvMapComponent : AbstractMapComponent() {
             t.beginVoiceBurst()
         } else {
             Log.w(TAG, "beginMumbleVoiceBurst() called but no live Mumble transport")
+        }
+        // Reset every mesh leg's burst state on the same PTT-down edge
+        // so cross-leg RX dedup sequence numbers stay aligned.
+        try {
+            meshVoiceManager?.beginTxBurst()
+        } catch (th: Throwable) {
+            Log.w(TAG, "mesh beginTxBurst threw", th)
         }
     }
 
@@ -2601,6 +2650,141 @@ class XvMapComponent : AbstractMapComponent() {
         presenceListener = listener
 
         Log.i(TAG, "presence layer started: uid=$deviceUid server=$server certFp=${certFp?.take(16)}…")
+    }
+
+    // Stand up the mesh-voice manager. Idempotent — a second call
+    // rebuilds against fresh identity/settings (e.g. after a re-enroll).
+    // Pure-Kotlin core: every Android/ATAK touchpoint is injected as a
+    // lambda so the decision surface stays unit-tested (MeshVoiceManagerTest).
+    private fun startMeshVoice() {
+        val deviceUid = MumbleAuth.deviceUid()
+        if (deviceUid.isNullOrBlank()) {
+            Log.w(TAG, "mesh voice: no device UID — not starting")
+            return
+        }
+        stopMeshVoice()
+        val ctx = heldPluginContext
+        val takHost =
+            try {
+                TakServerDiscovery.pick(null)?.host
+            } catch (_: Throwable) {
+                null
+            }
+        val takIdentity = takHost?.let { MumbleAuth.loadTakIdentity(it) }
+        val ourCertDer = takIdentity?.leaf?.encoded
+        val ourPrivateKey = takIdentity?.privateKey
+
+        val manager =
+            MeshVoiceManager(
+                ourUid = deviceUid,
+                ourCallsign = {
+                    try {
+                        MapView.getMapView()?.deviceCallsign
+                    } catch (_: Throwable) {
+                        null
+                    }
+                },
+                meshEnabled = { settings.persistedMeshVoiceEnabled() },
+                configForChannel = { channel ->
+                    settings.channelMulticastConfigFor(channel)
+                        ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+                            .defaultFor(channel)
+                },
+                serverIdentity = {
+                    activeMumbleHost?.let {
+                        com.atakmap.android.xv.transport.multicast.ServerIdentity
+                            .fromHostname(it)
+                    }
+                },
+                mumbleConnected = { activeTransport?.isConnected == true },
+                legFactory = { cfg, endpoint, registry, sink ->
+                    MulticastMeshLeg(
+                        config = cfg,
+                        endpoint = endpoint,
+                        registry = registry,
+                        ourUid = deviceUid,
+                        context = ctx,
+                        sink = sink,
+                    )
+                },
+                onRxOpus = { opus, speakerLabel ->
+                    voiceClient?.ifBound {
+                        try {
+                            it.onRxOpus(0, opus, speakerLabel)
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "mesh onRxOpus to service threw", t)
+                        }
+                    }
+                },
+                relayToMumble = { opus, burstStart ->
+                    // Bridge relay: a server-less mesh speaker's frame
+                    // goes onto the Mumble channel over OUR session.
+                    if (burstStart) beginMumbleVoiceBurst()
+                    sendOpusToActiveTransport(opus, targetSlot = 0)
+                },
+                onMeshTxStateChanged = { meshTxActive ->
+                    // Server-less TX must stay allowed: while mesh is
+                    // the active leg the plant's canTransmit gate (keyed
+                    // on Mumble session) would otherwise bonk every PTT.
+                    if (meshTxActive) {
+                        voiceClient?.ifBound { it.setMumbleSessionState(true) }
+                    }
+                    dropDown?.refreshNow()
+                },
+                deviceUidForMumbleSession = { session ->
+                    presenceRegistry?.all()?.firstOrNull { it.mumbleSession == session }?.deviceUid
+                },
+                uidMumbleConnected = { uid ->
+                    presenceRegistry?.get(uid)?.mumbleSession != null
+                },
+                knownPeerUids = { presenceRegistry?.all()?.map { it.deviceUid }.orEmpty() },
+                certFpForUid = { uid -> presenceRegistry?.get(uid)?.certFingerprint },
+                ourCertDer = { ourCertDer },
+                unwrapKey = { wrapped ->
+                    ourPrivateKey?.let {
+                        try {
+                            com.atakmap.android.xv.transport.multicast.TakCertCryptoBox
+                                .unwrapChannelKey(wrapped, it)
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "mesh key unwrap failed", t)
+                            null
+                        }
+                    }
+                },
+                wrapKeyFor = { recipientCertDer, key ->
+                    try {
+                        val cert =
+                            java.security.cert.CertificateFactory
+                                .getInstance("X.509")
+                                .generateCertificate(recipientCertDer.inputStream())
+                                as java.security.cert.X509Certificate
+                        com.atakmap.android.xv.transport.multicast.TakCertCryptoBox
+                            .wrapChannelKey(key, cert)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "mesh key wrap failed", t)
+                        null
+                    }
+                },
+            )
+        meshVoiceManager = manager
+        // Seed the currently-joined primary channel so a leg comes up
+        // immediately if the operator enabled mesh mid-session.
+        joinedChannelsBySlot[0]?.let { manager.onChannelJoined(0, it.name ?: "") }
+        meshTickHandler.removeCallbacks(meshTickRunnable)
+        meshTickHandler.postDelayed(meshTickRunnable, MESH_TICK_MS)
+        Log.i(TAG, "mesh voice started: uid=$deviceUid enrolled=${ourCertDer != null}")
+    }
+
+    private fun stopMeshVoice() {
+        meshTickHandler.removeCallbacks(meshTickRunnable)
+        meshVoiceManager?.let {
+            try {
+                it.shutdown()
+            } catch (t: Throwable) {
+                Log.w(TAG, "mesh shutdown threw", t)
+            }
+        }
+        meshVoiceManager = null
     }
 
     private fun parseVxCompat(mode: String?): VxCompat? =
@@ -4039,11 +4223,25 @@ class XvMapComponent : AbstractMapComponent() {
                 playback = null,
                 opusDecoderFactory = null,
                 onIncomingOpus = { slot, opus, speakerSession, _ ->
-                    voice?.ifBound {
+                    // Cross-leg dedup + bridge relay: the mesh manager
+                    // decides whether this Mumble copy plays (it may
+                    // have already delivered the mesh copy) and, when
+                    // we hold the bridge role, relays it onto the mesh.
+                    // A true return (or no mesh manager) plays as before.
+                    val play =
                         try {
-                            it.onRxOpus(slot, opus, "mumble:$slot:$speakerSession")
+                            meshVoiceManager?.onMumbleRxFrame(slot, speakerSession, opus) ?: true
                         } catch (t: Throwable) {
-                            Log.w(TAG, "onRxOpus to service threw", t)
+                            Log.w(TAG, "mesh onMumbleRxFrame threw", t)
+                            true
+                        }
+                    if (play) {
+                        voice?.ifBound {
+                            try {
+                                it.onRxOpus(slot, opus, "mumble:$slot:$speakerSession")
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "onRxOpus to service threw", t)
+                            }
                         }
                     }
                 },
@@ -4080,6 +4278,15 @@ class XvMapComponent : AbstractMapComponent() {
                         }
                     }
                     joinedChannelsBySlot[slot] = XvChannel(name, channelId)
+                    // Primary-channel change → reconcile the mesh leg
+                    // onto the new channel's derived/pinned group.
+                    if (slot == 0 && !name.isNullOrBlank()) {
+                        try {
+                            meshVoiceManager?.onChannelJoined(0, name)
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "mesh onChannelJoined threw", t)
+                        }
+                    }
                     // Status-tone events: a slot transitioning from
                     // "unset" or to a different channel id is a JOIN
                     // (new channel reachable); same channel is a no-op
