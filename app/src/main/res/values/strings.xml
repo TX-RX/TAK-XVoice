@@ -8,5 +8,5 @@
          prompt ("can observe your actions") is outside XV's control and
          does not reflect the typeWindowStateChanged / no-window-content configuration;
          this string is the accurate per-app description alongside it. -->
-    <string name="xv_accessibility_service_description">Intercepts the Samsung Active Key button (keyCode 1015) to enable Push-to-Talk while ATAK is in the background. Does not read screen content, typed text, viewed windows, or any other app data.</string>
+    <string name="xv_accessibility_service_description">Intercepts hardware Push-to-Talk keys (Samsung Active Key / keyCode 1015 on Samsung ruggedized devices; KEYCODE_PTT / 228 on Sonim XP10 / XP9900) to enable PTT while ATAK is in the background or the screen is off. Only these two specific keycodes are acted on; every other key passes through. Does not read screen content, typed text, viewed windows, or any other app data.</string>
 </resources>

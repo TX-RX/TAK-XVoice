@@ -6,6 +6,7 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.atakmap.android.xv.service.XvVoiceService
 import com.atakmap.android.xv.util.SamsungActiveKey
+import com.atakmap.android.xv.util.SonimHardwareButtons
 
 /**
  * Accessibility service that intercepts the Samsung Active Key
@@ -94,6 +95,16 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
     @Volatile
     private var held: Boolean = false
 
+    // Independent held-state for the Sonim PTT (KEYCODE_PTT / 228)
+    // background path. Same rationale as [held] above but tracked
+    // separately because the Samsung Active Key and Sonim PTT are
+    // different physical buttons on different chassis; conflating
+    // their state would cause a Samsung Active Key press to mask a
+    // Sonim PTT press or vice-versa on a hypothetical dual-hardware
+    // scenario.
+    @Volatile
+    private var sonimPttHeld: Boolean = false
+
     /**
      * Empty implementation — XV discards every event unconditionally.
      * The method must be present because `AccessibilityService` declares
@@ -116,18 +127,32 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Intercept hardware key events.  Only KEY_CODE_PTT (1015) is acted
-     * on; everything else returns `false` (not consumed) so normal
-     * system key routing is unaffected.
+     * Intercept hardware key events. Acts on:
      *
-     * Device gate: returns `false` immediately on unsupported hardware
-     * so a misconfigured install on a non-Samsung device has zero effect.
+     *   - Samsung Active Key (keyCode 1015) when Samsung ruggedized
+     *     hardware is detected — the original driver for this service.
+     *   - Sonim KEYCODE_PTT (228) when Sonim ruggedized hardware is
+     *     detected — added 2026-07-14 so the Sonim XP10 physical PTT
+     *     button works with ATAK in the background / screen off, same
+     *     coverage the Samsung Active Key already gets.
+     *
+     * Every other keycode returns `false` (not consumed) so normal
+     * system key routing is unaffected. On non-Samsung, non-Sonim
+     * hardware both branches skip and the service is a no-op regardless
+     * of whether the operator has enabled it.
      */
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        // Belt-and-suspenders device gate — the Settings row is hidden
-        // on unsupported hardware so the operator can't even enable the
-        // service from the XV UI, but guard here as well in case they
-        // somehow enable it via raw accessibility settings.
+        // Sonim PTT branch — device-gated to Sonim XP10 (XP9900 /
+        // XP10 model prefix) so a Samsung-only device can't
+        // accidentally consume KEYCODE_PTT that some other app on the
+        // device might be using. See SonimHardwareButtons.isSupported.
+        if (SonimHardwareButtons.isSupported(this) &&
+            SonimHardwareButtons.PTT_KEY_CODE_ALT2 == event.keyCode
+        ) {
+            return handleSonimPtt(event)
+        }
+
+        // Samsung Active Key branch — belt-and-suspenders device gate.
         if (!SamsungActiveKey.isSupported(this)) return false
 
         return when (SamsungActiveKey.handleKeyEvent(event.keyCode, event.action, event.repeatCount)) {
@@ -152,6 +177,51 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
                 true
             }
             SamsungActiveKey.FallbackAction.IGNORE -> false
+        }
+    }
+
+    /**
+     * Sonim PTT (KEYCODE_PTT / 228) branch of [onKeyEvent]. Dedups
+     * against the foreground KeyEvent path via [sonimPttHeld] so a
+     * physically-held key doesn't spam duplicate down edges through
+     * the dispatcher's OR-gate.
+     */
+    private fun handleSonimPtt(event: KeyEvent): Boolean {
+        return when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (event.repeatCount != 0) {
+                    // Auto-repeat — swallow silently. First DOWN
+                    // already fired.
+                    return true
+                }
+                if (sonimPttHeld) {
+                    Log.d(TAG, "Sonim PTT DOWN (accessibility) — already held; dropping duplicate")
+                    return true
+                }
+                sonimPttHeld = true
+                Log.i(TAG, "Sonim PTT DOWN (accessibility background path)")
+                try {
+                    XvVoiceService.deliverSonimPttEdge(true)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "deliverSonimPttEdge(down) threw", t)
+                }
+                true
+            }
+            KeyEvent.ACTION_UP -> {
+                if (!sonimPttHeld) {
+                    Log.d(TAG, "Sonim PTT UP (accessibility) — not held; dropping")
+                    return true
+                }
+                sonimPttHeld = false
+                Log.i(TAG, "Sonim PTT UP (accessibility background path)")
+                try {
+                    XvVoiceService.deliverSonimPttEdge(false)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "deliverSonimPttEdge(up) threw", t)
+                }
+                true
+            }
+            else -> false
         }
     }
 
