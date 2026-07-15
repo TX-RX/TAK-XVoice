@@ -48,7 +48,9 @@ class MulticastMeshLeg(
             rxCodec = config.newWireCodec(ourSsrc, effectiveRegistry),
             localSpeakerKey = "ssrc:%08x".format(ourSsrc),
             onIncomingOpus = { opus, speakerKey, seqInBurst ->
-                sink.onVoice(config.channelName, opus, speakerKey, seqInBurst)
+                if (!isOwnRelaySpeaker(speakerKey)) {
+                    sink.onVoice(config.channelName, opus, speakerKey, seqInBurst)
+                }
             },
             onControlMessage = { msg, sourceHost ->
                 sink.onControl(config.channelName, msg, sourceHost)
@@ -80,6 +82,23 @@ class MulticastMeshLeg(
 
     private val relayCodecs = HashMap<String, MulticastWireCodec>()
 
+    // Speaker keys of frames WE are relaying from the server onto this
+    // leg. Relayed datagrams carry the ORIGINAL speaker's SSRC — not
+    // [localSpeakerKey] — so the transport's own-frame loopback filter
+    // misses them when the OS delivers our multicast back to us. The
+    // bridge then re-ingested its own relay as fresh mesh traffic from
+    // an unresolvable speaker and bounced it back onto Mumble as an
+    // echo (field repro 2026-07-15: desktop Mumble speaker echoed by
+    // the bridging tablet). Rule: traffic is never repeated onto the
+    // channel it came from — anything whose SSRC we relay is ours on
+    // RX and must be dropped. (OPENMANET_COMPAT relays are raw Opus
+    // with source-IP attribution; the OS tags loopback with our own
+    // source address, which that format's receivers key on, so this
+    // set is XV_NATIVE-only by construction.)
+    private val relayedSpeakerKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    internal fun isOwnRelaySpeaker(speakerKey: String): Boolean = speakerKey in relayedSpeakerKeys
+
     override fun sendRelayOpus(
         speakerUid: String,
         opus: ByteArray,
@@ -92,7 +111,8 @@ class MulticastMeshLeg(
                     transport.sendRaw(opus)
                     return
                 }
-                WireFormat.XV_NATIVE ->
+                WireFormat.XV_NATIVE -> {
+                    relayedSpeakerKeys += "ssrc:%08x".format(RtpFraming.fnv1aSsrc(speakerUid))
                     relayCodecs.getOrPut(speakerUid) {
                         XvNativeWireCodec(
                             ssrc = RtpFraming.fnv1aSsrc(speakerUid),
@@ -100,6 +120,7 @@ class MulticastMeshLeg(
                             keyRegistry = effectiveRegistry,
                         )
                     }
+                }
             }
         if (burstStart) codec.beginBurst()
         codec.encodeTx(opus)?.let { transport.sendRaw(it) }
@@ -112,6 +133,7 @@ class MulticastMeshLeg(
 
     override fun close() {
         relayCodecs.clear()
+        relayedSpeakerKeys.clear()
         transport.disconnect()
     }
 

@@ -259,6 +259,14 @@ class MeshVoiceManager(
         failoverPolicy.observeMumbleRx(now)
         if (slot != 0) return true // VS2 has no mesh leg to collide with
         val canonical = deviceUidForMumbleSession(speakerSession) ?: "mumble:$speakerSession"
+        // Bind this speaker's SSRC to their canonical id for every
+        // Mumble speaker, INCLUDING non-XV clients whose synthetic
+        // "mumble:<session>" uid never appears in CoT presence (so
+        // refreshSsrcMap can't map them). Without this a doubly-
+        // connected receiver can't correlate a bridge's mesh relay of
+        // this speaker with the server copy, and the dedup layer plays
+        // both — the "ghost packet" double audio.
+        ssrcKeyToUid["ssrc:%08x".format(RtpFraming.fnv1aSsrc(canonical))] = canonical
         val play = deduper.shouldPlay(legId = "mumble", speaker = canonical, nowMs = now)
         if (play && bridging) {
             relayServerFrameToMesh(canonical, opus, now)
@@ -286,7 +294,14 @@ class MeshVoiceManager(
         val canonical = ssrcKeyToUid[speakerKey] ?: speakerKey
         if (!deduper.shouldPlay(legId = "mesh:$channelName", speaker = canonical, nowMs = now)) return
         onRxOpus(opus, "mcast:$channelName:$speakerKey")
-        if (bridging && canonical != ourUid && !uidMumbleConnected(canonical)) {
+        // Relay eligibility: never bounce server-originated audio back
+        // onto the server. A "mumble:<session>" canonical id exists
+        // ONLY because the speaker was heard on a live Mumble session
+        // — such frames on the mesh are some bridge's relay (ours are
+        // already dropped leg-side; another bridge's can slip through
+        // during a handoff overlap).
+        val serverOriginated = canonical.startsWith("mumble:")
+        if (bridging && canonical != ourUid && !serverOriginated && !uidMumbleConnected(canonical)) {
             // Server-less speaker heard on the mesh while we hold the
             // bridge: relay onto the Mumble channel. The frame rides
             // OUR Mumble session (protocol limitation); mesh-side

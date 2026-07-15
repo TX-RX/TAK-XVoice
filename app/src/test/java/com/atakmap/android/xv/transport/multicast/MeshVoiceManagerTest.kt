@@ -292,6 +292,38 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `mesh copy of a mumble speaker is deduped on doubly-connected receivers`() {
+        // A non-XV desktop client's audio arrives twice at a doubly-
+        // connected device: the server copy and a bridge's mesh relay
+        // (which carries fnv1a("mumble:<session>") as its SSRC). The
+        // mapping stamped in onMumbleRxFrame is what lets the deduper
+        // recognize both as one speaker — without it the "ghost
+        // packet" double audio plays.
+        val h = Harness()
+        h.joinAndTick()
+        h.manager.onMumbleRxFrame(0, speakerSession = 53, opus = byteArrayOf(1))
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKeyOf("mumble:53"), seqInBurst = 0)
+        assertTrue("relayed mesh copy must dedup against the server copy", h.playedRx.isEmpty())
+    }
+
+    @Test
+    fun `bridge never bounces server-originated mesh frames back onto mumble`() {
+        // Our own relays are dropped leg-side, but another bridge's
+        // relay of a server speaker can arrive during a handoff
+        // overlap. A "mumble:<session>" canonical exists only because
+        // the speaker was heard on a live Mumble session — bouncing it
+        // back is the echo. (Field repro 2026-07-15: desktop speaker
+        // echoed onto Mumble by the bridging tablet.)
+        val h = Harness()
+        h.makeUsBridge()
+        h.manager.onMumbleRxFrame(0, speakerSession = 53, opus = byteArrayOf(1))
+        // Past the dedup burst window: mesh copy claims a new burst.
+        h.now += 1_000
+        h.manager.onVoice("ops-1", byteArrayOf(2), ssrcKeyOf("mumble:53"), seqInBurst = 0)
+        assertTrue(h.relayedToMumble.isEmpty())
+    }
+
+    @Test
     fun `bridge TXes its own mic onto the mesh even though mumble is healthy`() {
         // The server never echoes our own voice back, so the
         // mumble→mesh relay path cannot carry the bridge operator's
