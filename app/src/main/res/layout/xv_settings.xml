@@ -663,7 +663,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="On this device the PTT and SOS keys are routed by the phone's own Programmable Keys menu — no XV toggle. Assign PTT to ATAK to key voice; assign SOS to ATAK to fire ATAK's Alert Tool. XV automatically catches whichever keys the phone forwards. Open the system settings to configure."
+                        android:text="Three Sonim hardware keys can be assigned to ATAK in the phone's Programmable Keys menu:\n\n• PTT key → ATAK — press-to-talk voice (XV catches the KeyEvent and keys the primary channel).\n• SOS / Emergency key → ATAK — fires ATAK's Alert Tool. Short press starts an emergency beacon; long hold cancels it. Does not key voice.\n• Application key → ATAK (optional) — quick-launch ATAK to the foreground from anywhere on the device.\n\nNo XV toggle here — the phone's assignment is the source of truth. XV automatically catches whichever of these the phone forwards. Tap below to open the Programmable Keys settings."
                         android:textColor="@color/xv_text_dim"
                         android:textSize="11sp"
                         android:layout_marginTop="4dp"/>
