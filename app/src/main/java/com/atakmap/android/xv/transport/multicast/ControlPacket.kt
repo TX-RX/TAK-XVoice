@@ -234,7 +234,8 @@ object ControlPacket {
                 val group = readLengthPrefixedString(buf)
                 val port = buf.int
                 val keyEpoch = buf.int
-                Message.PeerBeacon.Channel(name, group, port, keyEpoch)
+                val keyFp = buf.int
+                Message.PeerBeacon.Channel(name, group, port, keyEpoch, keyFp)
             }
         return Message.PeerBeacon(
             uid = uid,
@@ -258,7 +259,7 @@ object ControlPacket {
             }
         val size =
             4 + uidBytes.size + 4 + callsignBytes.size + 1 + 4 +
-                channelBytes.sumOf { (n, g, _) -> 4 + n.size + 4 + g.size + 8 }
+                channelBytes.sumOf { (n, g, _) -> 4 + n.size + 4 + g.size + 12 }
         val buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN)
         buf.putInt(uidBytes.size)
         buf.put(uidBytes)
@@ -276,6 +277,7 @@ object ControlPacket {
             buf.put(g)
             buf.putInt(ch.port)
             buf.putInt(ch.keyEpoch)
+            buf.putInt(ch.keyFp)
         }
         return buf.array()
     }
@@ -412,12 +414,23 @@ object ControlPacket {
              *   hold no key. Feeds the key election: a keyless joiner
              *   learns whom to ask, and simultaneous keyless starts
              *   converge on one generator instead of splitting the key.
+             * @property keyFp short fingerprint of the sender's current
+             *   key bytes (see MeshVoiceManager.keyFingerprint), or 0
+             *   when keyless. Epoch equality does NOT imply key
+             *   equality — two devices that bootstrapped simultaneously
+             *   (or two merging partitions) can both sit at epoch 0
+             *   with different keys and drop 100% of each other's
+             *   voice as BAD_TAG (observed on-device 2026-07-15). A
+             *   fingerprint mismatch at the same epoch is that split-
+             *   brain signal; the lowest-uid holder rotates forward to
+             *   resolve it.
              */
             data class Channel(
                 val name: String,
                 val group: String,
                 val port: Int,
                 val keyEpoch: Int = ChannelKeyRegistry.NO_EPOCH,
+                val keyFp: Int = 0,
             )
         }
     }

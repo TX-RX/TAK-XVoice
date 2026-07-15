@@ -14,7 +14,7 @@ class ControlPacketPeerBeaconTest {
             bridging = false,
             channels =
             listOf(
-                ControlPacket.Message.PeerBeacon.Channel("ops-1", "239.226.1.2", 16855),
+                ControlPacket.Message.PeerBeacon.Channel("ops-1", "239.226.1.2", 16855, keyEpoch = 3, keyFp = 0x1234ABCD),
                 ControlPacket.Message.PeerBeacon.Channel("bravo", "224.0.0.1", 5007),
             ),
         )

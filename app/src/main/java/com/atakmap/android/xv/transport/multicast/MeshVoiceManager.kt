@@ -583,7 +583,39 @@ class MeshVoiceManager(
                     hadCurrentKey = ch.keyEpoch != ChannelKeyRegistry.NO_EPOCH &&
                         ch.keyEpoch == registryFor(ch.name).currentEpoch(),
                 )
+                resolveKeySplitBrain(ch, msg.uid, now)
             }
+        }
+    }
+
+    // Same-epoch/different-key split-brain (simultaneous bootstrap or
+    // partition merge): epoch numbers match, key bytes don't, so both
+    // sides think they're in sync while dropping 100% of each other's
+    // voice as BAD_TAG (observed on-device 2026-07-15 after restarting
+    // both devices together). Resolution is deterministic and one-
+    // sided: the LOWEST uid among the conflicted holders rotates
+    // forward to a fresh epoch; everyone else sees the higher epoch in
+    // its next beacon and converges through the normal KeyReq path —
+    // no loser-side special case, no registry overwrite semantics.
+    private val lastConflictRotateMs = HashMap<String, Long>()
+
+    private fun resolveKeySplitBrain(
+        ch: ControlPacket.Message.PeerBeacon.Channel,
+        peerUid: String,
+        now: Long,
+    ) {
+        val ourEpoch = registryFor(ch.name).currentEpoch()
+        if (ourEpoch == ChannelKeyRegistry.NO_EPOCH || ch.keyEpoch != ourEpoch) return
+        val ourFp = currentKeys[ch.name]?.let { keyFingerprint(it) } ?: 0
+        if (ourFp == 0 || ch.keyFp == 0 || ch.keyFp == ourFp) return
+        if (ourUid > peerUid) return // the lower uid rotates; we wait for their new epoch
+        // No MIN_VALUE sentinel here: (now - MIN_VALUE) overflows
+        // negative and would silence the throttle check forever.
+        val last = lastConflictRotateMs[ch.name]
+        if (last != null && now - last < CONFLICT_ROTATE_THROTTLE_MS) return
+        lastConflictRotateMs[ch.name] = now
+        legs[ch.name]?.let { leg ->
+            rotateKey(ch.name, leg, (ourEpoch + 1) and 0xFF)
         }
     }
 
@@ -696,6 +728,7 @@ class MeshVoiceManager(
                     group = leg.endpoint.groupAddress,
                     port = leg.endpoint.port,
                     keyEpoch = registryFor(name).currentEpoch(),
+                    keyFp = currentKeys[name]?.let { keyFingerprint(it) } ?: 0,
                 )
             }
         val beacon =
@@ -802,5 +835,32 @@ class MeshVoiceManager(
          * SSRC derivation, truncated to Int.
          */
         fun stableChannelId(canonicalChannelName: String): Int = RtpFraming.fnv1aSsrc(canonicalChannelName).toInt()
+
+        /**
+         * Short key fingerprint advertised in beacons so peers can
+         * detect same-epoch/different-key split-brain. First 4 bytes
+         * (big-endian) of SHA-256("xv-keyfp|" || key). 0 is reserved
+         * for "no key"; the 2^-32 all-zero digest prefix maps to 1.
+         * Not secret material — 32 bits of a hash identify the key
+         * without revealing it.
+         */
+        fun keyFingerprint(key: ByteArray): Int {
+            val d = java.security.MessageDigest.getInstance("SHA-256")
+            d.update("xv-keyfp|".toByteArray(Charsets.US_ASCII))
+            val h = d.digest(key)
+            val fp =
+                ((h[0].toInt() and 0xFF) shl 24) or
+                    ((h[1].toInt() and 0xFF) shl 16) or
+                    ((h[2].toInt() and 0xFF) shl 8) or
+                    (h[3].toInt() and 0xFF)
+            return if (fp == 0) 1 else fp
+        }
+
+        /**
+         * Minimum spacing between conflict-driven rotations per
+         * channel: two beacon intervals, so the loser has time to see
+         * the new epoch and converge before we rotate again.
+         */
+        private const val CONFLICT_ROTATE_THROTTLE_MS = 10_000L
     }
 }

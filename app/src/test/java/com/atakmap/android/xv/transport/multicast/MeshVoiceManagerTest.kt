@@ -312,6 +312,79 @@ class MeshVoiceManagerTest {
         assertTrue(h.channelLeg().sentOpus.isEmpty())
     }
 
+    // ---- same-epoch/different-key split-brain resolution ----
+
+    private fun Harness.installOurKey(key: ByteArray) = manager.installPresharedKey("Ops-1", key)
+
+    private fun conflictBeacon(
+        fromUid: String,
+        peerKey: ByteArray,
+    ): ControlPacket.Message.PeerBeacon =
+        ControlPacket.Message.PeerBeacon(
+            uid = fromUid,
+            callsign = "Bravo-2",
+            mumbleConnected = false,
+            bridging = false,
+            channels =
+            listOf(
+                ControlPacket.Message.PeerBeacon.Channel(
+                    name = "ops-1",
+                    group = "239.226.1.2",
+                    port = 16855,
+                    keyEpoch = MeshVoiceManager.PSK_EPOCH,
+                    keyFp = MeshVoiceManager.keyFingerprint(peerKey),
+                ),
+            ),
+        )
+
+    private fun Harness.lastBeaconEpochFor(channel: String): Int? =
+        channelLeg()
+            .sentControl
+            .filterIsInstance<ControlPacket.Message.PeerBeacon>()
+            .lastOrNull()
+            ?.channels
+            ?.firstOrNull { it.name == channel }
+            ?.keyEpoch
+
+    @Test
+    fun `lowest uid rotates out of a same-epoch key conflict`() {
+        // Both sides bootstrapped epoch 0 with different key bytes
+        // (simultaneous restart / partition merge — field regression
+        // 2026-07-15: 100% of peer voice dropped as BAD_TAG while both
+        // advertised epoch 0). Our uid sorts below the peer's, so WE
+        // rotate forward; the peer converges via the higher epoch.
+        val h = Harness() // ourUid "uid-mmm" < "uid-zzz"
+        h.joinAndTick()
+        h.installOurKey(ByteArray(AeadCodec.KEY_BYTES) { 0x11 })
+        h.manager.onControl("ops-1", conflictBeacon("uid-zzz", ByteArray(AeadCodec.KEY_BYTES) { 0x22 }), "192.0.2.9")
+        h.now += MeshVoiceManager.BEACON_INTERVAL_MS
+        h.manager.tick()
+        assertEquals(MeshVoiceManager.PSK_EPOCH + 1, h.lastBeaconEpochFor("ops-1"))
+    }
+
+    @Test
+    fun `higher uid waits out a same-epoch key conflict`() {
+        val h = Harness() // ourUid "uid-mmm" > "uid-aaa" — peer rotates, not us
+        h.joinAndTick()
+        h.installOurKey(ByteArray(AeadCodec.KEY_BYTES) { 0x11 })
+        h.manager.onControl("ops-1", conflictBeacon("uid-aaa", ByteArray(AeadCodec.KEY_BYTES) { 0x22 }), "192.0.2.9")
+        h.now += MeshVoiceManager.BEACON_INTERVAL_MS
+        h.manager.tick()
+        assertEquals(MeshVoiceManager.PSK_EPOCH, h.lastBeaconEpochFor("ops-1"))
+    }
+
+    @Test
+    fun `matching key fingerprints at the same epoch trigger no rotation`() {
+        val shared = ByteArray(AeadCodec.KEY_BYTES) { 0x11 }
+        val h = Harness()
+        h.joinAndTick()
+        h.installOurKey(shared)
+        h.manager.onControl("ops-1", conflictBeacon("uid-zzz", shared), "192.0.2.9")
+        h.now += MeshVoiceManager.BEACON_INTERVAL_MS
+        h.manager.tick()
+        assertEquals(MeshVoiceManager.PSK_EPOCH, h.lastBeaconEpochFor("ops-1"))
+    }
+
     @Test
     fun `bridge does not re-relay speakers who are already on the server`() {
         val h = Harness()
