@@ -31,13 +31,24 @@ class ReconnectPolicyTest {
     }
 
     @Test
-    fun `shouldPause fires only after the auto-pause threshold`() {
-        // Below the threshold we keep retrying; at/after it the wrapper
-        // auto-pauses the ladder to wait for an operator re-arm.
-        assertFalse(ReconnectPolicy.shouldPause(0))
-        assertFalse(ReconnectPolicy.shouldPause(ReconnectPolicy.PAUSE_AFTER_ATTEMPTS - 1))
-        assertTrue(ReconnectPolicy.shouldPause(ReconnectPolicy.PAUSE_AFTER_ATTEMPTS))
-        assertTrue(ReconnectPolicy.shouldPause(ReconnectPolicy.PAUSE_AFTER_ATTEMPTS + 50))
+    fun `ladder never gives up — no attempt count ever stops the retries`() {
+        // Operator policy, not an implementation detail: a real LMR radio
+        // never stops reaching for the repeater, so neither does XV. An
+        // earlier revision auto-paused after ~10 attempts; it was removed
+        // outright. This pins the contract at a deliberately absurd
+        // attempt count so that reintroducing any "give up after N" gate
+        // fails here with a name that explains why.
+        val p = ReconnectPolicy()
+        repeat(10_000) { p.nextDelayMs() }
+        assertEquals(
+            "the 10,000th consecutive failure must still schedule another try",
+            300_000L,
+            p.nextDelayMs(),
+        )
+        assertTrue(
+            "a transient outcome stays retryable no matter how long it has been failing",
+            p.shouldRetry(ReconnectPolicy.Outcome.Transient),
+        )
     }
 
     @Test

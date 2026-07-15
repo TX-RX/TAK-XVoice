@@ -517,6 +517,13 @@ class ReconnectingMumbleTransportTest {
 
     @Test
     fun `retryNow collapses a pending backoff into an immediate attempt`() {
+        // The inner must report NOT connected, as it would in production
+        // after onDisconnected. retryNow() deliberately no-ops on a live
+        // link (see `retryNow is a no-op when already connected`), so
+        // without this the mock still claims isConnected=true, retryNow
+        // correctly declines to act, and the assertions below fail for a
+        // reason that has nothing to do with collapsing the backoff.
+        primaryConnectedResult = false
         val r = build()
         r.connect(upstream)
         capturedListeners[0].onDisconnected("blip")
@@ -572,28 +579,58 @@ class ReconnectingMumbleTransportTest {
     }
 
     // ============================================================
-    // Auto-pause — stop scheduling after a long run of failures
+    // Never-give-up — the ladder only stops when the operator says so
     // ============================================================
 
     @Test
-    fun `ladder auto-pauses after the pause threshold and stops scheduling`() {
+    fun `ladder keeps scheduling through a long run of failures — never auto-pauses`() {
         val r = build()
         r.connect(upstream)
-        // Drive consecutive transient failures. Each disconnect schedules
-        // a retry (attemptCount++); each fire rebuilds a fresh inner whose
-        // freshly-captured listener we fail again next iteration.
+        // Drive a long run of consecutive transient failures. Each
+        // disconnect schedules a retry (attemptCount++); each fire
+        // rebuilds a fresh inner whose freshly-captured listener we fail
+        // again next iteration.
+        //
+        // 40 attempts is far past the ~10 where the removed auto-pause
+        // used to kick in, and past the end of the backoff curve — on the
+        // real schedule this is hours of continuous failure. The radio is
+        // still trying, by explicit operator policy: silence because we
+        // quit is worse than silence because we can't get through.
         var idx = 0
-        repeat(ReconnectPolicy.PAUSE_AFTER_ATTEMPTS) {
-            capturedListeners[idx].onDisconnected("blip")
-            assertTrue("still retrying below the pause threshold", executor.hasPendingSchedule())
+        repeat(40) {
+            capturedListeners[idx].onDisconnected("blip #$it")
+            assertTrue(
+                "attempt #${it + 1} must still schedule a retry — the ladder never gives up",
+                executor.hasPendingSchedule(),
+            )
+            assertTrue("still reads as reconnecting at attempt #${it + 1}", r.isReconnecting())
             executor.fireScheduled()
             idx++
         }
-        // attemptCount has now reached the threshold — the next failure
-        // must auto-pause rather than schedule yet another retry.
-        capturedListeners[idx].onDisconnected("blip past threshold")
-        assertFalse("ladder must auto-pause at the threshold", executor.hasPendingSchedule())
-        assertFalse("auto-paused ladder reads as not-reconnecting", r.isReconnecting())
+    }
+
+    @Test
+    fun `only the operator toggle suspends the ladder — not the attempt count`() {
+        // Guards the boundary between the two: a long-running outage keeps
+        // trying forever, but the operator's off-switch still stops it at
+        // any point in that run. If a "give up after N" gate is ever
+        // reintroduced, the first half of this passes and the semantics
+        // silently diverge from the notification text ("XV keeps trying
+        // until it gets through"), so pin both here together.
+        var enabled = true
+        val r = buildWith { enabled }
+        r.connect(upstream)
+        var idx = 0
+        repeat(15) {
+            capturedListeners[idx].onDisconnected("blip #$it")
+            assertTrue("deep into the outage and still trying", executor.hasPendingSchedule())
+            executor.fireScheduled()
+            idx++
+        }
+        enabled = false
+        capturedListeners[idx].onDisconnected("blip after operator opts out")
+        assertFalse("operator opt-out is the one thing that stops it", executor.hasPendingSchedule())
+        assertFalse("suspended ladder reads as not-reconnecting", r.isReconnecting())
     }
 
     /**

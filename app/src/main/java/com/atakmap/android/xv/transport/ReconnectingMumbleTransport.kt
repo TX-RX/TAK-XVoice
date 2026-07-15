@@ -127,11 +127,12 @@ class ReconnectingMumbleTransport(
     @Volatile
     private var lastScheduledDelayMs: Long = 0L
 
-    // Set once the auto-pause threshold is crossed (or auto-reconnect is
-    // switched off): the ladder has stopped scheduling and is waiting for
-    // an explicit re-arm. Read by [isReconnecting] so the UI drops from
-    // amber "reconnecting…" back to a plain "disconnected" state — honest
-    // signalling that XV is no longer actively trying on its own.
+    // Set when the operator switches auto-reconnect off: the ladder has
+    // stopped scheduling and is waiting for an explicit re-arm. Read by
+    // [isReconnecting] so the UI drops from amber "reconnecting…" back to
+    // a plain "disconnected" state — honest signalling that XV is no
+    // longer actively trying on its own. Only the operator toggle sets
+    // this; the ladder itself never suspends on attempt count.
     @Volatile
     private var reconnectSuspended: Boolean = false
 
@@ -151,8 +152,8 @@ class ReconnectingMumbleTransport(
     /** True when the wrapper is between attempts — the upstream
      *  saw an `onDisconnected` and a retry is queued. UI uses this
      *  to render "reconnecting…" instead of "disconnected". False once
-     *  the ladder has auto-paused (or been switched off) so the UI
-     *  stops implying an attempt is imminent. */
+     *  the operator has switched auto-reconnect off, so the UI stops
+     *  implying an attempt is imminent. */
     fun isReconnecting(): Boolean = reconnecting.get() && !teardownRequested && !reconnectSuspended
 
     /** Number of consecutive retry attempts without a successful
@@ -270,10 +271,11 @@ class ReconnectingMumbleTransport(
 
     /**
      * Operator-initiated "reconnect now." Collapses any pending backoff
-     * (or dormant auto-pause) and drives a fresh attempt immediately.
-     * Wired to the PTT-down path so keying a dead channel tries to bring
-     * voice back without waiting out the ladder — and re-arms a ladder
-     * that had auto-paused or been switched off. Deliberately ignores
+     * and drives a fresh attempt immediately. Wired to the PTT-down path
+     * so keying a dead channel tries to bring voice back without waiting
+     * out the ladder — which, on the dormant tail, can be up to 5 minutes
+     * away — and re-arms a ladder the operator had switched off.
+     * Deliberately ignores
      * [reconnectEnabled]: an explicit PTT press is a direct "connect me"
      * request, distinct from the automatic background retries that toggle
      * governs. No-op if already connected or torn down.
@@ -456,20 +458,11 @@ class ReconnectingMumbleTransport(
             reconnecting.set(false)
             return
         }
-        // Auto-pause: after a long run of continuous failures nobody is
-        // benefiting from the periodic retries. Stop scheduling and wait
-        // for an explicit re-arm (retryNow / connect). Complements the
-        // dormant tail — the tail slows the drain, this ends it.
-        if (ReconnectPolicy.shouldPause(policy.attemptCount())) {
-            Log.i(
-                TAG,
-                "auto-pausing reconnect after ${policy.attemptCount()} attempts — " +
-                    "waiting for operator (PTT/manual) to re-arm",
-            )
-            reconnectSuspended = true
-            reconnecting.set(false)
-            return
-        }
+        // NOTE: there is deliberately no "give up after N attempts" branch
+        // here. The ladder retries forever (ReconnectPolicy.DEFAULT_SCHEDULE
+        // settles at a 5-minute dormant heartbeat) until the operator
+        // disconnects, a Fatal outcome latches, or the auto-reconnect
+        // toggle above turns it off. See DEFAULT_SCHEDULE's doc for why.
         val delay = policy.nextDelayMs()
         lastScheduledDelayMs = delay
         Log.i(
