@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import androidx.core.content.ContextCompat
-import com.atakmap.android.xv.audio.PttSource
 import com.atakmap.android.xv.util.SonimHardwareButtons
 
 /**
@@ -30,7 +29,7 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  *
  *   - Yellow key (Sonim "convenience" key, keyCode 291):
  *     `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP`
- *     → routed to PTT (source [PttSource.SONIM_PTT])
+ *     → routed to PTT (source [com.atakmap.android.xv.audio.PttSource.SONIM_PTT])
  *     Operators on the XP9900 chassis use the Yellow key as their
  *     effective PTT trigger; the button labelled "PTT" (keyCode 228)
  *     is not what they press.

@@ -180,8 +180,7 @@ class VoicePlant(
                 // blocks. Suppress the MODE_IN_COMMUNICATION defensive
                 // block on Sonim hardware; real MODE_IN_CALL and
                 // MODE_RINGTONE still block unconditionally.
-                suppressInCommunicationDefensiveBlock =
-                    com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(context),
+                suppressInCommunicationDefensiveBlock = com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(context),
             )
         } catch (t: Throwable) {
             android.util.Log.w(
