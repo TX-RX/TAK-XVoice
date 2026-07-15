@@ -620,88 +620,61 @@
                     android:layout_marginTop="4dp"
                     android:visibility="gone"/>
 
-                <!-- Sonim ruggedized-device dedicated PTT side button
-                     toggle. Visible ONLY on Sonim XP10 / XP9900 and
-                     XP-family peers — the row is hidden (`View.GONE`)
-                     at inflate time on every other device via
-                     XvDropDownReceiver.wireSonimPttButtonSwitch, which
-                     consults `SonimHardwareButtons.isSupported(context)`.
-                     Non-Sonim operators never see this row. Default OFF;
-                     the operator opts in explicitly. -->
+                <!-- Sonim ruggedized-device hardware-button entry point.
+                     Visible ONLY on Sonim XP10 / XP9900 and XP-family
+                     peers — hidden (`View.GONE`) on every other device
+                     at inflate time via
+                     XvDropDownReceiver.wireSonimHardwareButtonsRow,
+                     which consults SonimHardwareButtons.isSupported(context).
+                     Non-Sonim operators never see this row.
+
+                     No XV-local toggles: the phone's own Programmable
+                     Keys menu is the source of truth for which app
+                     each key routes to. XV listens whenever it runs
+                     on Sonim hardware; if the operator hasn't assigned
+                     a key to ATAK the corresponding broadcast never
+                     arrives and XV silently ignores the button.
+
+                     Field-verified 2026-07-14: previous XV-local
+                     toggles caused false-negatives (toggle wiped by
+                     -Uninstall → operator confused why button stopped
+                     working) and duplicated the phone's authoritative
+                     assignment. The single row below just deep-links
+                     into Android Settings for the operator to
+                     configure. -->
                 <LinearLayout
-                    android:id="@+id/xv_row_sonim_ptt_button"
+                    android:id="@+id/xv_row_sonim_hardware_buttons"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
+                    android:orientation="vertical"
                     android:padding="12dp"
                     android:background="@drawable/xv_card_bg"
                     android:layout_marginTop="12dp"
                     android:visibility="gone">
 
                     <TextView
-                        android:layout_width="0dp"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Use Sonim PTT button as PTT"
+                        android:text="Sonim hardware buttons"
                         android:textColor="@color/xv_text"
-                        android:textSize="14sp"/>
-
-                    <Switch
-                        android:id="@+id/xv_switch_sonim_ptt_button"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"/>
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/xv_label_sonim_ptt_button_help"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Use the dedicated PTT side button on your Sonim ruggedized device as an additional PTT source, alongside on-screen PTT and any bonded AINA / BLE PTT button. Press to talk; release to end.\n\nAT&amp;T XP9900 only — required setup before enabling: go to Settings → System → Buttons (Programmable keys) → PTT key → set to No Action. AT&amp;T Dispatch Hub is preinstalled and claims the PTT key by default — unassign it first or the broadcasts will not reach XV."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="4dp"
-                    android:visibility="gone"/>
-
-                <!-- Sonim ruggedized-device dedicated Emergency / SOS
-                     button toggle. Same gate as the PTT-button row
-                     above. Fires ATAK's Alert Tool (short-press = fire
-                     panic; long-hold = cancel) — matches AINA PTTE
-                     behaviour. Does NOT key voice. -->
-                <LinearLayout
-                    android:id="@+id/xv_row_sonim_emergency_button"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:padding="12dp"
-                    android:background="@drawable/xv_card_bg"
-                    android:layout_marginTop="12dp"
-                    android:visibility="gone">
+                        android:textSize="14sp"
+                        android:textStyle="bold"/>
 
                     <TextView
-                        android:layout_width="0dp"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Sonim Emergency / SOS button fires ATAK Alert"
-                        android:textColor="@color/xv_text"
-                        android:textSize="14sp"/>
+                        android:text="On this device the PTT and SOS keys are routed by the phone's own Programmable Keys menu — no XV toggle. Assign PTT to ATAK to key voice; assign SOS to ATAK to fire ATAK's Alert Tool. XV automatically catches whichever keys the phone forwards. Open the system settings to configure."
+                        android:textColor="@color/xv_text_dim"
+                        android:textSize="11sp"
+                        android:layout_marginTop="4dp"/>
 
-                    <Switch
-                        android:id="@+id/xv_switch_sonim_emergency_button"
+                    <Button
+                        android:id="@+id/xv_btn_open_programmable_keys"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"/>
+                        android:layout_height="wrap_content"
+                        android:text="Open Programmable Keys settings"
+                        android:layout_marginTop="8dp"/>
                 </LinearLayout>
-
-                <TextView
-                    android:id="@+id/xv_label_sonim_emergency_button_help"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Route the dedicated red Emergency / SOS button on your Sonim ruggedized device to ATAK's Alert Tool. Short-press fires panic; long-hold cancels. Does not key voice — matches the AINA PTTE emergency button."
-                    android:textColor="@color/xv_text_dim"
-                    android:textSize="11sp"
-                    android:layout_marginTop="4dp"
-                    android:visibility="gone"/>
 
                 <!-- Section header: Audio device -->
                 <TextView

@@ -2657,27 +2657,20 @@ class XvMapComponent : AbstractMapComponent() {
             Log.i(TAG, "autoStartSonimButtons: device is not a supported Sonim ruggedized model — skipping")
             return
         }
-        if (settings.persistedSonimPttButtonEnabled()) {
-            Log.i(TAG, "autoStartSonimButtons: enabling Sonim PTT button")
-            voiceClient?.setPersistent("sonimPttButton") { it.setSonimPttButtonEnabled(true) }
-            startSonimPttForeground()
-        } else {
-            Log.i(TAG, "autoStartSonimButtons: PTT-button toggle OFF — skipping PTT reader")
-        }
-        if (settings.persistedSonimEmergencyButtonEnabled()) {
-            Log.i(TAG, "autoStartSonimButtons: enabling Sonim Emergency button")
-            voiceClient?.setPersistent("sonimEmergencyButton") { it.setSonimEmergencyButtonEnabled(true) }
-            startSonimEmergencyForeground()
-        } else {
-            Log.i(TAG, "autoStartSonimButtons: Emergency-button toggle OFF — skipping Emergency reader")
-        }
-        // Assigned-app broadcast reader is unconditional — it registers
-        // for all 5 pkg-scoped actions but its callbacks gate on the
-        // individual PTT / Emergency toggles above. Cheap to leave live
-        // (a single receiver in ATAK's process, no active resources)
-        // and it means toggling either PTT or Emergency on later
-        // requires no additional wiring.
-        Log.i(TAG, "autoStartSonimButtons: starting SonimAssignedAppReader (Yellow → PTT, SOS+Kodiak → emergency)")
+        // No XV-local toggle gate — the phone's own Programmable Keys
+        // menu is the source of truth for whether XV should catch a
+        // given key. Start all three readers unconditionally on
+        // supported Sonim hardware; if the operator hasn't assigned a
+        // key to ATAK, no broadcast / KeyEvent arrives and the
+        // corresponding reader silently sits idle. Removes the dev-
+        // iteration foot-gun where `adb -Uninstall` wiped the toggle
+        // and left the operator confused about why a hardware button
+        // "stopped working."
+        Log.i(TAG, "autoStartSonimButtons: starting Sonim readers (PTT foreground, Emergency foreground, AssignedApp broadcast)")
+        voiceClient?.setPersistent("sonimPttButton") { it.setSonimPttButtonEnabled(true) }
+        startSonimPttForeground()
+        voiceClient?.setPersistent("sonimEmergencyButton") { it.setSonimEmergencyButtonEnabled(true) }
+        startSonimEmergencyForeground()
         startSonimAssignedApp()
     }
 
