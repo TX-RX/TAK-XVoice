@@ -674,6 +674,13 @@
                         android:layout_height="wrap_content"
                         android:text="Open Programmable Keys settings"
                         android:layout_marginTop="8dp"/>
+
+                    <Button
+                        android:id="@+id/xv_btn_open_sonim_accessibility"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Open Accessibility settings (for background PTT)"
+                        android:layout_marginTop="4dp"/>
                 </LinearLayout>
 
                 <!-- Section header: Audio device -->

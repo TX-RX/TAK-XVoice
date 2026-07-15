@@ -2036,12 +2036,19 @@ class XvDropDownReceiver(
     private fun wireSonimHardwareButtonsRow(v: View) {
         val row = v.findViewById<View>(R.id.xv_row_sonim_hardware_buttons) ?: return
         val btn = v.findViewById<android.widget.Button>(R.id.xv_btn_open_programmable_keys)
+        val a11yBtn = v.findViewById<android.widget.Button>(R.id.xv_btn_open_sonim_accessibility)
         val supported = controller.sonimHardwareButtonsSupported()
         if (!supported) {
             row.visibility = View.GONE
             return
         }
         row.visibility = View.VISIBLE
+        // Accessibility settings shortcut — mirror of the Samsung
+        // Active Key background-PTT row. Required for the Sonim PTT
+        // key (KEYCODE_PTT / 228) to work while ATAK is backgrounded
+        // or the screen is off; see the SamsungActiveKeyAccessibilityService
+        // kdoc for the mechanism.
+        a11yBtn?.setOnClickListener { controller.openAccessibilitySettings() }
         btn?.setOnClickListener {
             // Try increasingly-general deep links until one lands.
             // Field-verified 2026-07-14 on Sonim XP9900 (AT&T carrier,
