@@ -1019,6 +1019,36 @@ class XvMapComponent : AbstractMapComponent() {
 
                     override fun stopMulticast() = stopActiveTransport()
 
+                    override fun setMeshVoiceEnabled(enabled: Boolean) {
+                        settings.persistMeshVoiceEnabled(enabled)
+                        Log.i(TAG, "meshVoiceEnabled = $enabled (legs reconcile on next tick)")
+                    }
+
+                    override fun dumpMeshStatus() {
+                        val m = meshVoiceManager
+                        if (m == null) {
+                            Log.i(TAG, "mesh: manager not started (no device UID at init?)")
+                            return
+                        }
+                        Log.i(
+                            TAG,
+                            "mesh: enabled=${settings.persistedMeshVoiceEnabled()} " +
+                                "txActive=${m.isMeshTxActive()} bridging=${m.isBridging()} " +
+                                "badge=${m.statusBadge() ?: "-"}",
+                        )
+                        val legs = m.activeLegs()
+                        if (legs.isEmpty()) {
+                            Log.i(TAG, "mesh: no active legs")
+                        } else {
+                            legs.forEach { (channel, ep) ->
+                                Log.i(TAG, "mesh: leg '$channel' → ${ep.groupAddress}:${ep.port}")
+                            }
+                        }
+                        m.discoveredChannels().forEach {
+                            Log.i(TAG, "mesh: discovered '${it.name}' ${it.group}:${it.port} via ${it.viaCallsign} (${it.viaUid})")
+                        }
+                    }
+
                     override fun describeAudioState(): String = "service"
 
                     override fun connectAina(
@@ -1163,6 +1193,8 @@ class XvMapComponent : AbstractMapComponent() {
                 IntentFilter().apply {
                     addAction(DebugReceiver.ACTION_START_MULTICAST)
                     addAction(DebugReceiver.ACTION_STOP_MULTICAST)
+                    addAction(DebugReceiver.ACTION_MESH_VOICE)
+                    addAction(DebugReceiver.ACTION_MESH_STATUS)
                     addAction(DebugReceiver.ACTION_AUDIO_STATE)
                     addAction(DebugReceiver.ACTION_AINA_CONNECT)
                     addAction(DebugReceiver.ACTION_AINA_DISCONNECT)
@@ -2572,6 +2604,15 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.i(TAG, "Controller.setHotMicMode($enabled)")
                 settings.persistHotMicMode(enabled)
                 voiceClient?.setPersistent("hotMicMode") { it.setHotMicEnabled(enabled) }
+            }
+
+            override fun meshVoiceEnabled(): Boolean = settings.persistedMeshVoiceEnabled()
+
+            override fun setMeshVoiceEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setMeshVoiceEnabled($enabled)")
+                settings.persistMeshVoiceEnabled(enabled)
+                // No push needed — MeshVoiceManager re-reads the pref
+                // in reconcileLegs() on its next ~1 Hz tick.
             }
 
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()

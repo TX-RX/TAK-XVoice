@@ -335,6 +335,14 @@ class XvDropDownReceiver(
 
         fun setHotMicMode(enabled: Boolean)
 
+        // Mesh voice (multicast) master toggle. When ON, every joined
+        // channel gets an auto-derived multicast failover leg; the mesh
+        // manager re-reads the pref on its ~1 Hz tick, so flipping the
+        // switch takes effect within a second — no reconnect.
+        fun meshVoiceEnabled(): Boolean
+
+        fun setMeshVoiceEnabled(enabled: Boolean)
+
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
         // currently have. Empty when everything is granted. Used to
@@ -1485,6 +1493,10 @@ class XvDropDownReceiver(
         val hotMicSw = v.findViewById<Switch>(R.id.xv_switch_hot_mic)
         hotMicSw.isChecked = controller.hotMicMode()
         hotMicSw.setOnCheckedChangeListener { _, on -> controller.setHotMicMode(on) }
+
+        val meshSw = v.findViewById<Switch>(R.id.xv_switch_mesh_voice)
+        meshSw.isChecked = controller.meshVoiceEnabled()
+        meshSw.setOnCheckedChangeListener { _, on -> controller.setMeshVoiceEnabled(on) }
     }
 
     private fun sliderTimeoutLabel(s: Int): String = if (s == 0) "off" else "$s s"
