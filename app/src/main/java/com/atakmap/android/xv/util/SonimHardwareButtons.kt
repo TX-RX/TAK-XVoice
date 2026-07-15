@@ -264,12 +264,14 @@ object SonimHardwareButtons {
      * than a rename because 79 / 5 remain the correct primary/alt for
      * older Sonim units.
      */
-    // KeyEvent.KEYCODE_PTT (== 228), added in API 33. It is a compile-
-    // time constant (static final int), so referencing it by name
-    // inlines the value at build time — safe on XV's minSdk 26 with
-    // compileSdk 34, no runtime API-33 dependency (same pattern as
-    // PTT_KEY_CODE_PRIMARY / _ALT above).
-    const val PTT_KEY_CODE_ALT2: Int = KeyEvent.KEYCODE_PTT
+    // 228 = the vendor-space "PTT" keycode reported by Sonim XP10
+    // firmware for the physical PTT side key. NOT referenced by
+    // symbolic name — `KeyEvent.KEYCODE_PTT` is not present in the
+    // public Android SDK (compileSdk 34 doesn't export it; verified
+    // 2026-07-15 by build failure "Unresolved reference 'KEYCODE_PTT'").
+    // Even though 228 is used by Android internals for the same
+    // meaning, only the integer literal is portable.
+    const val PTT_KEY_CODE_ALT2: Int = 228
 
     /**
      * KeyEvent code for the Sonim / ruggedized-Android SOS button.
