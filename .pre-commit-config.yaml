@@ -68,10 +68,11 @@ repos:
         # Only fire when something that can actually break the build is
         # in the push. A docs- or workflow-only push shouldn't pay 60s.
         # Covers Kotlin/KTS, the AIDL + proto sources that generate
-        # code, Android resources and manifests, and the gradle
-        # toolchain/version-catalog files.
+        # code, Android resources and manifests, the gradle toolchain/
+        # version-catalog files, and the gate scripts + this config so
+        # a broken gate can't be pushed without exercising itself.
         files: >-
-          (\.kts?$|\.aidl$|\.proto$|^gradle/|^gradle\.properties$|^app/src/.*\.xml$)
+          (\.kts?$|\.aidl$|\.proto$|^gradle/|^gradle\.properties$|^app/src/.*\.xml$|^scripts/|^\.pre-commit-config\.yaml$)
         # Surface the gradle output on success too — a silent gate is
         # one nobody trusts, and the timing line is how you notice the
         # daemon went cold.
