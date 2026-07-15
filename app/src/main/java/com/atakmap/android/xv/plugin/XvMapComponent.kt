@@ -2902,6 +2902,15 @@ class XvMapComponent : AbstractMapComponent() {
                     presenceRegistry?.get(uid)?.mumbleSession != null
                 },
                 knownPeerUids = { presenceRegistry?.all()?.map { it.deviceUid }.orEmpty() },
+                freshPeerUids = {
+                    val reg = presenceRegistry
+                    val now = System.currentTimeMillis()
+                    reg
+                        ?.all()
+                        ?.filter { reg.isFresh(it.deviceUid, now) }
+                        ?.map { it.deviceUid }
+                        .orEmpty()
+                },
                 certFpForUid = { uid -> presenceRegistry?.get(uid)?.certFingerprint },
                 ourCertDer = { ourCertDer },
                 unwrapKey = { wrapped ->

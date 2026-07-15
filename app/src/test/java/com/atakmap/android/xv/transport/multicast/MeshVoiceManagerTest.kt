@@ -292,6 +292,27 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `bridge TXes its own mic onto the mesh even though mumble is healthy`() {
+        // The server never echoes our own voice back, so the
+        // mumble→mesh relay path cannot carry the bridge operator's
+        // mic — sendTxOpus must fan it out directly while bridging.
+        // (Field regression 2026-07-15: mesh-only peers heard everyone
+        // EXCEPT the bridge operator.)
+        val h = Harness()
+        h.makeUsBridge()
+        h.manager.sendTxOpus(byteArrayOf(7), targetSlot = 0)
+        assertEquals(1, h.channelLeg().sentOpus.size)
+    }
+
+    @Test
+    fun `without the bridge role healthy-mumble FAILOVER keeps own TX off the mesh`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.manager.sendTxOpus(byteArrayOf(7), targetSlot = 0)
+        assertTrue(h.channelLeg().sentOpus.isEmpty())
+    }
+
+    @Test
     fun `bridge does not re-relay speakers who are already on the server`() {
         val h = Harness()
         h.peerUids += "uid-peer"

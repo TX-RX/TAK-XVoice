@@ -71,6 +71,16 @@ class MeshVoiceManager(
     private val uidMumbleConnected: (String) -> Boolean = { false },
     /** CoT presence: all currently-known XV peer uids (for SSRC mapping). */
     private val knownPeerUids: () -> Collection<String> = { emptyList() },
+    /**
+     * CoT presence: only the uids whose presence is FRESH right now.
+     * Feeds the bridge election — stale entries must not: a snapshot
+     * from before a peer dropped off the network still advertises its
+     * old mumbleSession, and re-observing it every 1 Hz tick would
+     * outvote that peer's own fresh mesh beacons (5 s cadence) five
+     * to one, pinning the election to a stale "everyone's connected"
+     * view and keeping the bridge role off.
+     */
+    private val freshPeerUids: () -> Collection<String> = knownPeerUids,
     /** CoT presence: peer cert SHA-256 fingerprint (lowercase hex), for cert exchange. */
     private val certFpForUid: (String) -> String? = { null },
     /** Our own enrollment cert (DER), for CertReply. Null when unenrolled. */
@@ -211,7 +221,15 @@ class MeshVoiceManager(
             val txNow =
                 when (leg.config.mode) {
                     MulticastMode.ALWAYS -> true
-                    MulticastMode.FAILOVER -> meshTxActive
+                    // While we hold the bridge role our OWN mic must
+                    // also go out on the mesh: the server never echoes
+                    // our voice back, so the Mumble→mesh relay path
+                    // structurally cannot carry it — without this the
+                    // bridge operator is inaudible to every mesh-only
+                    // peer. Doubly-connected receivers get two copies
+                    // (server + mesh); the dedup layer collapses them
+                    // via ssrc↔uid correlation like any relayed burst.
+                    MulticastMode.FAILOVER -> meshTxActive || bridging
                     MulticastMode.OFF -> false
                 }
             if (txNow) leg.sendOpus(opus)
@@ -717,8 +735,10 @@ class MeshVoiceManager(
     // server-connected; one without it (but still present) is a
     // candidate that needs a bridge. Beacons supply the same fact for
     // peers CoT hasn't reached — both paths land in observePeer.
+    // FRESH presence only: see [freshPeerUids] — a stale snapshot
+    // re-observed at tick rate would overwrite beacon truth.
     private fun refreshPresencePeers(now: Long) {
-        knownPeerUids().forEach { uid ->
+        freshPeerUids().forEach { uid ->
             if (uid == ourUid) return@forEach
             bridgeElection.observePeer(uid, uidMumbleConnected(uid), now)
         }
