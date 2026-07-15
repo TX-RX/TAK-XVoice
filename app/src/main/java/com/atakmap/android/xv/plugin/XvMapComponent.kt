@@ -2896,6 +2896,14 @@ class XvMapComponent : AbstractMapComponent() {
         val reader =
             com.atakmap.android.xv.ptt.SonimAssignedAppReader(
                 context = ctx,
+                onPttKeyEdge = { isDown ->
+                    // Assigned-app PTT — delivered as the YELLOW_KEY
+                    // broadcast (Sonim's API naming is backwards; the
+                    // "Yellow" action is the physical PTT button).
+                    // Source-implicit across the AIDL — the service side
+                    // tags SONIM_PTT, same as SonimPttForegroundReader.
+                    voiceClient?.ifBound { it.notifySonimPttEdge(isDown) }
+                },
                 onSosKeyEdge = { isDown ->
                     // SOS key → emergency-alert path (matches
                     // AINA-PTTE parity from commit 4e12933). Not
@@ -2921,6 +2929,14 @@ class XvMapComponent : AbstractMapComponent() {
             reader.stop()
         } catch (t: Throwable) {
             Log.w(TAG, "stopSonimAssignedApp: reader.stop() threw", t)
+        }
+        // Defensive release so a PTT held at teardown doesn't strand
+        // SONIM_PTT in the dispatcher's held-source set (mirrors
+        // stopSonimPttForeground).
+        try {
+            voiceClient?.ifBound { it.notifySonimPttEdge(false) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopSonimAssignedApp: defensive notifySonimPttEdge(false) threw", t)
         }
         sonimAssignedApp = null
     }

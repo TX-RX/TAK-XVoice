@@ -27,12 +27,14 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  *
  * ### Key → action mapping (field-verified 2026-07-14, XP9900)
  *
- *   - Yellow key (Sonim "convenience" key, keyCode 291):
+ *   - PTT button (assigned to ATAK in Programmable Keys):
  *     `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP`
  *     → routed to PTT (source [com.atakmap.android.xv.audio.PttSource.SONIM_PTT])
- *     Operators on the XP9900 chassis use the Yellow key as their
- *     effective PTT trigger; the button labelled "PTT" (keyCode 228)
- *     is not what they press.
+ *     Sonim's assigned-app API naming is backwards relative to the
+ *     physical buttons: the operator's PTT button is delivered as the
+ *     `YELLOW_KEY` action, not a `PTT_KEY` action. This was verified
+ *     on-device (XP9900, 2026-07-14) — wiring these edges to the
+ *     dispatcher keys TX exactly as intended.
  *
  *   - SOS key (red top button, keyCode 294):
  *     `com.sonim.intent.action.SOS_KEY_DOWN` / `_UP` +
@@ -69,6 +71,14 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  */
 class SonimAssignedAppReader(
     private val context: Context,
+    // Called on any PTT-key edge (assigned-app PTT). isDown = true on
+    // press, false on release. On the XP9900 the physical PTT button,
+    // when assigned to ATAK in Programmable Keys, is delivered as the
+    // YELLOW_KEY broadcast — Sonim's assigned-app API naming is backwards
+    // relative to the physical buttons (verified on-device 2026-07-14).
+    // Wired from XvMapComponent to IXvVoice.notifySonimPttEdge → the PTT
+    // dispatcher, tagged SONIM_PTT.
+    private val onPttKeyEdge: (isDown: Boolean) -> Unit,
     // Called on any SOS-key edge (assigned-app emergency). isDown =
     // true on press, false on release. Wired from XvMapComponent to
     // IXvVoice.notifySonimEmergencyEdge → plant.onSonimEmergencyEdge
@@ -83,6 +93,11 @@ class SonimAssignedAppReader(
     // without an intervening UP.
     @Volatile private var sosHeld: Boolean = false
 
+    // Held-state guard for the assigned-app PTT (YELLOW_KEY) path — same
+    // dedup rationale as [sosHeld]: keeps a physically-held key from
+    // spamming duplicate down edges into the dispatcher's OR-gate.
+    @Volatile private var pttHeld: Boolean = false
+
     @Volatile private var registered: Boolean = false
 
     private val receiver: BroadcastReceiver =
@@ -92,20 +107,16 @@ class SonimAssignedAppReader(
                 intent: Intent,
             ) {
                 when (intent.action) {
-                    // YELLOW_KEY_DOWN / _UP is emitted by the side
-                    // application button (keyCode 291 / KEYCODE_APP)
-                    // when it's assigned to ATAK in Programmable Keys.
-                    // Field policy 2026-07-14: this is NOT the operator's
-                    // PTT button — the physical yellow PTT button is
-                    // keyCode 228 / KEYCODE_PTT, delivered as a
-                    // KeyEvent (not a broadcast) and handled by
-                    // SonimPttForegroundReader. Logged but not routed
-                    // so we can see if the operator ever chooses to
-                    // wire the application button to something later.
-                    SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN ->
-                        Log.i(TAG, "application-button DOWN (YELLOW_KEY broadcast) — no action wired")
-                    SonimHardwareButtons.ACTION_YELLOW_KEY_UP ->
-                        Log.i(TAG, "application-button UP (YELLOW_KEY broadcast) — no action wired")
+                    // The physical PTT button, when assigned to ATAK in
+                    // Programmable Keys, is delivered as the YELLOW_KEY
+                    // broadcast. Sonim's assigned-app API naming is
+                    // backwards relative to the physical buttons — the
+                    // "Yellow"-named action is the operator's PTT, not a
+                    // separate convenience key. Verified on-device
+                    // 2026-07-14 (XP9900): routing these edges to the PTT
+                    // dispatcher keys TX exactly as the operator expects.
+                    SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN -> handlePtt(isDown = true)
+                    SonimHardwareButtons.ACTION_YELLOW_KEY_UP -> handlePtt(isDown = false)
                     SonimHardwareButtons.ACTION_SOS_KEY_DOWN -> handleSos(isDown = true)
                     SonimHardwareButtons.ACTION_SOS_KEY_UP -> handleSos(isDown = false)
                     // ACTION_KODIAK_SOS is edge-ambiguous by name and
@@ -126,6 +137,26 @@ class SonimAssignedAppReader(
                 }
             }
         }
+
+    private fun handlePtt(isDown: Boolean) {
+        if (isDown) {
+            if (pttHeld) {
+                Log.d(TAG, "PTT DOWN (YELLOW_KEY) — already held; dropping duplicate")
+                return
+            }
+            pttHeld = true
+            Log.i(TAG, "PTT key DOWN (assigned-to-ATAK YELLOW_KEY broadcast) → PTT")
+            safeInvoke("onPttKeyEdge(down)") { onPttKeyEdge(true) }
+        } else {
+            if (!pttHeld) {
+                Log.d(TAG, "PTT UP (YELLOW_KEY) — not held; dropping")
+                return
+            }
+            pttHeld = false
+            Log.i(TAG, "PTT key UP (assigned-to-ATAK YELLOW_KEY broadcast) → PTT release")
+            safeInvoke("onPttKeyEdge(up)") { onPttKeyEdge(false) }
+        }
+    }
 
     private fun handleSos(isDown: Boolean) {
         if (isDown) {
