@@ -2043,14 +2043,30 @@ class XvDropDownReceiver(
         }
         row.visibility = View.VISIBLE
         btn?.setOnClickListener {
-            // Try Sonim-specific deep links first, fall back to
-            // top-level Android Settings. Sonim firmware exposes
-            // different settings activities across models; we try
-            // the common ones and gracefully degrade.
+            // Try increasingly-general deep links until one lands.
+            // Field-verified 2026-07-14 on Sonim XP9900 (AT&T carrier,
+            // Android 12): the Programmable Keys page is
+            // com.android.settings/.Settings\$ProgrammableKeyActivity
+            // — a Sonim-added inner-class Activity under the standard
+            // Settings package. Discovered via
+            // `adb shell pm dump com.android.settings | grep ProgrammableKey`.
+            // Fallbacks handle other Sonim firmware variants and
+            // eventually top-level Settings.
             val ctx = it.context
             val candidates =
                 listOf(
+                    // Sonim XP10 Programmable Keys page — direct component launch.
+                    android.content.Intent().setComponent(
+                        android.content.ComponentName(
+                            "com.android.settings",
+                            "com.android.settings.Settings\$ProgrammableKeyActivity",
+                        ),
+                    ),
+                    // Hypothetical Sonim-published action (some
+                    // variants may honour this even without the
+                    // specific inner-class name above).
                     android.content.Intent("com.sonim.settings.action.PROGRAMMABLE_KEYS"),
+                    // Fallback — top-level Android Settings.
                     android.content.Intent("android.settings.SETTINGS"),
                 )
             for (intent in candidates) {
