@@ -77,18 +77,21 @@ class MulticastMeshLegRelayTest {
 
     private fun ssrcKeyOf(uid: String): String = "ssrc:%08x".format(RtpFraming.fnv1aSsrc(uid))
 
+    private fun buildLeg(nowMs: () -> Long): MulticastMeshLeg =
+        MulticastMeshLeg(
+            config = ChannelMulticastConfig.defaultFor("ops-1"),
+            endpoint = MulticastEndpoint("239.255.0.1", 16800),
+            registry = ChannelKeyRegistry(1),
+            ourUid = "uid-bridge",
+            context = null,
+            sink = NullSink,
+            socketFactory = { StubSocket() },
+            nowMs = nowMs,
+        )
+
     @Test
     fun `speakers we relay are recognized as our own on RX`() {
-        val leg =
-            MulticastMeshLeg(
-                config = ChannelMulticastConfig.defaultFor("ops-1"),
-                endpoint = MulticastEndpoint("239.255.0.1", 16800),
-                registry = ChannelKeyRegistry(1),
-                ourUid = "uid-bridge",
-                context = null,
-                sink = NullSink,
-                socketFactory = { StubSocket() },
-            )
+        val leg = buildLeg { 10_000L }
         try {
             val desktopKey = ssrcKeyOf("mumble:53")
             assertFalse("not relayed yet — must not filter", leg.isOwnRelaySpeaker(desktopKey))
@@ -97,6 +100,29 @@ class MulticastMeshLegRelayTest {
             assertFalse(
                 "unrelated speakers must still pass",
                 leg.isOwnRelaySpeaker(ssrcKeyOf("uid-someone-else")),
+            )
+        } finally {
+            leg.close()
+        }
+    }
+
+    @Test
+    fun `the own-relay filter expires once we stop relaying the speaker`() {
+        // A speaker relayed while server-connected later drops off and
+        // transmits DIRECTLY on the mesh with the same uid-derived
+        // SSRC. A permanent filter ate those genuine frames (field
+        // repro 2026-07-15 16:10: mesh-only device never relayed back
+        // to Mumble after having spoken on the server earlier).
+        var now = 10_000L
+        val leg = buildLeg { now }
+        try {
+            val key = ssrcKeyOf("uid-tablet")
+            leg.sendRelayOpus("uid-tablet", byteArrayOf(1), burstStart = true)
+            assertTrue(leg.isOwnRelaySpeaker(key))
+            now += MulticastMeshLeg.OWN_RELAY_TTL_MS + 1
+            assertFalse(
+                "speaker no longer relayed — their direct mesh TX must pass",
+                leg.isOwnRelaySpeaker(key),
             )
         } finally {
             leg.close()

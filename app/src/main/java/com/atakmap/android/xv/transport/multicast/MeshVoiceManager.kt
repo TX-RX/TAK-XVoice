@@ -75,16 +75,6 @@ class MeshVoiceManager(
     private val mumbleUsernameForSession: (Int) -> String? = { null },
     /** CoT presence: all currently-known XV peer uids (for SSRC mapping). */
     private val knownPeerUids: () -> Collection<String> = { emptyList() },
-    /**
-     * CoT presence: only the uids whose presence is FRESH right now.
-     * Feeds the bridge election — stale entries must not: a snapshot
-     * from before a peer dropped off the network still advertises its
-     * old mumbleSession, and re-observing it every 1 Hz tick would
-     * outvote that peer's own fresh mesh beacons (5 s cadence) five
-     * to one, pinning the election to a stale "everyone's connected"
-     * view and keeping the bridge role off.
-     */
-    private val freshPeerUids: () -> Collection<String> = knownPeerUids,
     /** CoT presence: peer cert SHA-256 fingerprint (lowercase hex), for cert exchange. */
     private val certFpForUid: (String) -> String? = { null },
     /** Our own enrollment cert (DER), for CertReply. Null when unenrolled. */
@@ -436,7 +426,6 @@ class MeshVoiceManager(
         val now = nowMs()
         reconcileLegs()
         refreshSsrcMap()
-        refreshPresencePeers(now)
 
         // Failover evaluation. The policy's "active leg" drives
         // FAILOVER-mode TX routing and the operator badge.
@@ -464,7 +453,11 @@ class MeshVoiceManager(
         pruneDiscovered(now)
     }
 
-    /** CoT presence sighting: peer uid + live server connectivity. */
+    /**
+     * Direct election-observation seam (tests; beacon-equivalent
+     * injections). Production feeds the election only from mesh
+     * beacons — see the note above [tick] on why CoT must not.
+     */
     @Synchronized
     fun observePeerConnectivity(
         uid: String,
@@ -911,19 +904,18 @@ class MeshVoiceManager(
         }
     }
 
-    // Feed the bridge election from CoT presence every tick. A peer
-    // whose `<__xv>` detail carries a live Mumble session is
-    // server-connected; one without it (but still present) is a
-    // candidate that needs a bridge. Beacons supply the same fact for
-    // peers CoT hasn't reached — both paths land in observePeer.
-    // FRESH presence only: see [freshPeerUids] — a stale snapshot
-    // re-observed at tick rate would overwrite beacon truth.
-    private fun refreshPresencePeers(now: Long) {
-        freshPeerUids().forEach { uid ->
-            if (uid == ourUid) return@forEach
-            bridgeElection.observePeer(uid, uidMumbleConnected(uid), now)
-        }
-    }
+    // The bridge election is fed EXCLUSIVELY from mesh beacons — see
+    // handleBeacon. CoT presence must NOT feed it: CoT travels via the
+    // TAK server and crosses network boundaries, so a device on
+    // network A would defer to a lower-uid candidate on network B
+    // that it cannot reach over multicast, leaving network A with no
+    // relay at all. The relay domain IS mesh reachability; beacons
+    // only travel within it. With operator groups on separate
+    // networks this correctly elects one bridge PER NETWORK, each
+    // relaying its own island's serverless speakers — and cross-
+    // island loops can't form because a relay arrives at the other
+    // island's bridge as server-originated audio, which is never
+    // relayed back (see decideVoiceRx / the leg's own-relay filter).
 
     private fun pruneDiscovered(now: Long) {
         discovered.entries.removeAll { now - it.value.lastSeenMs > DISCOVERED_STALE_MS }

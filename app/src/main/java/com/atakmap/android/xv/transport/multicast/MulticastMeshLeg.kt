@@ -26,6 +26,8 @@ class MulticastMeshLeg(
     context: Context?,
     sink: MeshLegSink,
     socketFactory: ((Int) -> java.net.MulticastSocket)? = null,
+    /** Monotonic clock; injectable for the own-relay TTL tests. */
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : MeshLeg {
     override val channelName: String = config.channelName
 
@@ -82,8 +84,9 @@ class MulticastMeshLeg(
 
     private val relayCodecs = HashMap<String, MulticastWireCodec>()
 
-    // Speaker keys of frames WE are relaying from the server onto this
-    // leg. Relayed datagrams carry the ORIGINAL speaker's SSRC — not
+    // Speaker keys of frames WE are ACTIVELY relaying from the server
+    // onto this leg, with the time of the last relayed frame. Relayed
+    // datagrams carry the ORIGINAL speaker's SSRC — not
     // [localSpeakerKey] — so the transport's own-frame loopback filter
     // misses them when the OS delivers our multicast back to us. The
     // bridge then re-ingested its own relay as fresh mesh traffic from
@@ -91,13 +94,31 @@ class MulticastMeshLeg(
     // echo (field repro 2026-07-15: desktop Mumble speaker echoed by
     // the bridging tablet). Rule: traffic is never repeated onto the
     // channel it came from — anything whose SSRC we relay is ours on
-    // RX and must be dropped. (OPENMANET_COMPAT relays are raw Opus
-    // with source-IP attribution; the OS tags loopback with our own
-    // source address, which that format's receivers key on, so this
-    // set is XV_NATIVE-only by construction.)
-    private val relayedSpeakerKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    // RX and must be dropped.
+    //
+    // TIME-BOUNDED, not permanent: a speaker we relayed while they
+    // were on the server later drops off and transmits DIRECTLY on
+    // the mesh with the same uid-derived SSRC. A forever-filter ate
+    // those genuine frames — second field repro 2026-07-15 16:10: the
+    // tablet talked on Mumble (bridge relayed it), disconnected, and
+    // its mesh voice was then never played or relayed back to Mumble.
+    // OS loopback arrives within milliseconds of our send, so a short
+    // TTL past the last relayed frame cleanly separates "our relay
+    // echoing back" from "the speaker now talking on mesh for real".
+    // (OPENMANET_COMPAT relays are raw Opus with source-IP
+    // attribution; loopback carries our own source address, which
+    // that format's receivers key on, so this map is XV_NATIVE-only
+    // by construction.)
+    private val relayedSpeakerLastMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    internal fun isOwnRelaySpeaker(speakerKey: String): Boolean = speakerKey in relayedSpeakerKeys
+    internal fun isOwnRelaySpeaker(speakerKey: String): Boolean {
+        val last = relayedSpeakerLastMs[speakerKey] ?: return false
+        if (nowMs() - last > OWN_RELAY_TTL_MS) {
+            relayedSpeakerLastMs.remove(speakerKey)
+            return false
+        }
+        return true
+    }
 
     override fun sendRelayOpus(
         speakerUid: String,
@@ -112,7 +133,7 @@ class MulticastMeshLeg(
                     return
                 }
                 WireFormat.XV_NATIVE -> {
-                    relayedSpeakerKeys += "ssrc:%08x".format(RtpFraming.fnv1aSsrc(speakerUid))
+                    relayedSpeakerLastMs["ssrc:%08x".format(RtpFraming.fnv1aSsrc(speakerUid))] = nowMs()
                     relayCodecs.getOrPut(speakerUid) {
                         XvNativeWireCodec(
                             ssrc = RtpFraming.fnv1aSsrc(speakerUid),
@@ -133,8 +154,20 @@ class MulticastMeshLeg(
 
     override fun close() {
         relayCodecs.clear()
-        relayedSpeakerKeys.clear()
+        relayedSpeakerLastMs.clear()
         transport.disconnect()
+    }
+
+    companion object {
+        /**
+         * How long past the last relayed frame a speaker's SSRC still
+         * counts as "our own relay" on RX. OS multicast loopback lands
+         * within milliseconds of the send; a couple of seconds rides
+         * out jitter while releasing the SSRC quickly once the speaker
+         * stops arriving via the server (e.g. they dropped off Mumble
+         * and are now genuinely transmitting on the mesh).
+         */
+        internal const val OWN_RELAY_TTL_MS: Long = 2_000
     }
 
     private object QuietListener : TransportListener {

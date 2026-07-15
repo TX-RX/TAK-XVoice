@@ -10,10 +10,13 @@ package com.atakmap.android.xv.transport.multicast
  * Inputs, refreshed continuously:
  *   - [ControlPacket.Message.PeerBeacon]s heard on the channel's
  *     multicast group (peers self-report server connectivity), fed in
- *     via [observePeer].
- *   - CoT presence (peers whose `<__xv>` detail carries a live Mumble
- *     session are server-connected), fed in via the same call — CoT
- *     and beacons are just two delivery paths for the same fact.
+ *     via [observePeer]. Beacons are the ONLY production feed —
+ *     deliberately. CoT presence crosses network boundaries via the
+ *     TAK server, and a candidate we can't reach over multicast can't
+ *     relay for us: feeding CoT here made devices defer to lower-uid
+ *     candidates on OTHER networks, leaving whole networks bridgeless.
+ *     Beacon reachability IS the relay domain, so operator groups on
+ *     separate networks each elect their own bridge.
  *   - Our own server connectivity, passed to [evaluate].
  *
  * Rule: the bridge is the **lowest UID among server-connected peers**
