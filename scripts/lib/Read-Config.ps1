@@ -47,6 +47,11 @@ function Read-ScriptConfig {
         atakReleaseApks    = @{}
         forbiddenPatterns  = @()
         takServer          = $null
+        # null => verify-gates.ps1 derives the task list from
+        # productFlavor (ktlintCheck + assemble<F>Debug +
+        # test<F>DebugUnitTest). Set only to override for a plugin whose
+        # gates don't follow that shape.
+        verifyGateTasks    = $null
     }
 
     # Universal patterns — always applied on top of whatever config

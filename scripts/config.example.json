@@ -25,6 +25,9 @@
   "_atakPackage_comment_": "Android package name of ATAK itself. The CIV variant is com.atakmap.app.civ; other variants use different suffixes.",
   "atakPackage":       "com.atakmap.app.civ",
 
+  "_verifyGateTasks_comment_": "Gradle tasks that scripts/verify-gates.ps1 runs as the pre-push build gate. Omit or leave null to derive them from productFlavor above (ktlintCheck + assemble<Flavor>Debug + test<Flavor>DebugUnitTest), which is what TAK-XVoice uses. Set an explicit list only for a plugin whose gates don't follow that shape. Do not drop the unit-test task to speed up pushes: assemble does NOT compile the test source set, so it cannot catch a broken test symbol — that is exactly how main went red from PR #72 through #81.",
+  "verifyGateTasks":   null,
+
   "_forbiddenPatterns_comment_": "Regex patterns that must NEVER appear in a TPP source zip beyond the built-in universal list (.audio/, /logs/, .logs/, .tmp/, diagnostics/, /build/, keystore.properties, credentials, .env). Add anything operator-specific here: real TAK server hostnames, callsign lists, unit names.",
   "forbiddenPatterns": [
     "tak\\.example\\.com"
