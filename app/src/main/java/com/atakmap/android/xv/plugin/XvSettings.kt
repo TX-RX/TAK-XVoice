@@ -300,6 +300,18 @@ class XvSettings(
         prefs()?.edit()?.putString(PREF_PRIMARY_CHANNEL, name)?.apply()
     }
 
+    // Snapshot of the server's channel directory, refreshed while
+    // Mumble is connected (1 Hz tick, write-on-change). This is what
+    // makes registration configure EVERY channel for offline use: when
+    // the server later becomes unreachable, the picker and the mesh
+    // failover layer still know the full channel set — not just the
+    // last-joined one.
+    fun persistedKnownChannels(): List<String> = prefs()?.getStringSet(PREF_KNOWN_CHANNELS, null)?.sorted().orEmpty()
+
+    fun persistKnownChannels(names: Collection<String>) {
+        prefs()?.edit()?.putStringSet(PREF_KNOWN_CHANNELS, names.toSet())?.apply()
+    }
+
     // Global mesh-voice (multicast) master toggle. When ON, every
     // joined Mumble channel gets an auto-derived multicast failover
     // leg (FAILOVER mode, XV-native encrypted) unless a per-channel
@@ -437,6 +449,7 @@ class XvSettings(
         // Mesh-voice (multicast) master toggle + per-channel overrides.
         // See persistedMeshVoiceEnabled / channelMulticastConfigs.
         private const val PREF_MESH_VOICE_ENABLED = "mesh_voice_enabled"
+        private const val PREF_KNOWN_CHANNELS = "known_channels"
         private const val PREF_CHANNEL_MULTICAST = "channel_multicast_configs"
 
         // Mission auto-channels master toggle. See

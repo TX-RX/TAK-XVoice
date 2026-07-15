@@ -563,6 +563,11 @@ class XvMapComponent : AbstractMapComponent() {
                 } catch (t: Throwable) {
                     Log.w(TAG, "mission-channel reconcile threw", t)
                 }
+                try {
+                    snapshotChannelDirectory()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "channel-directory snapshot threw", t)
+                }
                 meshTickHandler.postDelayed(this, MESH_TICK_MS)
             }
         }
@@ -2615,6 +2620,41 @@ class XvMapComponent : AbstractMapComponent() {
                 // in reconcileLegs() on its next ~1 Hz tick.
             }
 
+            override fun meshChannelCandidates(): List<String> {
+                // canonical → first display spelling seen. Last-joined
+                // first, then the persisted server directory, then
+                // channels heard in peer discovery beacons.
+                val out = LinkedHashMap<String, String>()
+                fun add(name: String) {
+                    val canonical =
+                        com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                            .canonicalChannelName(name)
+                    if (canonical.isNotBlank()) out.putIfAbsent(canonical, name)
+                }
+                settings
+                    .persistedPrimaryChannel()
+                    .takeIf { it.isNotBlank() && !it.startsWith("TAK PRIVATE - ") }
+                    ?.let { add(it) }
+                settings.persistedKnownChannels().forEach { add(it) }
+                meshVoiceManager?.discoveredChannels()?.forEach { add(it.name) }
+                return out.values.toList()
+            }
+
+            override fun meshActiveChannelCanonical(): String? =
+                meshVoiceManager
+                    ?.activeLegs()
+                    ?.keys
+                    ?.firstOrNull()
+
+            override fun selectMeshChannel(name: String) {
+                Log.i(TAG, "Controller.selectMeshChannel($name)")
+                // Persist as the primary so a later Mumble reconnect
+                // lands on the same channel the operator picked while
+                // offline; the mesh leg rebinds on the next tick.
+                settings.persistPrimaryChannel(name)
+                meshVoiceManager?.onChannelJoined(0, name)
+            }
+
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()
 
             override fun requestMissingPermissions() {
@@ -2787,9 +2827,25 @@ class XvMapComponent : AbstractMapComponent() {
                             .defaultFor(channel)
                 },
                 serverIdentity = {
-                    activeMumbleHost?.let {
-                        com.atakmap.android.xv.transport.multicast.ServerIdentity
-                            .fromHostname(it)
+                    // Live Mumble host when connected; otherwise the
+                    // configured TAK server (same box for OTS). The
+                    // fallback is what makes cold-start failover work:
+                    // with the server unreachable at plugin load there
+                    // is no activeMumbleHost, but derivation only needs
+                    // the hostname the team configured, not a live
+                    // connection to it.
+                    val host =
+                        activeMumbleHost
+                            ?: try {
+                                TakServerDiscovery.pickPreferred(settings.persistedPreferredTakHost())?.host
+                            } catch (_: Throwable) {
+                                null
+                            }
+                    host?.let {
+                        runCatching {
+                            com.atakmap.android.xv.transport.multicast.ServerIdentity
+                                .fromHostname(it)
+                        }.getOrNull()
                     }
                 },
                 mumbleConnected = { activeTransport?.isConnected == true },
@@ -2863,9 +2919,18 @@ class XvMapComponent : AbstractMapComponent() {
                 },
             )
         meshVoiceManager = manager
-        // Seed the currently-joined primary channel so a leg comes up
-        // immediately if the operator enabled mesh mid-session.
-        joinedChannelsBySlot[0]?.let { manager.onChannelJoined(0, it.name ?: "") }
+        // Seed the primary channel: the live Mumble join when there is
+        // one, else the persisted last channel. The persisted fallback
+        // is the cold-start failover case — plugin loads while the
+        // server is unreachable, no Mumble join ever fires, but the
+        // operator's channel is known and the mesh leg must come up
+        // anyway.
+        val liveJoined = joinedChannelsBySlot[0]?.name?.takeIf { it.isNotBlank() }
+        val persistedSeed =
+            settings
+                .persistedPrimaryChannel()
+                .takeIf { it.isNotBlank() && !it.startsWith("TAK PRIVATE - ") }
+        (liveJoined ?: persistedSeed)?.let { manager.onChannelJoined(0, it) }
         // Mission auto-channels share the same 1 Hz tick. The channel
         // name simply IS the mission name (deterministic + shared across
         // the team), so mesh derivation lands everyone on the same group.
@@ -2873,6 +2938,27 @@ class XvMapComponent : AbstractMapComponent() {
         meshTickHandler.removeCallbacks(meshTickRunnable)
         meshTickHandler.postDelayed(meshTickRunnable, MESH_TICK_MS)
         Log.i(TAG, "mesh voice started: uid=$deviceUid enrolled=${ourCertDer != null}")
+    }
+
+    // Refresh the persisted channel-directory snapshot while Mumble is
+    // connected (write-on-change only). Registration thereby configures
+    // every server channel for offline use: the picker and mesh
+    // failover keep the full channel set when the server goes dark.
+    private var lastKnownChannelsSnapshot: Set<String>? = null
+
+    private fun snapshotChannelDirectory() {
+        if (activeTransport?.isConnected != true) return
+        val t = mumbleTransport() ?: return
+        val names =
+            t
+                .availableChannels()
+                .map { it.name }
+                .filter { it.isNotBlank() && !it.startsWith("TAK PRIVATE - ") }
+                .toSet()
+        if (names.isEmpty() || names == lastKnownChannelsSnapshot) return
+        lastKnownChannelsSnapshot = names
+        settings.persistKnownChannels(names)
+        Log.i(TAG, "channel directory snapshot: ${names.size} channel(s) persisted for offline use")
     }
 
     private fun stopMeshVoice() {

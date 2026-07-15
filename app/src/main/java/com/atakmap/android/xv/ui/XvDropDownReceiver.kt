@@ -26,6 +26,7 @@ import com.atakmap.android.xv.R
 import com.atakmap.android.xv.aina.AinaDeviceInfo
 import com.atakmap.android.xv.audio.OutputRoute
 import com.atakmap.android.xv.audio.TptTone
+import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
 import com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation
 
 // Main XV control panel. Inspired by FlexRadio + modern SDR UIs:
@@ -342,6 +343,20 @@ class XvDropDownReceiver(
         fun meshVoiceEnabled(): Boolean
 
         fun setMeshVoiceEnabled(enabled: Boolean)
+
+        // Offline channel selection. When Mumble can't connect the
+        // picker has no server directory to list, but mesh voice can
+        // still run: candidates are the operator's last-joined channel
+        // plus any channels heard in peer discovery beacons. Selecting
+        // one binds the mesh leg (and persists it as the primary, so a
+        // later Mumble reconnect lands on the same channel).
+        fun meshChannelCandidates(): List<String> = emptyList()
+
+        // Canonical name of the channel the mesh leg is currently
+        // bound to, or null when no leg is up.
+        fun meshActiveChannelCanonical(): String? = null
+
+        fun selectMeshChannel(name: String) {}
 
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
@@ -834,14 +849,55 @@ class XvDropDownReceiver(
             )
         }
         if (channels.isEmpty()) {
-            val tv =
-                TextView(pluginContext).apply {
-                    text = "No channels yet — Mumble must connect first."
-                    setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
-                    textSize = 13f
-                    setPadding(16, 24, 16, 24)
+            // Server directory unavailable (Mumble down / never
+            // connected). Mesh voice can still bind a channel: offer
+            // the last-joined channel + anything heard in discovery
+            // beacons so failover doesn't dead-end on an empty picker.
+            val meshCandidates =
+                if (slot == 0 && controller.meshVoiceEnabled()) {
+                    controller.meshChannelCandidates()
+                } else {
+                    emptyList()
                 }
-            list.addView(tv)
+            if (meshCandidates.isEmpty()) {
+                val tv =
+                    TextView(pluginContext).apply {
+                        text =
+                            if (controller.meshVoiceEnabled()) {
+                                "No channels yet — waiting for the server or a mesh peer."
+                            } else {
+                                "No channels yet — Mumble must connect first."
+                            }
+                        setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                        textSize = 13f
+                        setPadding(16, 24, 16, 24)
+                    }
+                list.addView(tv)
+            } else {
+                val header =
+                    TextView(pluginContext).apply {
+                        text = "Server unreachable — mesh (multicast) channels:"
+                        setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                        textSize = 12f
+                        setPadding(16, 16, 16, 8)
+                    }
+                list.addView(header)
+                val active = controller.meshActiveChannelCanonical()
+                meshCandidates.forEach { name ->
+                    list.addView(
+                        buildChannelButton(
+                            label = name,
+                            isCurrent =
+                            active != null &&
+                                MulticastGroupDerivation.canonicalChannelName(name) == active,
+                            participation = Participation.PARTICIPATE,
+                        ) {
+                            controller.selectMeshChannel(name)
+                            mainHandler.post { inflateMainAndShow() }
+                        },
+                    )
+                }
+            }
         } else {
             // The currently-joined channel may have its true tier
             // downgraded by OTS direction enforcement (suppress flag
