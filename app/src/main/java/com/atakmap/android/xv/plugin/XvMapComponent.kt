@@ -554,6 +554,11 @@ class XvMapComponent : AbstractMapComponent() {
         object : Runnable {
             override fun run() {
                 try {
+                    feedMumbleLivenessToMesh()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "mumble liveness feed threw", t)
+                }
+                try {
                     meshVoiceManager?.tick()
                 } catch (t: Throwable) {
                     Log.w(TAG, "mesh tick threw", t)
@@ -2940,6 +2945,22 @@ class XvMapComponent : AbstractMapComponent() {
         Log.i(TAG, "mesh voice started: uid=$deviceUid enrolled=${ourCertDer != null}")
     }
 
+    // Failover health: any inbound server byte (ping acks count) means
+    // Mumble is alive. Without this feed the failover policy only ever
+    // heard about voice frames, so a connected-but-silent channel read
+    // as a dead server and the policy stuck on the mesh leg forever
+    // (observed on-device 2026-07-15: txActive=true with Mumble
+    // connected and idle). Window is sized to the session watchdog's
+    // stale threshold (8 s ping cadence + grace).
+    private fun feedMumbleLivenessToMesh() {
+        if (activeTransport?.isConnected != true) return
+        val lastRx = mumbleTransport()?.primarySession()?.lastServerActivityAtMs() ?: 0L
+        if (lastRx <= 0L) return
+        if (System.currentTimeMillis() - lastRx <= MUMBLE_LIVENESS_WINDOW_MS) {
+            meshVoiceManager?.observeMumbleHealth()
+        }
+    }
+
     // Refresh the persisted channel-directory snapshot while Mumble is
     // connected (write-on-change only). Registration thereby configures
     // every server channel for offline use: the picker and mesh
@@ -5084,6 +5105,12 @@ class XvMapComponent : AbstractMapComponent() {
 
         // 1 Hz cadence for the mesh-voice + mission-channel reconcile tick.
         private const val MESH_TICK_MS = 1_000L
+
+        // "Server alive" window for the failover health feed. Must
+        // exceed the Mumble ping cadence (8 s) + grace so health
+        // doesn't flicker between pings; matches the session
+        // watchdog's stale-link threshold (~18 s) + slack.
+        private const val MUMBLE_LIVENESS_WINDOW_MS = 20_000L
 
         // Synthetic deviceUid prefix used in CallPeer entries that come
         // from the Mumble channel roster (rather than the <__xv> CoT
