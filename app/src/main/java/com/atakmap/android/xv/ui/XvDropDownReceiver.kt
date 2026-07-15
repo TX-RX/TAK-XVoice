@@ -1730,11 +1730,82 @@ class XvDropDownReceiver(
                 if (carrier == null) {
                     meshToast("Nothing to share.")
                 } else {
-                    shareText(carrier)
+                    showChannelPlanShareDialog(carrier)
                 }
             }.setNegativeButton("Cancel", null)
             .show()
     }
+
+    // Shows the plan as a QR to scan in person, with a "Share as text"
+    // fall-through to the Android share sheet (Quick Share / messaging /
+    // email / file). QR rendering degrades to text-only if zxing isn't
+    // on the runtime classpath.
+    private fun showChannelPlanShareDialog(carrier: String) {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        fun dp(n: Int) = (n * density).toInt()
+        val builder = android.app.AlertDialog.Builder(ctx).setTitle("Share channel plan")
+        val bmp = qrBitmapOrNull(carrier, dp(260))
+        if (bmp != null) {
+            val image =
+                android.widget.ImageView(ctx).apply {
+                    setImageBitmap(bmp)
+                    adjustViewBounds = true
+                }
+            val caption =
+                TextView(ctx).apply {
+                    text = "Have your teammate scan this, then enter the passphrase to import. Or share it as text."
+                    setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                    textSize = 12f
+                    setPadding(dp(16), dp(8), dp(16), 0)
+                }
+            val container =
+                android.widget.LinearLayout(ctx).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
+                    gravity = android.view.Gravity.CENTER_HORIZONTAL
+                    setPadding(dp(16), dp(16), dp(16), 0)
+                    addView(image)
+                    addView(caption)
+                }
+            builder.setView(container)
+        } else {
+            builder.setMessage("Share this channel plan with your team. They'll enter the passphrase to import it.")
+        }
+        builder
+            .setPositiveButton("Share as text…") { _, _ -> shareText(carrier) }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    // BitMatrix → Bitmap. Returns null (caller falls back to text) if
+    // zxing is unavailable at runtime or encoding fails — QR never hard-
+    // fails the share flow.
+    private fun qrBitmapOrNull(
+        text: String,
+        sizePx: Int,
+    ): android.graphics.Bitmap? =
+        try {
+            if (com.atakmap.android.xv.provisioning.QrCarrier.wouldLikelyExceedQrCapacity(text)) {
+                null // too dense to scan reliably off a screen — use text
+            } else {
+                val matrix = com.atakmap.android.xv.provisioning.QrCarrier.encode(text, sizePx)
+                val w = matrix.width
+                val h = matrix.height
+                val pixels = IntArray(w * h)
+                for (y in 0 until h) {
+                    val row = y * w
+                    for (x in 0 until w) {
+                        pixels[row + x] = if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                    }
+                }
+                android.graphics.Bitmap
+                    .createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                    .apply { setPixels(pixels, 0, w, 0, 0, w, h) }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("XvMesh", "QR render unavailable, falling back to text: ${t.message}")
+            null
+        }
 
     private fun shareText(text: String) {
         try {

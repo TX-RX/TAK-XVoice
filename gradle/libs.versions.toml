@@ -27,6 +27,9 @@ appcompat = "1.7.1"
 protobuf = "4.35.1"
 # JitPack commit-pinned Concentus (pure-Java Opus); see app build file.
 concentus = "3885c4e46513ef0fc81fca100189e54f1714c6ca"
+# QR encode/decode for comms-plan sharing. compileOnly — ATAK bundles
+# zxing at runtime, so nothing new ships in the APK; see app build file.
+zxing = "3.5.3"
 junit = "4.13.2"
 mockk = "1.14.11"
 androidxTestCore = "1.7.0"
@@ -39,6 +42,7 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
 concentus = { module = "com.github.lostromb:concentus", version.ref = "concentus" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
 junit = { module = "junit:junit", version.ref = "junit" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
