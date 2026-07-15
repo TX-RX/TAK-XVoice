@@ -119,11 +119,49 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Empty implementation — required by the abstract class contract.
-     * XV never acquires window content, so there is nothing to release.
+     * Release any in-flight PTT when the accessibility feedback is
+     * interrupted. XV holds no window content, but it does track
+     * per-button held state ([held] / [sonimPttHeld]). If the service
+     * is interrupted (another accessibility service takes over, or the
+     * OS tears feedback down) while a key is physically held, we may
+     * never see the matching key-up — which would strand a down edge in
+     * the dispatcher (TX stuck engaged) and make the next press look
+     * like a stuck "already held" duplicate. Mirror the UP edge for
+     * whichever button was held, then clear local state.
      */
     override fun onInterrupt() {
-        // No-op.  We hold no resources that need releasing on interrupt.
+        releaseHeldPtt(reason = "onInterrupt")
+    }
+
+    /**
+     * Also release on unbind — disabling the service (the common case)
+     * routes through here rather than [onInterrupt], and a key held at
+     * that moment would otherwise strand TX.
+     */
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        releaseHeldPtt(reason = "onUnbind")
+        return super.onUnbind(intent)
+    }
+
+    /**
+     * Fire a synthetic UP edge for any button currently held, then clear
+     * the held flags. Safe to call when nothing is held (no-op).
+     */
+    private fun releaseHeldPtt(reason: String) {
+        if (held) {
+            held = false
+            Log.i(TAG, "$reason — releasing held Samsung Active Key PTT")
+            dispatchEdge(isDown = false)
+        }
+        if (sonimPttHeld) {
+            sonimPttHeld = false
+            Log.i(TAG, "$reason — releasing held Sonim PTT")
+            try {
+                XvVoiceService.deliverSonimPttEdge(false)
+            } catch (t: Throwable) {
+                Log.w(TAG, "$reason deliverSonimPttEdge(up) threw", t)
+            }
+        }
     }
 
     /**
@@ -141,21 +179,37 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
      * hardware both branches skip and the service is a no-op regardless
      * of whether the operator has enabled it.
      */
+    // Guard-clause early returns (device gates + held-state dedup) read
+    // more clearly than the nested-conditional equivalent; detekt's
+    // ReturnCount default of 2 is too strict for a key-event dispatcher.
+    @Suppress("ReturnCount")
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        // Sonim PTT branch — device-gated to Sonim XP10 (XP9900 /
-        // XP10 model prefix) so a Samsung-only device can't
-        // accidentally consume KEYCODE_PTT that some other app on the
-        // device might be using. See SonimHardwareButtons.isSupported.
-        if (SonimHardwareButtons.isSupported(this) &&
-            SonimHardwareButtons.PTT_KEY_CODE_ALT2 == event.keyCode
+        val keyCode = event.keyCode
+
+        // Cheap keyCode fast-path. onKeyEvent is invoked for EVERY
+        // hardware key system-wide, so reject anything that isn't one of
+        // the two keys we handle BEFORE touching the device gates — those
+        // read Build / PackageManager and shouldn't run on every volume
+        // or navigation press.
+        if (keyCode != SonimHardwareButtons.PTT_KEY_CODE_ALT2 &&
+            keyCode != SamsungActiveKey.KEY_CODE_PTT
         ) {
-            return handleSonimPtt(event)
+            return false
         }
 
-        // Samsung Active Key branch — belt-and-suspenders device gate.
+        // Sonim PTT branch — device-gated to Sonim XP10 (XP9900 / XP10
+        // model prefix) so a Samsung-only device can't accidentally
+        // consume KEYCODE_PTT that some other app might be using. The
+        // keyCode is already known to be PTT_KEY_CODE_ALT2 here.
+        if (keyCode == SonimHardwareButtons.PTT_KEY_CODE_ALT2) {
+            return if (SonimHardwareButtons.isSupported(this)) handleSonimPtt(event) else false
+        }
+
+        // Samsung Active Key branch (keyCode == KEY_CODE_PTT) —
+        // belt-and-suspenders device gate.
         if (!SamsungActiveKey.isSupported(this)) return false
 
-        return when (SamsungActiveKey.handleKeyEvent(event.keyCode, event.action, event.repeatCount)) {
+        return when (SamsungActiveKey.handleKeyEvent(keyCode, event.action, event.repeatCount)) {
             SamsungActiveKey.FallbackAction.PTT_DOWN -> {
                 if (held) {
                     Log.d(TAG, "Samsung Active Key DOWN (accessibility) — already held; dropping duplicate")
@@ -186,6 +240,7 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
      * physically-held key doesn't spam duplicate down edges through
      * the dispatcher's OR-gate.
      */
+    @Suppress("ReturnCount")
     private fun handleSonimPtt(event: KeyEvent): Boolean {
         return when (event.action) {
             KeyEvent.ACTION_DOWN -> {

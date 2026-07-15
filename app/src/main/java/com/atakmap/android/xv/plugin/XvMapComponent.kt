@@ -2883,6 +2883,7 @@ class XvMapComponent : AbstractMapComponent() {
      * on the individual Sonim toggle settings so a single reader
      * covers both PTT and Emergency routing. Idempotent.
      */
+    @Suppress("ReturnCount")
     private fun startSonimAssignedApp() {
         val ctx = heldMapView?.context ?: return
         if (!com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(ctx)) {

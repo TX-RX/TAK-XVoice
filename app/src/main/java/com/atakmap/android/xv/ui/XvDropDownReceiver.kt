@@ -1989,6 +1989,7 @@ class XvDropDownReceiver(
     // services programmatically.  The switch read-state updates on each
     // inflateSettings call so it stays in sync after the operator returns
     // from the system settings page.
+    @Suppress("ReturnCount")
     private fun wireSamsungActiveKeyBgSwitch(v: View) {
         val row = v.findViewById<View>(R.id.xv_row_samsung_active_key_bg) ?: return
         val help = v.findViewById<View>(R.id.xv_label_samsung_active_key_bg_help)
