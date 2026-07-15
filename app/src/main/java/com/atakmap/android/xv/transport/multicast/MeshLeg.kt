@@ -43,6 +43,16 @@ interface MeshLeg {
         burstStart: Boolean,
     )
 
+    /** One-line TX/RX/crypto diagnostics for MESH_STATUS; "" when N/A. */
+    fun stats(): String = ""
+
+    /**
+     * The underlying network link changed (Wi-Fi↔cell handoff, IP
+     * rotation). Implementations rebind their socket to the current
+     * multicast-capable interface. Default no-op for test fakes.
+     */
+    fun notifyNetworkSwap() {}
+
     /** Tear the leg down. Idempotent. */
     fun close()
 }

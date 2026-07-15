@@ -105,8 +105,10 @@ class MulticastMeshLeg(
         codec.encodeTx(opus)?.let { transport.sendRaw(it) }
     }
 
+    override fun stats(): String = "${transport.diagnosticsLine()} enc=$encryptedNow"
+
     /** Network handoff nudge — forwards to the transport's swap path. */
-    fun notifyNetworkSwap() = transport.notifyNetworkSwap()
+    override fun notifyNetworkSwap() = transport.notifyNetworkSwap()
 
     override fun close() {
         relayCodecs.clear()

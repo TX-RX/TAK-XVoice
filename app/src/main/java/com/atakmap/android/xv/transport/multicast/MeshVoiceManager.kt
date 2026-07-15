@@ -363,6 +363,22 @@ class MeshVoiceManager(
     @Synchronized
     fun activeLegs(): Map<String, MulticastEndpoint> = legs.mapValues { it.value.endpoint }
 
+    /** Per-leg diagnostics lines (rendezvous leg included) for MESH_STATUS. */
+    @Synchronized
+    fun legStats(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        legs.forEach { (channel, leg) -> out[channel] = leg.stats() }
+        rendezvousLeg?.let { out[RENDEZVOUS_CHANNEL] = it.stats() }
+        return out
+    }
+
+    /** Network link changed: rebind every leg's socket to the fresh interface. */
+    @Synchronized
+    fun notifyNetworkSwap() {
+        legs.values.forEach { runCatching { it.notifyNetworkSwap() } }
+        rendezvousLeg?.let { runCatching { it.notifyNetworkSwap() } }
+    }
+
     /** Channels other peers advertise that we haven't joined (offline discovery). */
     @Synchronized
     fun discoveredChannels(): List<DiscoveredChannel> =

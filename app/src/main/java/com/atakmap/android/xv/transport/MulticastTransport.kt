@@ -81,6 +81,26 @@ class MulticastTransport(
     /** RX datagrams dropped, all reasons combined. Diagnostics only. */
     val rxDropped = AtomicLong(0)
 
+    /** Datagrams successfully handed to the socket. Diagnostics only. */
+    val txSent = AtomicLong(0)
+
+    /** Socket sends that threw. Diagnostics only. */
+    val txSendFailed = AtomicLong(0)
+
+    // ALL socket sends go through this single thread. Callers arrive
+    // from three places — binder threads (voice TX), the RX thread
+    // (bridge relay), and the main-thread mesh tick (beacons, key
+    // election) — and Android throws NetworkOnMainThreadException on
+    // any main-thread send. That exception carries a null message and
+    // was swallowed here as "multicast send failed: null", which
+    // silently killed the entire mesh control plane in the 2026-07-15
+    // field test: no beacons, no key exchange, split-brain channel
+    // keys, every encrypted voice frame dropped as BAD_TAG.
+    private val txExecutor =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "XvMulticastTx-${config.port}")
+        }
+
     override val isConnected: Boolean
         get() = connected
 
@@ -206,16 +226,37 @@ class MulticastTransport(
      * carry the ORIGINAL speaker's SSRC rather than ours.
      */
     fun sendRaw(datagram: ByteArray) {
+        try {
+            txExecutor.execute { sendOnTxThread(datagram) }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Racing a disconnect; the leg is going away. Drop.
+        }
+    }
+
+    private fun sendOnTxThread(datagram: ByteArray) {
         val sock = socket ?: return
         val target = groupSocketAddress ?: return
         try {
             sock.send(DatagramPacket(datagram, datagram.size, target))
+            txSent.incrementAndGet()
         } catch (t: Throwable) {
             // Send failures during interface flaps are expected; the
-            // swap path rebuilds the socket. Don't tear down for them.
-            Log.w(TAG, "multicast send failed: ${t.message}")
+            // swap path rebuilds the socket. Don't tear down for them
+            // — but log the exception CLASS, not just the message:
+            // the message can be null (NetworkOnMainThreadException
+            // was exactly that) and a nameless failure line hid a
+            // dead control plane for a full test session.
+            val n = txSendFailed.incrementAndGet()
+            if (n % SEND_FAIL_LOG_SAMPLE == 1L) {
+                Log.w(TAG, "multicast send failed ($n total): $t")
+            }
         }
     }
+
+    /** One-line TX/RX health for MESH_STATUS diagnostics. */
+    fun diagnosticsLine(): String =
+        "tx=${txSent.get()} txFail=${txSendFailed.get()} " +
+            "txPolicyDrop=${txDroppedByPolicy.get()} rxDrop=${rxDropped.get()}"
 
     /** Send one XVMC control-plane message to the group. */
     fun sendControl(msg: ControlPacket.Message) {
@@ -225,6 +266,7 @@ class MulticastTransport(
 
     override fun disconnect() {
         connected = false
+        txExecutor.shutdown()
         socket?.close()
         receiveThread?.interrupt()
         receiveThread = null
@@ -330,5 +372,10 @@ class MulticastTransport(
         private const val MULTICAST_TTL = 8
 
         private const val DROP_LOG_SAMPLE = 200L
+
+        // First failure always logs (n % SAMPLE == 1), then every
+        // SAMPLEth. Beacons send every 5 s, so a fully-dead TX path
+        // still surfaces within seconds and re-logs every few minutes.
+        private const val SEND_FAIL_LOG_SAMPLE = 50L
     }
 }

@@ -1047,13 +1047,20 @@ class XvMapComponent : AbstractMapComponent() {
                                 "badge=${m.statusBadge() ?: "-"}",
                         )
                         val legs = m.activeLegs()
+                        val stats = m.legStats()
                         if (legs.isEmpty()) {
                             Log.i(TAG, "mesh: no active legs")
                         } else {
                             legs.forEach { (channel, ep) ->
-                                Log.i(TAG, "mesh: leg '$channel' → ${ep.groupAddress}:${ep.port}")
+                                Log.i(
+                                    TAG,
+                                    "mesh: leg '$channel' → ${ep.groupAddress}:${ep.port} ${stats[channel].orEmpty()}",
+                                )
                             }
                         }
+                        stats.keys
+                            .filter { it !in legs.keys }
+                            .forEach { Log.i(TAG, "mesh: leg '$it' ${stats[it]}") }
                         m.discoveredChannels().forEach {
                             Log.i(TAG, "mesh: discovered '${it.name}' ${it.group}:${it.port} via ${it.viaCallsign} (${it.viaUid})")
                         }
@@ -4766,6 +4773,14 @@ class XvMapComponent : AbstractMapComponent() {
                                 // doesn't care about handoffs — nothing
                                 // to do.
                             }
+                        }
+                        // Mesh legs bind their own multicast sockets and
+                        // need the same rebind-to-fresh-interface nudge,
+                        // or they deliver nothing after a handoff.
+                        try {
+                            meshVoiceManager?.notifyNetworkSwap()
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "mesh notifyNetworkSwap threw", t)
                         }
                     }.also { it.start() }
             }
