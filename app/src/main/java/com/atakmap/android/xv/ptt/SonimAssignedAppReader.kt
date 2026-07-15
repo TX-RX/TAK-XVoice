@@ -239,7 +239,11 @@ class SonimAssignedAppReader(
                 Log.w(TAG, "unregisterReceiver threw", t)
             }
             registered = false
+            // Clear BOTH held flags so a stop while a key is held (or
+            // after a dropped UP) can't leave stale state that makes the
+            // next DOWN after a restart look like a duplicate.
             sosHeld = false
+            pttHeld = false
         }
     }
 

@@ -582,11 +582,13 @@ class XvMapComponent : AbstractMapComponent() {
 
     // Assigned-app broadcast reader (Sonim Programmable Keys → ATAK
     // mode). Runs in ATAK's process so the pkg-scoped intents Sonim
-    // fires (pkg=com.atakmap.app.civ) reach it. Callbacks gate on the
-    // individual Sonim toggle settings before dispatching, so this
-    // single reader instance can safely stay live for both PTT (Yellow)
-    // and Emergency (SOS+Kodiak) routing regardless of which toggle is
-    // on. See SonimAssignedAppReader kdoc for the full mapping.
+    // fires (pkg=com.atakmap.app.civ) reach it. Dispatch is
+    // unconditional — there is no XV toggle for the assigned-app path;
+    // the phone's Programmable Keys → app assignment is the
+    // authoritative on/off (if a key isn't assigned to ATAK no broadcast
+    // arrives and the callback never fires). A single reader instance
+    // covers both PTT (Yellow) and Emergency (SOS+Kodiak) routing. See
+    // SonimAssignedAppReader kdoc for the full mapping.
     @Volatile
     private var sonimAssignedApp: com.atakmap.android.xv.ptt.SonimAssignedAppReader? = null
 
