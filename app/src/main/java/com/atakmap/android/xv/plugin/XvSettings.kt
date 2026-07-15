@@ -312,6 +312,20 @@ class XvSettings(
         prefs()?.edit()?.putBoolean(PREF_MESH_VOICE_ENABLED, enabled)?.apply()
     }
 
+    // Mission auto-channels master toggle. When ON, the operator's active
+    // ATAK Data Sync mission drives the primary voice channel: XV derives
+    // a deterministic channel name from the mission, creates it on the
+    // server if the server allows and it doesn't exist, and joins it — so
+    // a whole mission team lands on one voice channel with no manual
+    // coordination (and, with mesh voice on, its failover leg follows for
+    // free). Default OFF; opt-in like mesh voice. See
+    // MissionChannelProvisioner for the reconciliation policy.
+    fun persistedMissionChannelsEnabled(): Boolean = prefs()?.getBoolean(PREF_MISSION_CHANNELS_ENABLED, false) ?: false
+
+    fun persistMissionChannelsEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_MISSION_CHANNELS_ENABLED, enabled)?.apply()
+    }
+
     // Per-channel multicast overrides, stored as a Set<String> of
     // canonical-JSON ChannelMulticastConfig entries (one JSON object
     // per element — same shape the comms-plan bundle embeds). Absence
@@ -424,6 +438,10 @@ class XvSettings(
         // See persistedMeshVoiceEnabled / channelMulticastConfigs.
         private const val PREF_MESH_VOICE_ENABLED = "mesh_voice_enabled"
         private const val PREF_CHANNEL_MULTICAST = "channel_multicast_configs"
+
+        // Mission auto-channels master toggle. See
+        // persistedMissionChannelsEnabled.
+        private const val PREF_MISSION_CHANNELS_ENABLED = "mission_channels_enabled"
 
         // PTT-timeout slider clamp. Bottom prevents an operator from
         // setting a timeout so short the warning chirp + cutoff tone

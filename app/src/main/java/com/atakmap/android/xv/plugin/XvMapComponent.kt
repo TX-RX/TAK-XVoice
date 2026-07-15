@@ -24,6 +24,7 @@ import com.atakmap.android.xv.audio.TptTone
 import com.atakmap.android.xv.debug.DebugReceiver
 import com.atakmap.android.xv.emergency.AtakEmergencyDispatcher
 import com.atakmap.android.xv.emergency.EmergencyController
+import com.atakmap.android.xv.mission.MissionChannelProvisioner
 import com.atakmap.android.xv.presence.XvChannel
 import com.atakmap.android.xv.presence.XvCotListener
 import com.atakmap.android.xv.presence.XvCotPublisher
@@ -512,6 +513,7 @@ class XvMapComponent : AbstractMapComponent() {
     private val selfSuppressedBySlot = java.util.concurrent.ConcurrentHashMap<Int, Boolean>()
     private var debugReceiver: DebugReceiver? = null
     private var showReceiver: BroadcastReceiver? = null
+    private var missionReceiver: BroadcastReceiver? = null
 
     // BluetoothAdapter STATE_ON receiver — re-runs the auto-connect
     // paths for AINA + External Button when the operator toggles BT
@@ -556,9 +558,31 @@ class XvMapComponent : AbstractMapComponent() {
                 } catch (t: Throwable) {
                     Log.w(TAG, "mesh tick threw", t)
                 }
+                try {
+                    reconcileMissionChannels()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "mission-channel reconcile threw", t)
+                }
                 meshTickHandler.postDelayed(this, MESH_TICK_MS)
             }
         }
+
+    // Auto-provisions the primary voice channel from the operator's
+    // active ATAK mission (opt-in via settings). Pure policy lives in
+    // MissionChannelProvisioner; this plugin drives it from the 1 Hz
+    // tick above and executes its actions against the Mumble transport.
+    private var missionChannelProvisioner: MissionChannelProvisioner? = null
+
+    // Ordered active-mission names, primary first. Fed by the documented
+    // SET_MISSIONS broadcast (fleet automation / the ATAK Data Sync hook
+    // publish it); empty means "no mission", which the provisioner treats
+    // as "leave the operator's channel alone".
+    @Volatile
+    private var activeMissionNames: List<String> = emptyList()
+
+    // Last Unavailable channel we toasted, so a server that keeps
+    // refusing creation doesn't re-toast every reconcile cycle.
+    private var lastMissionUnavailableToast: String? = null
 
     // Host string of the currently-running Mumble transport, or null when
     // disconnected. Used by the multi-server picker to short-circuit a
@@ -1179,6 +1203,30 @@ class XvMapComponent : AbstractMapComponent() {
             AtakBroadcast.DocumentedIntentFilter(XvTool.SHOW_XV, "Show XV's main panel"),
         )
 
+        // Mission-context input for auto-channels. A fleet MDM, the ATAK
+        // Data Sync tool, or a companion plugin broadcasts the operator's
+        // active missions (ordered, primary first) so XV can drive the
+        // primary voice channel to match. Extras: "missions" as a
+        // String[] or a delimited String (newline / comma / semicolon).
+        missionReceiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    c: Context,
+                    i: Intent,
+                ) {
+                    if (i.action != SET_MISSIONS) return
+                    val list =
+                        i.getStringArrayExtra("missions")?.toList()
+                            ?: i.getStringExtra("missions")?.split('\n', ',', ';')
+                            ?: emptyList()
+                    setActiveMissions(list)
+                }
+            }
+        AtakBroadcast.getInstance().registerReceiver(
+            missionReceiver,
+            AtakBroadcast.DocumentedIntentFilter(SET_MISSIONS, "Set XV's active missions for auto-channel provisioning"),
+        )
+
         btAdapterStateReceiver =
             object : BroadcastReceiver() {
                 override fun onReceive(
@@ -1426,6 +1474,13 @@ class XvMapComponent : AbstractMapComponent() {
             } catch (_: IllegalArgumentException) {
             }
         }
+        missionReceiver?.let {
+            try {
+                AtakBroadcast.getInstance().unregisterReceiver(it)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+        missionReceiver = null
         btAdapterStateReceiver?.let {
             try {
                 context.unregisterReceiver(it)
@@ -2770,6 +2825,10 @@ class XvMapComponent : AbstractMapComponent() {
         // Seed the currently-joined primary channel so a leg comes up
         // immediately if the operator enabled mesh mid-session.
         joinedChannelsBySlot[0]?.let { manager.onChannelJoined(0, it.name ?: "") }
+        // Mission auto-channels share the same 1 Hz tick. The channel
+        // name simply IS the mission name (deterministic + shared across
+        // the team), so mesh derivation lands everyone on the same group.
+        missionChannelProvisioner = MissionChannelProvisioner()
         meshTickHandler.removeCallbacks(meshTickRunnable)
         meshTickHandler.postDelayed(meshTickRunnable, MESH_TICK_MS)
         Log.i(TAG, "mesh voice started: uid=$deviceUid enrolled=${ourCertDer != null}")
@@ -2785,6 +2844,74 @@ class XvMapComponent : AbstractMapComponent() {
             }
         }
         meshVoiceManager = null
+        missionChannelProvisioner?.reset()
+        missionChannelProvisioner = null
+    }
+
+    /**
+     * Publish the operator's active ATAK missions (ordered, primary
+     * first) to the mission-channel provisioner. Called from the
+     * SET_MISSIONS broadcast so a fleet MDM, the ATAK Data Sync tool, or
+     * a companion plugin can drive which mission owns the voice channel.
+     * Empty list = no active mission.
+     */
+    private fun setActiveMissions(missions: List<String>) {
+        val cleaned = missions.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        activeMissionNames = cleaned
+        Log.i(TAG, "active missions set: $cleaned")
+    }
+
+    // Drive one reconcile of the primary voice channel toward the active
+    // mission. No-op unless the feature is enabled AND a Mumble session
+    // is live (mission channels are a server-side concept; the multicast
+    // failover leg follows automatically once we're joined).
+    private fun reconcileMissionChannels() {
+        if (!settings.persistedMissionChannelsEnabled()) return
+        val provisioner = missionChannelProvisioner ?: return
+        val transport = mumbleTransport() ?: return
+        val directory = transport.availableChannels().map { it.name }
+        val action =
+            provisioner.reconcile(
+                activeMissions = activeMissionNames,
+                directoryContains = { name -> directory.any { it.equals(name, ignoreCase = true) } },
+                joinedChannel = transport.joinedChannelName(),
+                allowCreate = true,
+            )
+        when (action) {
+            MissionChannelProvisioner.Action.NoOp -> {}
+            is MissionChannelProvisioner.Action.Create -> {
+                Log.i(TAG, "mission channel: creating '${action.channelName}'")
+                // Non-temporary top-level channel; the next tick's Join
+                // fires once its ChannelState lands (bounded retry inside
+                // the provisioner covers a server that silently refuses).
+                transport.primarySession()?.sendChannelState(action.channelName)
+            }
+            is MissionChannelProvisioner.Action.Join -> {
+                Log.i(TAG, "mission channel: joining '${action.channelName}'")
+                joinMumbleChannelInternal(action.channelName, -1)
+                lastMissionUnavailableToast = null
+            }
+            is MissionChannelProvisioner.Action.Unavailable -> {
+                if (lastMissionUnavailableToast != action.channelName) {
+                    lastMissionUnavailableToast = action.channelName
+                    Log.w(TAG, "mission channel '${action.channelName}' unavailable: ${action.reason}")
+                    try {
+                        MapView.getMapView()?.let { mv ->
+                            mv.post {
+                                android.widget.Toast
+                                    .makeText(
+                                        mv.context,
+                                        "Mission voice channel '${action.channelName}' unavailable — ${action.reason}",
+                                        android.widget.Toast.LENGTH_LONG,
+                                    ).show()
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "mission unavailable toast threw", t)
+                    }
+                }
+            }
+        }
     }
 
     private fun parseVxCompat(mode: String?): VxCompat? =
@@ -4822,6 +4949,14 @@ class XvMapComponent : AbstractMapComponent() {
 
     companion object {
         private const val TAG = "XV"
+
+        // Broadcast that sets XV's active ATAK missions for auto-channel
+        // provisioning. Extra "missions": a String[] (ordered, primary
+        // first) or a delimited String. See reconcileMissionChannels.
+        const val SET_MISSIONS = "com.atakmap.android.xv.SET_MISSIONS"
+
+        // 1 Hz cadence for the mesh-voice + mission-channel reconcile tick.
+        private const val MESH_TICK_MS = 1_000L
 
         // Synthetic deviceUid prefix used in CallPeer entries that come
         // from the Mumble channel roster (rather than the <__xv> CoT

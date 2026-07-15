@@ -144,6 +144,20 @@ XV also adds:
   OpenMANET-compatible interop groups.
 - **Direct calling** — Notification.CallStyle ring + full-screen call
   surface, VX-compatible private-call signaling.
+- **Mission auto-channels (opt-in)** — behind a toggle that defaults
+  off. When enabled, the operator's active ATAK mission drives the
+  primary voice channel: XV derives a deterministic channel name from
+  the mission (the channel name simply *is* the mission), creates it on
+  the server if it doesn't exist and the server allows it, and joins it
+  — so a whole mission team lands on one voice channel with no manual
+  coordination. Moving off the channel by hand hands control back until
+  the mission changes, and if the server refuses channel creation the
+  operator is told rather than left waiting. With mesh voice on, the
+  mission channel's multicast failover leg comes up automatically
+  (same channel-name-keyed derivation). XV takes the active-mission
+  set from a documented broadcast, so a fleet MDM, the ATAK Data Sync
+  tool, or a companion plugin can supply mission context; native
+  auto-detection of Data Sync missions is a follow-up.
 - **Mesh-voice failover (opt-in, not yet field-validated)** — behind a
   master toggle that defaults off. When enabled, every joined channel
   gets an auto-derived multicast leg that carries voice when the Mumble
@@ -168,8 +182,9 @@ XV also adds:
   by default.
 - **Next:** promote mesh-voice failover to a supported feature once
   validated; comms-plan import UX (QR scan / passphrase entry) and the
-  discovered-channels picker; OpenMANET interop testing against live
-  mesh hardware.
+  discovered-channels picker; native ATAK Data Sync mission detection
+  to drive the mission auto-channels feature without an external
+  broadcast; OpenMANET interop testing against live mesh hardware.
 - **Later:** additional curated hardware as devices are validated in
   the field, and NFC / data-package comms-plan carriers alongside the
   QR and passphrase forms.
