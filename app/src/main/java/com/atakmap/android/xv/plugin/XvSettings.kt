@@ -2,6 +2,8 @@ package com.atakmap.android.xv.plugin
 
 import android.content.SharedPreferences
 import com.atakmap.android.xv.audio.TptTone
+import com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
 
 // Persistent settings for the XV plugin. Wraps a SharedPreferences
 // provider so call sites read "settings.persistedX()" / "settings.persistX()"
@@ -298,6 +300,66 @@ class XvSettings(
         prefs()?.edit()?.putString(PREF_PRIMARY_CHANNEL, name)?.apply()
     }
 
+    // Global mesh-voice (multicast) master toggle. When ON, every
+    // joined Mumble channel gets an auto-derived multicast failover
+    // leg (FAILOVER mode, XV-native encrypted) unless a per-channel
+    // config below overrides it. Default OFF for the first release
+    // carrying the feature — operators opt in deliberately while the
+    // failover path soaks; flipping the default is a one-line change.
+    fun persistedMeshVoiceEnabled(): Boolean = prefs()?.getBoolean(PREF_MESH_VOICE_ENABLED, false) ?: false
+
+    fun persistMeshVoiceEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_MESH_VOICE_ENABLED, enabled)?.apply()
+    }
+
+    // Per-channel multicast overrides, stored as a Set<String> of
+    // canonical-JSON ChannelMulticastConfig entries (one JSON object
+    // per element — same shape the comms-plan bundle embeds). Absence
+    // of an entry for a channel means "use the auto-derived default",
+    // NOT "multicast off"; see ChannelMulticastConfig.defaultFor.
+    // Entries that fail to parse (e.g. written by a newer XV with an
+    // enum this build doesn't know) are skipped, degrading that
+    // channel to the default rather than failing channel setup.
+    fun channelMulticastConfigs(): List<ChannelMulticastConfig> {
+        val raw = prefs()?.getStringSet(PREF_CHANNEL_MULTICAST, emptySet()) ?: emptySet()
+        return raw
+            .mapNotNull { ChannelMulticastConfig.fromJson(it) }
+            .sortedBy { it.channelName }
+    }
+
+    fun channelMulticastConfigFor(channelName: String): ChannelMulticastConfig? {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        return channelMulticastConfigs().firstOrNull { it.channelName == canonical }
+    }
+
+    // Upsert by canonical channel name: at most one override per
+    // channel, and a re-save replaces the prior one.
+    fun persistChannelMulticastConfig(cfg: ChannelMulticastConfig) {
+        val canonical = cfg.copy(channelName = MulticastGroupDerivation.canonicalChannelName(cfg.channelName))
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_MULTICAST, emptySet())
+                ?.toMutableSet()
+                ?: mutableSetOf()
+        existing.removeAll { ChannelMulticastConfig.fromJson(it)?.channelName == canonical.channelName }
+        existing.add(canonical.toJson())
+        prefs()?.edit()?.putStringSet(PREF_CHANNEL_MULTICAST, existing)?.apply()
+    }
+
+    fun removeChannelMulticastConfig(channelName: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_MULTICAST, emptySet())
+                ?.toMutableSet()
+                ?: return
+        val before = existing.size
+        existing.removeAll { ChannelMulticastConfig.fromJson(it)?.channelName == canonical }
+        if (existing.size != before) {
+            prefs()?.edit()?.putStringSet(PREF_CHANNEL_MULTICAST, existing)?.apply()
+        }
+    }
+
     companion object {
         // SharedPreferences file name. Lives under the plugin's own
         // Context so we don't pollute ATAK's prefs file.
@@ -357,6 +419,11 @@ class XvSettings(
         // Last-joined primary channel. Used for auto-rejoin override
         // on reconnect.
         private const val PREF_PRIMARY_CHANNEL = "primary_channel"
+
+        // Mesh-voice (multicast) master toggle + per-channel overrides.
+        // See persistedMeshVoiceEnabled / channelMulticastConfigs.
+        private const val PREF_MESH_VOICE_ENABLED = "mesh_voice_enabled"
+        private const val PREF_CHANNEL_MULTICAST = "channel_multicast_configs"
 
         // PTT-timeout slider clamp. Bottom prevents an operator from
         // setting a timeout so short the warning chirp + cutoff tone
