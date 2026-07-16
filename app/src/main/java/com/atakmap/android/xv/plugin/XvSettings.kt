@@ -330,13 +330,61 @@ class XvSettings(
         if (existing.size != before) {
             prefs()?.edit()?.putStringSet(PREF_KNOWN_CHANNELS, existing)?.apply()
         }
+        removeChannelServer(name)
     }
 
     // Wipe the whole known-channel directory + every per-channel
     // multicast override — the storage half of "forget all channels".
     // The master toggles and keys are handled by the caller.
     fun clearKnownChannels() {
-        prefs()?.edit()?.remove(PREF_KNOWN_CHANNELS)?.apply()
+        prefs()?.edit()?.remove(PREF_KNOWN_CHANNELS)?.remove(PREF_CHANNEL_SERVER)?.apply()
+    }
+
+    // Originating-server directory: canonical channel name → server host.
+    // Channel identity is really (server, channel) — the same name on two
+    // servers is two different multicast channels — but the known-channel
+    // set is a flat name list, so this parallel map records which server a
+    // channel was last seen on for the grouped/hierarchical picker.
+    // Stored as a Set of "<host> <canonical>" entries — host FIRST because a
+    // hostname has no spaces, so the first space splits cleanly even when
+    // the channel name contains spaces. Ad-hoc / peer-discovered channels
+    // have no entry (unknown server).
+    fun channelServer(name: String): String? {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        return prefs()
+            ?.getStringSet(PREF_CHANNEL_SERVER, emptySet())
+            ?.firstOrNull { it.substringAfter(' ', "") == canonical }
+            ?.substringBefore(' ')
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    fun persistChannelServer(
+        name: String,
+        host: String,
+    ) {
+        if (host.isBlank()) return
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        if (canonical.isBlank()) return
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_SERVER, emptySet())
+                ?.toMutableSet()
+                ?: mutableSetOf()
+        existing.removeAll { it.substringAfter(' ', "") == canonical }
+        existing.add("$host $canonical")
+        prefs()?.edit()?.putStringSet(PREF_CHANNEL_SERVER, existing)?.apply()
+    }
+
+    fun removeChannelServer(name: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_SERVER, emptySet())
+                ?.toMutableSet()
+                ?: return
+        if (existing.removeAll { it.substringAfter(' ', "") == canonical }) {
+            prefs()?.edit()?.putStringSet(PREF_CHANNEL_SERVER, existing)?.apply()
+        }
     }
 
     fun clearAllChannelMulticastConfigs() {
@@ -508,6 +556,10 @@ class XvSettings(
         private const val PREF_MESH_VOICE_ENABLED = "mesh_voice_enabled"
         private const val PREF_KNOWN_CHANNELS = "known_channels"
         private const val PREF_CHANNEL_MULTICAST = "channel_multicast_configs"
+
+        // Parallel "<host> <canonical>" directory tagging each known channel
+        // with the server it was last seen on. See channelServer.
+        private const val PREF_CHANNEL_SERVER = "channel_server_map"
 
         // Keystore-sealed per-channel key vault (Base64 of GCM
         // ciphertext). See persistSealedMeshKeyVault. Lives in the

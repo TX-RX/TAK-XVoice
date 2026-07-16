@@ -3601,6 +3601,13 @@ class XvMapComponent : AbstractMapComponent() {
         if (names.isEmpty() || names == lastKnownChannelsSnapshot) return
         lastKnownChannelsSnapshot = names
         settings.persistKnownChannels(names)
+        // Tag each snapshotted channel with the server it came from, so the
+        // picker can group/label channels by their originating server (the
+        // operator may connect to more than one). activeMumbleHost is the
+        // same identity source the mesh derivation + carrier already use.
+        activeMumbleHost?.takeIf { it.isNotBlank() }?.let { host ->
+            names.forEach { settings.persistChannelServer(it, host) }
+        }
         Log.i(TAG, "channel directory snapshot: ${names.size} channel(s) persisted for offline use")
     }
 

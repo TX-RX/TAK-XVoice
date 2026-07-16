@@ -119,5 +119,13 @@ refinements are deferred:
     channels in under an "Offline / ad-hoc" divider (deduped vs. the
     server list, long-press to forget), so the main header is the single
     channel list; the Mesh tab list is now the offline management view.
-    Still deferred: per-server grouping/tagging, and an "offline failover
-    armed" indicator on server-backed rows.
+    Channels are now tagged with their originating server
+    (`XvSettings.channelServer`, recorded in `snapshotChannelDirectory`)
+    for a grouped/hierarchical picker; the grouped display + an "offline
+    failover armed" indicator are the remaining UI work.
+  - *Deferred — config store is still per-name:* `PREF_CHANNEL_MULTICAST`
+    keys per-channel configs by canonical name only, so the same channel
+    name on two servers collides in the config store even though it's two
+    different multicast channels. Rekey the config store to
+    (server, channel) to match derivation. (Known-channel + server-tag
+    stores are already split correctly; this is the remaining one.)
