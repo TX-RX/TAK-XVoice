@@ -22,6 +22,15 @@ interface MeshLeg {
      */
     val encryptedNow: Boolean
 
+    /**
+     * True when this leg has been RECEIVING peers' encrypted frames
+     * while holding no key — the "deaf until keyed" state. Drives the
+     * operator-facing KEY NEEDED badge; the fix is operator action
+     * (import a channel plan or re-enroll with the server). Default
+     * false for legs/fakes without an RX drop count.
+     */
+    val awaitingKey: Boolean get() = false
+
     /** PTT-down edge: reset burst-relative TX state. */
     fun beginVoiceBurst()
 

@@ -81,6 +81,13 @@ class MulticastTransport(
     /** RX datagrams dropped, all reasons combined. Diagnostics only. */
     val rxDropped = AtomicLong(0)
 
+    /**
+     * RX drops that were peers' ENCRYPTED frames we hold no key for —
+     * the operator-actionable "deaf until keyed" state. Subset of
+     * [rxDropped]; feeds the KEY NEEDED status surface.
+     */
+    val rxEncryptedNoKey = AtomicLong(0)
+
     /** Datagrams successfully handed to the socket. Diagnostics only. */
     val txSent = AtomicLong(0)
 
@@ -178,6 +185,9 @@ class MulticastTransport(
                     }
                     is MulticastWireCodec.RxResult.Dropped -> {
                         rxDropped.incrementAndGet()
+                        if (r.reason == MulticastWireCodec.DropReason.ENCRYPTED_NO_KEY) {
+                            rxEncryptedNoKey.incrementAndGet()
+                        }
                         // Per-reason counts would spam at line rate; one
                         // aggregate counter + occasional sampled log is
                         // enough to notice a misconfigured peer.
@@ -256,7 +266,8 @@ class MulticastTransport(
     /** One-line TX/RX health for MESH_STATUS diagnostics. */
     fun diagnosticsLine(): String =
         "tx=${txSent.get()} txFail=${txSendFailed.get()} " +
-            "txPolicyDrop=${txDroppedByPolicy.get()} rxDrop=${rxDropped.get()}"
+            "txPolicyDrop=${txDroppedByPolicy.get()} rxDrop=${rxDropped.get()} " +
+            "rxNoKey=${rxEncryptedNoKey.get()}"
 
     /** Send one XVMC control-plane message to the group. */
     fun sendControl(msg: ControlPacket.Message) {

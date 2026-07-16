@@ -468,7 +468,12 @@ class MeshVoiceManager(
 
     // ---- comms plan + PSK ----
 
-    /** Install a pre-shared channel key (comms plan import). Epoch 0. */
+    /**
+     * Install a pre-shared channel key (comms plan import). Lands at
+     * epoch 0; if the live mesh has already rotated the same key bytes
+     * to a higher epoch label, the next peer beacon converges us via
+     * the fingerprint-match adoption rule in [handleBeacon].
+     */
     @Synchronized
     fun installPresharedKey(
         channelName: String,
@@ -479,6 +484,16 @@ class MeshVoiceManager(
             currentKeys[canonical] = key
         }
     }
+
+    /**
+     * Live key bytes for a channel (defensive copy), or null when
+     * keying hasn't converged. Comms-plan EXPORT must use this, not the
+     * provisioning-time snapshot: the election may have rotated the key
+     * since the channel was created, and stale bytes import cleanly on
+     * the receiver and then decrypt nothing.
+     */
+    @Synchronized
+    fun currentKeyFor(channelName: String): ByteArray? = currentKeys[MulticastGroupDerivation.canonicalChannelName(channelName)]?.copyOf()
 
     // ---- operator-facing state ----
 
@@ -526,11 +541,17 @@ class MeshVoiceManager(
      * @property cleartext at least one live leg is sending unencrypted
      *   (crypto policy CLEARTEXT, or keying hasn't converged on a
      *   PREFERRED channel).
+     * @property keyNeeded at least one leg is receiving peers'
+     *   ENCRYPTED traffic while holding no key — this device is deaf
+     *   on that channel until the operator imports a plan or
+     *   re-enrolls. Distinct from [cleartext]: CLEAR says "we send
+     *   unencrypted", KEY NEEDED says "we can't hear the others".
      */
     data class StatusSnapshot(
         val active: Boolean,
         val bridging: Boolean,
         val cleartext: Boolean,
+        val keyNeeded: Boolean,
         val legCount: Int,
     )
 
@@ -541,6 +562,7 @@ class MeshVoiceManager(
             active = meshTxActive,
             bridging = bridging,
             cleartext = legs.values.any { !it.encryptedNow },
+            keyNeeded = legs.values.any { it.awaitingKey },
             legCount = legs.size,
         )
     }
@@ -558,6 +580,7 @@ class MeshVoiceManager(
             append(if (snap.active) "MESH ACTIVE" else "MESH READY")
             if (snap.bridging) append(" · BRIDGING")
             if (snap.cleartext) append(" · CLEAR")
+            if (snap.keyNeeded) append(" · KEY NEEDED")
         }
     }
 
@@ -740,8 +763,30 @@ class MeshVoiceManager(
                         ch.keyEpoch == registryFor(ch.name).currentEpoch(),
                 )
                 resolveKeySplitBrain(ch, msg.uid, now)
+                adoptAdvertisedEpoch(ch)
             }
         }
+    }
+
+    // Same key bytes under a LOWER epoch label than a peer advertises
+    // (fingerprints match, epochs don't): adopt the peer's label. This
+    // is how a comms-plan import converges — the plan carries the live
+    // key but installs at epoch 0, while the mesh may have rotated that
+    // same key to a higher epoch; without adoption the importer
+    // encrypts under a label nobody else recognizes and both directions
+    // drop as UnknownEpoch. One-directional (higher epoch wins, same
+    // convention as the election) so two importers can't flap, and
+    // fingerprint-gated so a genuinely different key still goes through
+    // the split-brain / KeyReq paths instead. The registry rolls our
+    // old label into its previous-epoch slot, so frames from a
+    // not-yet-adopted importer stay decryptable for the grace window.
+    private fun adoptAdvertisedEpoch(ch: ControlPacket.Message.PeerBeacon.Channel) {
+        val registry = registryFor(ch.name)
+        val ourEpoch = registry.currentEpoch()
+        if (ourEpoch == ChannelKeyRegistry.NO_EPOCH || ch.keyEpoch <= ourEpoch) return
+        val key = currentKeys[ch.name] ?: return
+        if (ch.keyFp == 0 || ch.keyFp != keyFingerprint(key)) return
+        registry.install(ch.keyEpoch, key)
     }
 
     // Same-epoch/different-key split-brain (simultaneous bootstrap or

@@ -67,6 +67,12 @@ class MulticastMeshLeg(
     override val encryptedNow: Boolean
         get() = config.cryptoPolicy != CryptoPolicy.CLEARTEXT && registry.hasKey()
 
+    override val awaitingKey: Boolean
+        get() =
+            config.cryptoPolicy != CryptoPolicy.CLEARTEXT &&
+                !registry.hasKey() &&
+                transport.rxEncryptedNoKey.get() > 0
+
     override fun beginVoiceBurst() = transport.beginVoiceBurst()
 
     override fun sendOpus(opus: ByteArray) {

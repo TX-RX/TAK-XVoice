@@ -203,9 +203,48 @@ class MulticastWireCodecTest {
             MulticastWireCodec.DropReason.EMPTY,
             dropReason(rx.decodeRx(ByteArray(0), sourceHost = "198.51.100.7")),
         )
+        // Byte 0 = 0x80 claims RTP v2 but the datagram is too short for
+        // an RTP header — genuine line noise, not a keying gap.
         assertEquals(
             MulticastWireCodec.DropReason.NOT_RTP,
-            dropReason(rx.decodeRx(ByteArray(20) { 0x01 }, sourceHost = "198.51.100.7")),
+            dropReason(rx.decodeRx(byteArrayOf(0x80.toByte(), 0x01, 0x02), sourceHost = "198.51.100.7")),
+        )
+    }
+
+    @Test
+    fun `keyless receiver classifies peers' encrypted frames as encrypted-no-key not line noise`() {
+        // The 2026-07-16 field state: device restarted offline, lost its
+        // in-memory key, peers still encrypt. Every frame was miscounted
+        // as NOT_RTP and the operator saw nothing actionable.
+        val key = ByteArray(AeadCodec.KEY_BYTES) { 0x42 }
+        val tx = XvNativeWireCodec(ssrc, CryptoPolicy.PREFERRED, registryWithKey(epoch = 3, key = key))
+        tx.beginBurst()
+        val datagram = tx.encodeTx(opus)!!
+
+        val keyless = XvNativeWireCodec(ssrc = 1L, cryptoPolicy = CryptoPolicy.PREFERRED, keyRegistry = null)
+        assertEquals(
+            MulticastWireCodec.DropReason.ENCRYPTED_NO_KEY,
+            dropReason(keyless.decodeRx(datagram, sourceHost = "198.51.100.7")),
+        )
+
+        val emptyRegistry = XvNativeWireCodec(ssrc = 1L, cryptoPolicy = CryptoPolicy.PREFERRED, keyRegistry = ChannelKeyRegistry(7))
+        assertEquals(
+            MulticastWireCodec.DropReason.ENCRYPTED_NO_KEY,
+            dropReason(emptyRegistry.decodeRx(datagram, sourceHost = "198.51.100.7")),
+        )
+    }
+
+    @Test
+    fun `keyed receiver classifies an unknown epoch as unknown-epoch not line noise`() {
+        val tx = XvNativeWireCodec(ssrc, CryptoPolicy.PREFERRED, registryWithKey(epoch = 9, key = ByteArray(AeadCodec.KEY_BYTES) { 0x42 }))
+        tx.beginBurst()
+        val datagram = tx.encodeTx(opus)!!
+
+        // Keyed, but for a different epoch than the frame carries.
+        val rx = XvNativeWireCodec(ssrc = 1L, cryptoPolicy = CryptoPolicy.PREFERRED, keyRegistry = registryWithKey(epoch = 3))
+        assertEquals(
+            MulticastWireCodec.DropReason.UNKNOWN_EPOCH,
+            dropReason(rx.decodeRx(datagram, sourceHost = "198.51.100.7")),
         )
     }
 

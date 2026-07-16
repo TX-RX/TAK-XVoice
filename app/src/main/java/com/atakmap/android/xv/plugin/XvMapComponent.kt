@@ -2739,8 +2739,13 @@ class XvMapComponent : AbstractMapComponent() {
                         append(if (snap.active) "MESH ACTIVE" else "MESH READY")
                         if (snap.bridging) append(" · BRIDGE")
                         if (snap.cleartext) append(" · CLEAR")
+                        // Deaf-until-keyed: peers are encrypted and we
+                        // hold no key. Render alongside CLEAR — CLEAR
+                        // says "we send unencrypted", this says "we
+                        // can't hear them".
+                        if (snap.keyNeeded) append(" · KEY NEEDED")
                     }
-                return XvDropDownReceiver.MeshStatus(label = label, cleartext = snap.cleartext)
+                return XvDropDownReceiver.MeshStatus(label = label, cleartext = snap.cleartext || snap.keyNeeded)
             }
 
             override fun provisionMeshChannel(): String? = provisionMeshChannelInternal()
@@ -3339,6 +3344,15 @@ class XvMapComponent : AbstractMapComponent() {
                     .filterKeys { it in wanted }
                     .values
                     .toList()
+            }.map { ch ->
+                // Share the LIVE key, not the provisioning-time snapshot:
+                // the key election may have rotated since this channel
+                // was created/imported, and a stale key imports cleanly
+                // on the receiver and then decrypts nothing (field repro
+                // 2026-07-16).
+                meshVoiceManager
+                    ?.currentKeyFor(ch.config.channelName)
+                    ?.let { live -> ch.copy(preSharedKey = live) } ?: ch
             }
         if (channels.isEmpty()) return null
         val identity =

@@ -25,6 +25,10 @@ class MeshVoiceManagerTest {
         override val encryptedNow: Boolean
             get() = config.cryptoPolicy != CryptoPolicy.CLEARTEXT && registry.hasKey()
 
+        var awaitingKeyNow = false
+        override val awaitingKey: Boolean
+            get() = awaitingKeyNow
+
         override fun beginVoiceBurst() {
             bursts++
         }
@@ -488,6 +492,91 @@ class MeshVoiceManagerTest {
         h.now += MeshVoiceManager.BEACON_INTERVAL_MS
         h.manager.tick()
         assertEquals(MeshVoiceManager.PSK_EPOCH, h.lastBeaconEpochFor("ops-1"))
+    }
+
+    // ---- advertised-epoch adoption (comms-plan import convergence) ----
+
+    private fun epochBeacon(
+        fromUid: String,
+        peerKey: ByteArray,
+        epoch: Int,
+    ): ControlPacket.Message.PeerBeacon =
+        ControlPacket.Message.PeerBeacon(
+            uid = fromUid,
+            callsign = "Bravo-2",
+            mumbleConnected = false,
+            bridging = false,
+            channels =
+            listOf(
+                ControlPacket.Message.PeerBeacon.Channel(
+                    name = "ops-1",
+                    group = "239.226.1.2",
+                    port = 16855,
+                    keyEpoch = epoch,
+                    keyFp = MeshVoiceManager.keyFingerprint(peerKey),
+                ),
+            ),
+        )
+
+    @Test
+    fun `importer adopts a peer's higher epoch when the key fingerprints match`() {
+        // Comms-plan import lands the LIVE key at epoch 0 while the
+        // mesh has rotated that same key to a higher label; without
+        // adoption both directions drop as UnknownEpoch forever.
+        val shared = ByteArray(AeadCodec.KEY_BYTES) { 0x11 }
+        val h = Harness()
+        h.joinAndTick()
+        h.installOurKey(shared)
+        h.manager.onControl("ops-1", epochBeacon("uid-zzz", shared, epoch = 5), "192.0.2.9")
+        h.now += MeshVoiceManager.BEACON_INTERVAL_MS
+        h.manager.tick()
+        assertEquals(5, h.lastBeaconEpochFor("ops-1"))
+    }
+
+    @Test
+    fun `a higher epoch with a DIFFERENT key is not adopted`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.installOurKey(ByteArray(AeadCodec.KEY_BYTES) { 0x11 })
+        h.manager.onControl("ops-1", epochBeacon("uid-zzz", ByteArray(AeadCodec.KEY_BYTES) { 0x22 }, epoch = 5), "192.0.2.9")
+        h.now += MeshVoiceManager.BEACON_INTERVAL_MS
+        h.manager.tick()
+        assertEquals(MeshVoiceManager.PSK_EPOCH, h.lastBeaconEpochFor("ops-1"))
+    }
+
+    @Test
+    fun `adoption is one-directional - a lower advertised epoch never wins`() {
+        val shared = ByteArray(AeadCodec.KEY_BYTES) { 0x11 }
+        val h = Harness()
+        h.joinAndTick()
+        h.installOurKey(shared)
+        h.manager.onControl("ops-1", epochBeacon("uid-zzz", shared, epoch = 5), "192.0.2.9")
+        // A straggler still beaconing the old label must not drag us back.
+        h.manager.onControl("ops-1", epochBeacon("uid-aaa", shared, epoch = 2), "192.0.2.10")
+        h.now += MeshVoiceManager.BEACON_INTERVAL_MS
+        h.manager.tick()
+        assertEquals(5, h.lastBeaconEpochFor("ops-1"))
+    }
+
+    @Test
+    fun `currentKeyFor returns the live key bytes for plan export`() {
+        val shared = ByteArray(AeadCodec.KEY_BYTES) { 0x11 }
+        val h = Harness()
+        h.joinAndTick()
+        assertNull(h.manager.currentKeyFor("Ops-1"))
+        h.installOurKey(shared)
+        assertTrue(shared.contentEquals(h.manager.currentKeyFor("Ops-1")))
+    }
+
+    @Test
+    fun `a leg awaiting a key surfaces KEY NEEDED in the status badge`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.channelLeg().awaitingKeyNow = true
+        assertTrue(h.manager.statusBadge()!!.contains("KEY NEEDED"))
+        assertTrue(h.manager.statusSnapshot()!!.keyNeeded)
+        h.channelLeg().awaitingKeyNow = false
+        assertFalse(h.manager.statusBadge()!!.contains("KEY NEEDED"))
     }
 
     @Test

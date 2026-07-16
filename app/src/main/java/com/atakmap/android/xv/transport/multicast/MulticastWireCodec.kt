@@ -85,6 +85,16 @@ sealed interface MulticastWireCodec {
         WRONG_PAYLOAD_TYPE,
         CLEARTEXT_FORBIDDEN,
         UNKNOWN_EPOCH,
+
+        /**
+         * An AEAD frame arrived but this receiver holds NO key at all —
+         * peers are encrypted and we can't join in. Operator-actionable
+         * (import a plan / reconnect to the server), so it must never
+         * masquerade as line noise: a keyless device sat "MESH ACTIVE"
+         * while deaf, its drops miscounted as NOT_RTP (field repro
+         * 2026-07-16, offline restart lost the in-memory channel key).
+         */
+        ENCRYPTED_NO_KEY,
         BAD_TAG,
         MALFORMED,
     }
@@ -185,6 +195,21 @@ class XvNativeWireCodec(
                     // hasn't converged" instead of implying a peer is
                     // violating policy.
                     MulticastWireCodec.DropReason.UNKNOWN_EPOCH
+                },
+            )
+        }
+        // Byte 0 below 0x80 is an epoch byte, never RTP v2: this is an
+        // AEAD frame we hold no usable key for. Classify it as the
+        // keying gap it is — ENCRYPTED_NO_KEY when we have no key at
+        // all (operator must import a plan or re-enroll), UNKNOWN_EPOCH
+        // when we're keyed but behind — instead of letting it fall into
+        // decodeRtp and miscount as NOT_RTP line noise.
+        if ((datagram[0].toInt() and 0xFF) < 0x80) {
+            return MulticastWireCodec.RxResult.Dropped(
+                if (registry?.hasKey() == true) {
+                    MulticastWireCodec.DropReason.UNKNOWN_EPOCH
+                } else {
+                    MulticastWireCodec.DropReason.ENCRYPTED_NO_KEY
                 },
             )
         }
