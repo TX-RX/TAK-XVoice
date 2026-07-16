@@ -2755,12 +2755,15 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun provisionMeshChannel(): String? = provisionMeshChannelInternal()
 
-            override fun canShareChannelPlan(): Boolean = provisionedChannels.isNotEmpty()
+            // Shareable == what the operator SEES. Previously this read only
+            // provisionedChannels (created/imported/restored), so a client on
+            // a TAK server saw a full channel list but Share said "nothing to
+            // share." Any visible channel can be shared: with its key when we
+            // hold one, else config-only (the peer re-derives the endpoint
+            // from the name). See buildChannelPlanCarrierInternal.
+            override fun canShareChannelPlan(): Boolean = meshChannelCandidates().isNotEmpty()
 
-            override fun shareableChannels(): List<String> =
-                synchronized(provisionedChannels) {
-                    provisionedChannels.values.map { it.displayName }
-                }
+            override fun shareableChannels(): List<String> = meshChannelCandidates()
 
             override fun buildChannelPlanCarrier(
                 passphrase: CharArray,
@@ -3421,28 +3424,35 @@ class XvMapComponent : AbstractMapComponent() {
         passphrase: CharArray,
         selected: List<String>,
     ): String? {
-        val wanted =
-            selected
-                .map {
-                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
-                        .canonicalChannelName(it)
-                }.toSet()
-        if (wanted.isEmpty()) return null
+        if (selected.isEmpty()) return null
+        val provisioned = synchronized(provisionedChannels) { provisionedChannels.toMap() }
         val channels =
-            synchronized(provisionedChannels) {
-                provisionedChannels
-                    .filterKeys { it in wanted }
-                    .values
-                    .toList()
-            }.map { ch ->
-                // Share the LIVE key, not the provisioning-time snapshot:
-                // the key election may have rotated since this channel
-                // was created/imported, and a stale key imports cleanly
-                // on the receiver and then decrypts nothing (field repro
-                // 2026-07-16).
+            selected.mapNotNull { name ->
+                val canonical =
+                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                        .canonicalChannelName(name)
+                if (canonical.isBlank()) return@mapNotNull null
+                // Prefer a provisioned/imported channel (carries its config +
+                // any key). Otherwise build one from the channel's stored
+                // multicast override or the name-derived default, so ANY
+                // channel the operator can see is shareable — server, known,
+                // or discovered — not just ones this device created.
+                val base =
+                    provisioned[canonical]
+                        ?: com.atakmap.android.xv.provisioning.CommsPlan.Channel(
+                            displayName = name,
+                            config =
+                            settings.channelMulticastConfigFor(name)
+                                ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+                                    .defaultFor(name),
+                        )
+                // Attach the LIVE key when we hold one (rotation-safe — a
+                // stale snapshot key imports cleanly then decrypts nothing,
+                // field repro 2026-07-16); a keyless channel shares config
+                // only.
                 meshVoiceManager
-                    ?.currentKeyFor(ch.config.channelName)
-                    ?.let { live -> ch.copy(preSharedKey = live) } ?: ch
+                    ?.currentKeyFor(base.config.channelName)
+                    ?.let { live -> base.copy(preSharedKey = live) } ?: base
             }
         if (channels.isEmpty()) return null
         val identity =
