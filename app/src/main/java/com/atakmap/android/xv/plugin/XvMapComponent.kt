@@ -528,6 +528,51 @@ class XvMapComponent : AbstractMapComponent() {
     private var btAdapterStateReceiver: BroadcastReceiver? = null
     private val autoReconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    // Register the BT adapter-state receiver, retrying once if the
+    // plugin context isn't usable yet. Field-observed 2026-07-16 on one
+    // device: registration at load time threw NPE from inside
+    // ContextCompat.registerReceiver (Context.getPackageName() on a
+    // null base — plugin context not fully attached), which silently
+    // killed BT-adapter-cycle handling for the whole session. One
+    // deferred retry rides out the attach race; a second failure is a
+    // real problem and stays loud.
+    //
+    // Explicit RECEIVER_NOT_EXPORTED — on API 34+ (target 34 here),
+    // registering a 2-arg receiver for a system broadcast without a
+    // flag throws SecurityException. Field-observed 2026-07-11: the
+    // flag-less call was silently caught and the receiver never
+    // registered, so STATE_ON never triggered auto-reconnect.
+    private fun registerBtAdapterStateReceiver(attempt: Int) {
+        val receiver = btAdapterStateReceiver ?: return
+        try {
+            androidx.core.content.ContextCompat.registerReceiver(
+                requireNotNull(heldPluginContext) { "plugin context not attached yet" },
+                receiver,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            Log.i(TAG, "btAdapterStateReceiver registered — will auto-reconnect readers on STATE_ON")
+        } catch (t: Throwable) {
+            if (attempt < BT_RECEIVER_REGISTER_ATTEMPTS) {
+                Log.w(
+                    TAG,
+                    "registerReceiver(btAdapterStateReceiver) threw (attempt $attempt) — retrying in ${BT_RECEIVER_RETRY_MS}ms",
+                    t,
+                )
+                autoReconnectHandler.postDelayed(
+                    { registerBtAdapterStateReceiver(attempt + 1) },
+                    BT_RECEIVER_RETRY_MS,
+                )
+            } else {
+                Log.w(
+                    TAG,
+                    "registerReceiver(btAdapterStateReceiver) threw on final attempt $attempt — BT-cycle auto-reconnect disabled this session",
+                    t,
+                )
+            }
+        }
+    }
+
     // Debounce: some OEM BT stacks fire ACTION_STATE_CHANGED with
     // STATE_ON more than once as adapter init completes. Also gives
     // the profile proxies + bond cache a moment to settle before we
@@ -1324,24 +1369,7 @@ class XvMapComponent : AbstractMapComponent() {
                     autoReconnectHandler.postDelayed(autoReconnectRunnable, BT_STATE_ON_RECONNECT_DELAY_MS)
                 }
             }
-        try {
-            // Explicit RECEIVER_NOT_EXPORTED — on API 34+ (target 34
-            // here), registering a 2-arg receiver for a system
-            // broadcast without a flag throws SecurityException.
-            // Field-observed 2026-07-11: the flag-less call was
-            // silently caught by our try/catch and the receiver
-            // never registered, so STATE_ON never triggered the
-            // auto-reconnect path.
-            androidx.core.content.ContextCompat.registerReceiver(
-                pluginContext,
-                btAdapterStateReceiver!!,
-                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
-            )
-            Log.i(TAG, "btAdapterStateReceiver registered — will auto-reconnect readers on STATE_ON")
-        } catch (t: Throwable) {
-            Log.w(TAG, "registerReceiver(btAdapterStateReceiver) threw", t)
-        }
+        registerBtAdapterStateReceiver(attempt = 1)
 
         // XV-native peer discovery via CoT detail. Publishes a `<__xv>`
         // element on our self-CoT and listens for the same element on
@@ -3237,6 +3265,9 @@ class XvMapComponent : AbstractMapComponent() {
         val keys = liveProvisionedKeys()
         try {
             if (keys.isEmpty()) {
+                if (settings.sealedMeshKeyVault() != null) {
+                    Log.i(TAG, "persistMeshKeysEncrypted: no keys held — clearing the sealed vault")
+                }
                 settings.persistSealedMeshKeyVault(null)
                 lastSealedKeyFps = emptyMap()
                 return
@@ -3245,6 +3276,7 @@ class XvMapComponent : AbstractMapComponent() {
             val sealed = com.atakmap.android.xv.security.KeystoreSecretBox.seal(blob)
             settings.persistSealedMeshKeyVault(sealed)
             lastSealedKeyFps = keys.mapValues { (_, k) -> MeshVoiceManager.keyFingerprint(k) }
+            Log.i(TAG, "persistMeshKeysEncrypted: sealed ${keys.size} mesh channel key(s)")
         } catch (t: Throwable) {
             Log.w(TAG, "persistMeshKeysEncrypted failed — keys not saved this session", t)
         }
@@ -3281,7 +3313,15 @@ class XvMapComponent : AbstractMapComponent() {
     // provisionedChannels so channels stay shareable across restarts. Each
     // key pairs with its persisted config (or the name-derived default).
     private fun restoreMeshKeysEncrypted() {
-        val sealed = settings.sealedMeshKeyVault() ?: return
+        // EVERY outcome logs. The 2026-07-16 field day burned hours on
+        // "did the vault restore or not" because the null/empty paths
+        // returned silently — an empty vault was indistinguishable from
+        // an unwired feature in the logs.
+        val sealed = settings.sealedMeshKeyVault()
+        if (sealed == null) {
+            Log.i(TAG, "restoreMeshKeysEncrypted: no sealed vault (never sealed, or cleared) — nothing to restore")
+            return
+        }
         val keys =
             try {
                 val blob = com.atakmap.android.xv.security.KeystoreSecretBox.open(sealed)
@@ -3294,7 +3334,10 @@ class XvMapComponent : AbstractMapComponent() {
                 settings.persistSealedMeshKeyVault(null)
                 return
             }
-        if (keys.isEmpty()) return
+        if (keys.isEmpty()) {
+            Log.i(TAG, "restoreMeshKeysEncrypted: sealed vault opened but holds 0 keys — nothing to restore")
+            return
+        }
         keys.forEach { (name, key) ->
             meshVoiceManager?.installPresharedKey(name, key)
             val config =
@@ -5735,6 +5778,12 @@ class XvMapComponent : AbstractMapComponent() {
         // actual reachability signal instead of a worst-case wall
         // clock guess.
         private const val BT_STATE_ON_RECONNECT_DELAY_MS = 3000L
+
+        // One deferred retry for the adapter-state receiver registration
+        // (plugin-context attach race at load time); see
+        // registerBtAdapterStateReceiver.
+        private const val BT_RECEIVER_REGISTER_ATTEMPTS = 2
+        private const val BT_RECEIVER_RETRY_MS = 3000L
 
         // Persistent default for VX-compat handshake. HYBRID is the current
         // operational default: it makes XV "callable" from VX clients via

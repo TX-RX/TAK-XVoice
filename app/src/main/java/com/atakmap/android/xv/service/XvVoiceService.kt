@@ -2400,7 +2400,13 @@ class XvVoiceService : Service() {
         // foreground-KeyEvent fallback path. Older plugins built
         // against v4 without these hooks — the Sonim buttons simply
         // won't fire PTT for them, but everything else works unchanged.
-        private const val AIDL_API_VERSION = 4
+        // internal (not private): XvVoiceClient derives its expected
+        // version from this same constant, so client and service can
+        // never skew within one build — a runtime mismatch then always
+        // means a genuinely stale installed APK, which is exactly what
+        // the version probe exists to catch. (The client warned on
+        // EVERY load for months because its own copy sat at 1.)
+        internal const val AIDL_API_VERSION = 4
 
         // Channel ids for the incoming-ring + active-call CallStyle
         // notifications live in NotificationChannels.kt. The service's
