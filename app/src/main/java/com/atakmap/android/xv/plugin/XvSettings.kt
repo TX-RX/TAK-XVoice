@@ -312,6 +312,37 @@ class XvSettings(
         prefs()?.edit()?.putStringSet(PREF_KNOWN_CHANNELS, names.toSet())?.apply()
     }
 
+    // Remove a single channel from the known-channel directory (by
+    // canonical name, so a display-spelling difference still matches).
+    // "Forget" needs this: without it the directory keeps re-listing a
+    // channel the operator removed. A live server channel legitimately
+    // reappears on the next directory snapshot; an ad-hoc/offline one
+    // stays gone.
+    fun removeKnownChannel(name: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_KNOWN_CHANNELS, emptySet())
+                ?.toMutableSet()
+                ?: return
+        val before = existing.size
+        existing.removeAll { MulticastGroupDerivation.canonicalChannelName(it) == canonical }
+        if (existing.size != before) {
+            prefs()?.edit()?.putStringSet(PREF_KNOWN_CHANNELS, existing)?.apply()
+        }
+    }
+
+    // Wipe the whole known-channel directory + every per-channel
+    // multicast override — the storage half of "forget all channels".
+    // The master toggles and keys are handled by the caller.
+    fun clearKnownChannels() {
+        prefs()?.edit()?.remove(PREF_KNOWN_CHANNELS)?.apply()
+    }
+
+    fun clearAllChannelMulticastConfigs() {
+        prefs()?.edit()?.remove(PREF_CHANNEL_MULTICAST)?.apply()
+    }
+
     // Global mesh-voice (multicast) master toggle. When ON, every
     // joined Mumble channel gets an auto-derived multicast failover
     // leg (FAILOVER mode, XV-native encrypted) unless a per-channel

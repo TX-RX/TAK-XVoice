@@ -203,6 +203,32 @@ class MeshVoiceManager(
         reconcileLegs()
     }
 
+    /**
+     * Operator forgot a single channel: tear down its leg, drop any
+     * discovered sighting + cached key, and clear it as primary. A peer
+     * actively beaconing the channel can re-surface it in discovery — you
+     * can't unilaterally forget a channel someone else is still using —
+     * but the leg and stored state are gone.
+     */
+    @Synchronized
+    fun forgetChannel(channelName: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        legs.remove(canonical)?.let { runCatching { it.close() } }
+        discovered.keys.removeAll { MulticastGroupDerivation.canonicalChannelName(it) == canonical }
+        currentKeys.remove(canonical)
+        if (primaryChannel == canonical) primaryChannel = null
+    }
+
+    /** Operator cleared the whole channel list: drop every leg + discovery. */
+    @Synchronized
+    fun forgetAllChannels() {
+        legs.values.forEach { runCatching { it.close() } }
+        legs.clear()
+        discovered.clear()
+        currentKeys.clear()
+        primaryChannel = null
+    }
+
     /** Peer left (Mumble UserRemove / CoT stale-purge). Feeds key rotation. */
     @Synchronized
     fun onPeerDeparted(uid: String) {

@@ -924,6 +924,21 @@
                     android:orientation="vertical"
                     android:layout_marginTop="4dp"/>
 
+                <!-- Fast mass-clear. Long-press a single row to forget one;
+                     this clears the whole list at once. Shown only when
+                     there's something to clear (toggled in code). -->
+                <Button
+                    android:id="@+id/xv_btn_mesh_forget_all"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:layout_marginTop="4dp"
+                    android:text="Forget all"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="12sp"
+                    android:textAllCaps="false"
+                    android:background="@android:color/transparent"/>
+
                 <!-- Provision + share. A channel is provisioned by NAME
                      (the multicast group/port derive automatically — no
                      IP or port to enter); sharing hands the whole channel

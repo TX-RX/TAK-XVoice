@@ -2780,15 +2780,9 @@ class XvMapComponent : AbstractMapComponent() {
                 cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
             ): String? = saveMeshChannelInternal(name, group, port, wireFormat, cryptoPolicy)
 
-            override fun forgetMeshChannel(name: String) {
-                settings.removeChannelMulticastConfig(name)
-                val canonical =
-                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
-                        .canonicalChannelName(name)
-                provisionedChannels.remove(canonical)
-                persistMeshKeysEncrypted()
-                Log.i(TAG, "forgot mesh channel '$canonical'")
-            }
+            override fun forgetMeshChannel(name: String) = forgetMeshChannelInternal(name)
+
+            override fun forgetAllMeshChannels() = forgetAllMeshChannelsInternal()
 
             override fun wipeMeshKeys() = wipeMeshKeysInternal()
 
@@ -3313,17 +3307,63 @@ class XvMapComponent : AbstractMapComponent() {
         Log.i(TAG, "restored ${keys.size} mesh channel key(s) from sealed vault")
     }
 
-    // Panic wipe: zeroize every persisted mesh key + config and delete the
-    // Keystore wrapping key (cryptographically shredding any sealed blob
-    // that outlives this call), without a full ATAK data clear. Gated in
-    // the UI behind a double slide-to-confirm.
-    private fun wipeMeshKeysInternal() {
-        val names = synchronized(provisionedChannels) { provisionedChannels.keys.toList() }
-        names.forEach { settings.removeChannelMulticastConfig(it) }
+    // Forget one channel — and make it actually stick. Removing only the
+    // multicast config + shareable entry left the NAME behind in the
+    // known-channel directory (and possibly as the persisted primary), so
+    // meshChannelCandidates() kept re-listing it. Clear all four sources:
+    // the override, the directory entry, the primary pointer, and the live
+    // leg/discovery in the manager. A live *server* channel legitimately
+    // reappears on the next directory snapshot (resetting the snapshot
+    // cache lets that recompute); an ad-hoc/offline channel stays gone.
+    private fun forgetMeshChannelInternal(name: String) {
+        val canonical =
+            com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                .canonicalChannelName(name)
+        settings.removeChannelMulticastConfig(name)
+        settings.removeKnownChannel(name)
+        provisionedChannels.remove(canonical)
+        if (com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                .canonicalChannelName(settings.persistedPrimaryChannel()) == canonical
+        ) {
+            settings.persistPrimaryChannel("")
+        }
+        meshVoiceManager?.forgetChannel(canonical)
+        lastKnownChannelsSnapshot = null
+        persistMeshKeysEncrypted()
+        Log.i(TAG, "forgot mesh channel '$canonical'")
+    }
+
+    // Mass clear: forget every stored channel in one shot (the fast way to
+    // clear a list cluttered with ad-hoc test channels). Wipes the
+    // directory, every per-channel override, the shareable set, the
+    // primary pointer, the sealed key vault, and every live leg. Server
+    // channels re-populate from the next directory snapshot while
+    // connected; offline/ad-hoc channels stay gone.
+    private fun forgetAllMeshChannelsInternal() {
+        val count = synchronized(provisionedChannels) { provisionedChannels.size }
+        settings.clearKnownChannels()
+        settings.clearAllChannelMulticastConfigs()
+        settings.persistPrimaryChannel("")
         synchronized(provisionedChannels) { provisionedChannels.clear() }
         settings.persistSealedMeshKeyVault(null)
+        meshVoiceManager?.forgetAllChannels()
+        // Match the tick's re-seal baseline to reality (now empty) so the
+        // next sealMeshKeysIfRotated doesn't see drift and reseal — and, in
+        // the panic-wipe path, can't recreate the Keystore key we're about
+        // to delete.
+        lastSealedKeyFps = emptyMap()
+        lastKnownChannelsSnapshot = null
+        Log.i(TAG, "forgot all mesh channels (had $count shareable)")
+    }
+
+    // Panic wipe: everything forgetAll does, PLUS delete the Keystore
+    // wrapping key — cryptographically shredding any sealed blob that
+    // outlives this call — without a full ATAK data clear. Gated in the
+    // UI behind a double slide-to-confirm.
+    private fun wipeMeshKeysInternal() {
+        forgetAllMeshChannelsInternal()
         com.atakmap.android.xv.security.KeystoreSecretBox.wipe()
-        Log.i(TAG, "panic wipe: cleared ${names.size} mesh channel(s) + sealed key vault")
+        Log.i(TAG, "panic wipe: cleared all mesh channels + deleted sealed key vault")
     }
 
     // Provisioning path 3 — "configure manually" / interop. Validate the

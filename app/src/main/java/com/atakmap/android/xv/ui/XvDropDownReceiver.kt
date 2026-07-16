@@ -384,6 +384,13 @@ class XvDropDownReceiver(
         // name-derived default still works if rejoined later.
         fun forgetMeshChannel(name: String) {}
 
+        // Forget every stored channel at once (the fast way to clear a
+        // list cluttered with ad-hoc test channels): wipes the directory,
+        // overrides, keys, and live legs. Server channels re-populate from
+        // the next directory snapshot while connected; offline/ad-hoc ones
+        // stay gone.
+        fun forgetAllMeshChannels() {}
+
         // Panic wipe: zeroize every stored mesh channel key + config and
         // delete the Keystore key that seals them at rest, shredding the
         // on-disk vault without a full ATAK data clear. Destructive and
@@ -1717,11 +1724,35 @@ class XvDropDownReceiver(
             promptImportChannelPlan(v)
         }
 
+        v.findViewById<Button>(R.id.xv_btn_mesh_forget_all).setOnClickListener {
+            confirmForgetAllMeshChannels(v)
+        }
+
         v.findViewById<Button>(R.id.xv_btn_mesh_wipe).setOnClickListener {
             promptWipeMeshKeys(v)
         }
 
         refreshMeshSection(v)
+    }
+
+    // Mass-clear confirm. One tap, one dialog — the fast way to empty a
+    // list cluttered with ad-hoc test channels. A destructive-but-common
+    // action, so a single confirm (not the double-slide the key wipe uses).
+    private fun confirmForgetAllMeshChannels(section: View) {
+        val n = controller.shareableChannels().size
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Forget all channels?")
+            .setMessage(
+                "Removes every stored mesh channel and key from this device. " +
+                    "Channels that live on a connected server come back when it re-lists them; " +
+                    "offline/ad-hoc channels are gone for good.",
+            ).setPositiveButton("Forget all") { _, _ ->
+                controller.forgetAllMeshChannels()
+                meshToast(if (n > 0) "Forgot all channels." else "Cleared the channel list.")
+                refreshMeshSection(section)
+            }.setNegativeButton("Cancel", null)
+            .show()
     }
 
     // Panic wipe, gated behind a *double* slide-to-confirm so it can't
@@ -2122,6 +2153,9 @@ class XvDropDownReceiver(
         val list = v.findViewById<android.widget.LinearLayout>(R.id.xv_mesh_channel_list)
         list.removeAllViews()
         val candidates = controller.meshChannelCandidates()
+        // "Forget all" only makes sense when there's a list to clear.
+        v.findViewById<Button>(R.id.xv_btn_mesh_forget_all).visibility =
+            if (candidates.isEmpty()) View.GONE else View.VISIBLE
         if (candidates.isEmpty()) {
             list.addView(
                 TextView(pluginContext).apply {

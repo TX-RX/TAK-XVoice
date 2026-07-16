@@ -151,6 +151,33 @@ class MeshVoiceManagerTest {
         assertFalse(h.legs.getValue("ops-2").closed)
     }
 
+    @Test
+    fun `forgetChannel tears down the leg and it stays gone across a tick`() {
+        val h = Harness()
+        h.joinAndTick()
+        val leg = h.channelLeg()
+        assertTrue("ops-1" in h.manager.activeLegs())
+
+        h.manager.forgetChannel("Ops-1")
+        assertFalse("leg dropped", "ops-1" in h.manager.activeLegs())
+        assertTrue("leg closed", leg.closed)
+
+        // Primary was cleared, so reconcile must not resurrect it.
+        h.manager.tick()
+        assertFalse("stays forgotten", "ops-1" in h.manager.activeLegs())
+    }
+
+    @Test
+    fun `forgetAllChannels closes every channel leg`() {
+        val h = Harness()
+        h.joinAndTick()
+        val leg = h.channelLeg()
+
+        h.manager.forgetAllChannels()
+        assertTrue("no channel legs remain", h.manager.activeLegs().isEmpty())
+        assertTrue("leg closed", leg.closed)
+    }
+
     // ---- failover TX routing ----
 
     @Test
