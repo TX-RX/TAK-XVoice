@@ -720,6 +720,21 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `allCurrentKeys exposes every live channel key for the at-rest seal`() {
+        // Election-obtained keys on non-provisioned channels must reach
+        // the key-at-rest seal too — sealing only the provisioned set
+        // left a keyed device deaf after every restart (2026-07-16).
+        val shared = ByteArray(AeadCodec.KEY_BYTES) { 0x11 }
+        val h = Harness()
+        h.joinAndTick()
+        assertTrue(h.manager.allCurrentKeys().isEmpty())
+        h.installOurKey(shared)
+        val all = h.manager.allCurrentKeys()
+        assertEquals(setOf("ops-1"), all.keys)
+        assertTrue(shared.contentEquals(all.getValue("ops-1")))
+    }
+
+    @Test
     fun `a leg awaiting a key surfaces KEY NEEDED in the status badge`() {
         val h = Harness()
         h.joinAndTick()

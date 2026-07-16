@@ -642,6 +642,18 @@ class MeshVoiceManager(
     @Synchronized
     fun currentKeyFor(channelName: String): ByteArray? = currentKeys[MulticastGroupDerivation.canonicalChannelName(channelName)]?.copyOf()
 
+    /**
+     * Every live channel key (canonical name → defensive copy) — the
+     * key-at-rest seal must use this, not just the provisioned set: a
+     * key obtained via ELECTION on a server-derived channel never
+     * appears in the provisioned map, was therefore never sealed, and
+     * the device came up keyless (deaf) after every restart — field
+     * repro 2026-07-16, confirmed by the vault instrumentation ("no
+     * sealed vault" on a device that had been keyed all afternoon).
+     */
+    @Synchronized
+    fun allCurrentKeys(): Map<String, ByteArray> = currentKeys.mapValues { (_, k) -> k.copyOf() }
+
     // ---- operator-facing state ----
 
     /** True while this client holds the bridge relay role. */

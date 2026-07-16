@@ -3289,14 +3289,27 @@ class XvMapComponent : AbstractMapComponent() {
         }
     }
 
-    private fun liveProvisionedKeys(): Map<String, ByteArray> =
-        synchronized(provisionedChannels) {
-            provisionedChannels.entries
-                .mapNotNull { (canonical, ch) ->
-                    val key = meshVoiceManager?.currentKeyFor(canonical) ?: ch.preSharedKey
-                    key?.let { canonical to it }
-                }.toMap()
+    private fun liveProvisionedKeys(): Map<String, ByteArray> {
+        val keys =
+            synchronized(provisionedChannels) {
+                provisionedChannels.entries
+                    .mapNotNull { (canonical, ch) ->
+                        val key = meshVoiceManager?.currentKeyFor(canonical) ?: ch.preSharedKey
+                        key?.let { canonical to it }
+                    }.toMap(LinkedHashMap())
+            }
+        // Also every live key the manager holds for channels that were
+        // never provisioned (server-derived channels keyed via the
+        // election). These were previously invisible to the seal, so a
+        // device that spent all day keyed came up deaf after every
+        // restart — the 2026-07-16 field repro ("no sealed vault" on a
+        // keyed device). Restore installs them at epoch 0; the beacon
+        // epoch-adoption rule converges them to the mesh's live epoch.
+        meshVoiceManager?.allCurrentKeys()?.forEach { (canonical, key) ->
+            keys.putIfAbsent(canonical, key)
         }
+        return keys
+    }
 
     // Fingerprints of the key set at the last successful seal; null until
     // the first seal/restore attempt of the session.
@@ -3347,9 +3360,13 @@ class XvMapComponent : AbstractMapComponent() {
         }
         keys.forEach { (name, key) ->
             meshVoiceManager?.installPresharedKey(name, key)
-            val config =
-                settings.channelMulticastConfigFor(name)
-                    ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(name)
+            // Re-hydrate the shareable map ONLY for channels with a
+            // persisted config (provisioned/imported). The vault also
+            // carries election keys for server-derived channels now;
+            // those keys must survive the restart (installed above) but
+            // the channel itself was never operator-provisioned and
+            // must not appear as shareable just because we restarted.
+            val config = settings.channelMulticastConfigFor(name) ?: return@forEach
             recordShareableChannel(
                 com.atakmap.android.xv.provisioning.CommsPlan.Channel(
                     displayName = name,
