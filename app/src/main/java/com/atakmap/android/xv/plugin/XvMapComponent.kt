@@ -3523,7 +3523,17 @@ class XvMapComponent : AbstractMapComponent() {
                 serverIdentity = identity,
                 channels = channels,
             )
-        return com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeLocked(plan, passphrase)
+        // A plan with no key needs no passphrase — encode it CLEAR so the
+        // offline/QR path doesn't force the operator to invent and pass a
+        // passphrase for a config-only plan (the common share used to lock
+        // everything). Only a plan that actually carries a pre-shared key
+        // travels passphrase-locked; a blank passphrase there is refused.
+        val carriesKey = channels.any { it.preSharedKey != null }
+        return if (carriesKey) {
+            if (passphrase.isEmpty()) null else com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeLocked(plan, passphrase)
+        } else {
+            com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeClear(plan)
+        }
     }
 
     // Decode + install a carrier. Persists each channel's config,
