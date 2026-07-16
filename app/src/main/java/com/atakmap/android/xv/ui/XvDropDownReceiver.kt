@@ -587,8 +587,12 @@ class XvDropDownReceiver(
                 // mid-picker — common on a failover product), rebuild it so
                 // the operator isn't tapping a stale list. Cheap: only fires
                 // when the signature actually flips.
+                // In-call guard: showChannelPicker refuses to open during a
+                // call (toast + return), so a rebuild attempt would toast
+                // every tick for the whole call. Defer; the rebuild fires on
+                // the first tick after the call ends.
                 val slot = openPickerSlot
-                if (slot != null && channelPickerSignature() != openPickerSignature) {
+                if (slot != null && !controller.isInCall() && channelPickerSignature() != openPickerSignature) {
                     showChannelPicker(slot)
                 }
                 mainHandler.postDelayed(this, REFRESH_MS)
