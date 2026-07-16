@@ -1409,7 +1409,6 @@ class XvDropDownReceiver(
         wireSettingsTabs(v)
         wireTxRxSection(v)
         wireMeshSection(v)
-        wireChannelSelectors(v)
         wirePreferencesSection(v)
         wireBtOffBanner(v)
 
@@ -1681,9 +1680,13 @@ class XvDropDownReceiver(
             sections.forEachIndexed { i, s -> s.visibility = if (i == idx) View.VISIBLE else View.GONE }
             tabs.forEachIndexed { i, b -> b.alpha = if (i == idx) 1.0f else 0.55f }
         }
-        tabPrefs.setOnClickListener { select(0) }
-        tabTxRx.setOnClickListener { select(1) }
-        tabCalls.setOnClickListener { select(2) }
+        // Visual order is Devices | TX/RX | Server | Mesh. The XML ids
+        // (tabPrefs = Devices, tabCalls = Server) keep their historical
+        // names for on-disk back-compat — see the note above; the labels
+        // here disambiguate so the wiring isn't misread on the next edit.
+        tabPrefs.setOnClickListener { select(0) } // Devices tab
+        tabTxRx.setOnClickListener { select(1) } // TX/RX tab
+        tabCalls.setOnClickListener { select(2) } // Server tab
         tabMesh.setOnClickListener { select(3) }
         select(0)
     }
@@ -2904,18 +2907,13 @@ class XvDropDownReceiver(
         return if (proto.isNullOrBlank()) "$name — $state" else "$name ($proto) — $state"
     }
 
-    // wireChannelSelectors removed. VS1/VS2 channel selection lives on
-    // the main view's PTT cards (tap the channel name → picker overlay),
-    // not under Settings. Operator feedback (2026-05-11): "channels is
-    // still showing up in the menus and that is really more of the
-    // server config." The Server settings tab now only carries the TAK
-    // server selector + Mumble Connect/Disconnect.
-    private fun wireChannelSelectors(
-        @Suppress("UNUSED_PARAMETER") v: View,
-    ) {
-        // Intentionally empty — keep the wire-up point so showSettings()
-        // callers don't need restructuring during this transition.
-    }
+    // Channel selection lives on the main view's PTT cards (tap the
+    // channel name → picker overlay), not under Settings. Operator
+    // feedback (2026-05-11): "channels is still showing up in the menus
+    // and that is really more of the server config." The Server settings
+    // tab now only carries the TAK server selector + Mumble
+    // Connect/Disconnect. (The former no-op wireChannelSelectors() stub
+    // was removed once the transition settled.)
 
     private fun inflateMainAndShow() {
         val v = inflateMain()
