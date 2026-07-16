@@ -2950,6 +2950,7 @@ class XvMapComponent : AbstractMapComponent() {
             XvCotListener(
                 ourUid = deviceUid,
                 registry = registry,
+                onChannelShare = { signal -> handleIncomingChannelShare(signal) },
             )
         listener.start()
         presenceListener = listener
@@ -3253,6 +3254,98 @@ class XvMapComponent : AbstractMapComponent() {
             com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
                 .canonicalChannelName(ch.config.channelName)
         provisionedChannels[canonical] = ch
+    }
+
+    // ---- CoT channel sharing (the passphrase/string-free default) ----
+
+    // Teammates this device can share to: the XV presence roster
+    // (uid → callsign). The share picker offers these; empty targets on
+    // the wire means "everyone".
+    private fun shareTargetsInternal(): List<Pair<String, String>> =
+        presenceRegistry
+            ?.all()
+            ?.map { it.deviceUid to (it.callsign ?: it.deviceUid) }
+            .orEmpty()
+
+    // Broadcast a "join my channel(s)" nudge to the chosen teammates (or
+    // everyone when targetUids is empty). Carries only the channel NAME —
+    // the recipient derives the endpoint locally and the key auto-exchanges
+    // over the existing election, so no passphrase and no string.
+    private fun shareChannelsViaCot(
+        channelNames: List<String>,
+        targetUids: List<String>,
+    ): Boolean {
+        val uid = com.atakmap.android.xv.transport.mumble.MumbleAuth.deviceUid() ?: return false
+        if (channelNames.isEmpty()) return false
+        val callsign =
+            try {
+                MapView.getMapView()?.deviceCallsign
+            } catch (_: Throwable) {
+                null
+            } ?: ""
+        return com.atakmap.android.xv.provisioning.XvChannelShare.send(
+            com.atakmap.android.xv.provisioning.XvChannelShare.ShareSignal(
+                sharerUid = uid,
+                sharerCallsign = callsign,
+                targetUids = targetUids,
+                serverHost = activeMumbleHost,
+                channelNames = channelNames,
+            ),
+        )
+    }
+
+    // A teammate shared channel(s) with us — raise a Join prompt on the UI
+    // thread. Accepting records + joins each channel; the endpoint derives
+    // and (for encrypted channels) the key auto-exchanges.
+    private fun handleIncomingChannelShare(signal: com.atakmap.android.xv.provisioning.XvChannelShare.ShareSignal) {
+        val mv = heldMapView ?: return
+        mv.post {
+            val ctx = mv.context
+            val who = signal.sharerCallsign.ifBlank { "A teammate" }
+            val body =
+                buildString {
+                    append(who)
+                    append(" shared ")
+                    append(signal.channelNames.size)
+                    append(" channel(s):\n")
+                    append(signal.channelNames.joinToString("\n"))
+                    signal.serverHost?.let {
+                        append("\n\nServer: ")
+                        append(it)
+                    }
+                }
+            try {
+                android.app.AlertDialog
+                    .Builder(ctx)
+                    .setTitle("Join shared channel(s)?")
+                    .setMessage(body)
+                    .setPositiveButton("Join") { _, _ -> acceptSharedChannels(signal) }
+                    .setNegativeButton("Dismiss", null)
+                    .show()
+            } catch (t: Throwable) {
+                Log.w(TAG, "channel-share prompt threw", t)
+            }
+        }
+    }
+
+    private fun acceptSharedChannels(signal: com.atakmap.android.xv.provisioning.XvChannelShare.ShareSignal) {
+        signal.channelNames.forEach { name ->
+            val config =
+                settings.channelMulticastConfigFor(name)
+                    ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(name)
+            settings.persistChannelMulticastConfig(config)
+            signal.serverHost?.let { settings.persistChannelServer(name, it) }
+            recordShareableChannel(
+                com.atakmap.android.xv.provisioning.CommsPlan.Channel(displayName = name, config = config),
+            )
+        }
+        settings.persistMeshVoiceEnabled(true)
+        // The operator tapped Join — land on the first shared channel.
+        signal.channelNames.firstOrNull()?.let { first ->
+            settings.persistPrimaryChannel(first)
+            meshVoiceManager?.onChannelJoined(0, first)
+        }
+        Log.i(TAG, "accepted ${signal.channelNames.size} shared channel(s) from ${signal.sharerUid}")
     }
 
     // ---- encrypted-at-rest key persistence ----

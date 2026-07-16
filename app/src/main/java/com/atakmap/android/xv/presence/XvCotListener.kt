@@ -30,9 +30,18 @@ import com.atakmap.coremap.cot.event.CotEvent
 class XvCotListener(
     private val ourUid: String?,
     private val registry: XvPresenceRegistry,
+    // A teammate shared channel(s) with us via a b-x-xv-share CoT nudge.
+    // Fired only for shares addressed to us (or broadcast); the plugin
+    // raises a Join prompt. No-op by default.
+    private val onChannelShare: (com.atakmap.android.xv.provisioning.XvChannelShare.ShareSignal) -> Unit = {},
 ) {
     private val handler: CotDetailHandler =
-        object : CotDetailHandler(setOf(XvCotPublisher.DETAIL_NAME)) {
+        object : CotDetailHandler(
+            setOf(
+                XvCotPublisher.DETAIL_NAME,
+                com.atakmap.android.xv.provisioning.XvChannelShare.DETAIL_NAME,
+            ),
+        ) {
             override fun toItemMetadata(
                 item: MapItem?,
                 event: CotEvent?,
@@ -41,6 +50,7 @@ class XvCotListener(
                 if (event == null || detail == null) return CommsMapComponent.ImportResult.IGNORE
                 return when (detail.elementName) {
                     XvCotPublisher.DETAIL_NAME -> handlePresence(event, detail)
+                    com.atakmap.android.xv.provisioning.XvChannelShare.DETAIL_NAME -> handleShare(event)
                     else -> CommsMapComponent.ImportResult.IGNORE
                 }
             }
@@ -81,6 +91,19 @@ class XvCotListener(
             Log.w(TAG, "unregisterHandler threw", t)
         }
         registered = false
+    }
+
+    private fun handleShare(event: CotEvent): CommsMapComponent.ImportResult {
+        val signal =
+            try {
+                com.atakmap.android.xv.provisioning.XvChannelShare.parse(event, ourUid)
+            } catch (t: Throwable) {
+                Log.w(TAG, "channel-share parse threw", t)
+                null
+            } ?: return CommsMapComponent.ImportResult.IGNORE
+        Log.i(TAG, "channel share from ${signal.sharerUid}: ${signal.channelNames.size} channel(s)")
+        onChannelShare(signal)
+        return CommsMapComponent.ImportResult.SUCCESS
     }
 
     private fun handlePresence(
