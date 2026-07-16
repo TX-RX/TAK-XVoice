@@ -287,6 +287,7 @@ class MeshVoiceManagerTest {
     fun `healthy-server non-bridge client drops multicast voice — no double audio`() {
         val h = Harness()
         h.joinAndTick() // server healthy (mumbleUp=true), not the bridge
+        h.manager.observeMumbleHealth() // server is actively delivering
         // The failover playback gate: this client already hears everyone via
         // Mumble, so the multicast copy must NOT play — that copy is the
         // double audio the operator reported.
@@ -298,6 +299,18 @@ class MeshVoiceManagerTest {
         // so the failover copy plays cleanly.
         h.mumbleUp = false
         h.manager.onVoice("ops-1", byteArrayOf(2), "ssrc:cafebabe", seqInBurst = 1)
+        assertEquals(listOf("mcast:ops-1:ssrc:cafebabe"), h.playedRx)
+    }
+
+    @Test
+    fun `connected-but-silent server lets mesh RX through — no dead air`() {
+        val h = Harness()
+        h.joinAndTick() // mumbleUp stays true (socket connected)...
+        h.manager.observeMumbleHealth() // ...was live at t0...
+        h.now += 9_000 // ...but silent past the grace (8 s): server not delivering.
+        // The gate must NOT keep muting mesh — a serverless peer would go
+        // unheard. Connected-but-silent lifts the gate; the frame plays.
+        h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
         assertEquals(listOf("mcast:ops-1:ssrc:cafebabe"), h.playedRx)
     }
 

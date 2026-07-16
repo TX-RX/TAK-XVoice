@@ -151,6 +151,12 @@ class MeshVoiceManager(
     private var lastBeaconAtMs = Long.MIN_VALUE
     private var lastUnresolvedRelayWarnMs = Long.MIN_VALUE
 
+    // Last time we observed the server actually delivering (a voice frame
+    // or a ping-ack liveness feed) — NOT just "socket connected". The
+    // failover RX gate keys on this so a connected-but-silent server can't
+    // keep muting mesh RX; see decideVoiceRx.
+    private var lastMumbleActivityMs = Long.MIN_VALUE
+
     // Memoized fingerprint of OUR current per-channel key so the per-beacon
     // (and beacon-driven) fingerprinting doesn't re-run SHA-256 every call.
     // Keyed by channel; the identity check invalidates on key rotation,
@@ -347,6 +353,7 @@ class MeshVoiceManager(
     ): Boolean {
         val now = nowMs()
         failoverPolicy.observeMumbleRx(now)
+        lastMumbleActivityMs = now
         if (slot != 0) return true // VS2 has no mesh leg to collide with
         val canonical = deviceUidForMumbleSession(speakerSession) ?: "mumble:$speakerSession"
         // Bind this speaker's SSRC to their canonical id for every
@@ -367,7 +374,9 @@ class MeshVoiceManager(
     /** Ping acks etc. — Mumble RX health without a voice frame. */
     @Synchronized
     fun observeMumbleHealth() {
-        failoverPolicy.observeMumbleRx(nowMs())
+        val now = nowMs()
+        failoverPolicy.observeMumbleRx(now)
+        lastMumbleActivityMs = now
     }
 
     // ---- mesh leg RX (MeshLegSink) ----
@@ -429,8 +438,17 @@ class MeshVoiceManager(
         // real Mumble copy). The bridge is exempt: it must play serverless
         // peers to hear them, and relays them onward. Once the server is
         // gone (meshTxActive) nobody is gated — that is failover working.
+        //
+        // The gate keys on STABLE LIVENESS, not raw socket state: a
+        // connected-but-silent server (socket up, not delivering) must NOT
+        // keep muting mesh RX, or a serverless peer goes unheard. We require
+        // recent observed server activity (voice or ping-ack, fed ~1 Hz);
+        // the grace is comfortably longer than the ~5 s ping interval, so a
+        // healthy-but-idle server stays gated with no flap while a truly
+        // silent one lifts the gate after the grace.
         val mode = legs[channelName]?.config?.mode
-        if (mode == MulticastMode.FAILOVER && mumbleConnected() && !meshTxActive && !bridging) {
+        val serverLive = mumbleConnected() && lastMumbleActivityMs != Long.MIN_VALUE && now - lastMumbleActivityMs <= MUMBLE_LIVE_GRACE_MS
+        if (mode == MulticastMode.FAILOVER && serverLive && !meshTxActive && !bridging) {
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
         }
         val canonical = ssrcKeyToUid[speakerKey] ?: speakerKey
@@ -1246,5 +1264,13 @@ class MeshVoiceManager(
 
         /** Min spacing between "bridging an unresolved SSRC" warnings. */
         private const val UNRESOLVED_RELAY_WARN_THROTTLE_MS = 30_000L
+
+        /**
+         * How stale the last observed server activity may be before the
+         * failover RX gate treats the server as no-longer-delivering and
+         * lets mesh RX through. Longer than the ~5 s Mumble ping interval
+         * so a healthy-but-idle server stays gated without flapping.
+         */
+        private const val MUMBLE_LIVE_GRACE_MS = 8_000L
     }
 }
