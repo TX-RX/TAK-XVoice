@@ -67,9 +67,6 @@ class MulticastTransport(
     @Volatile
     private var socket: MulticastSocket? = null
 
-    @Volatile
-    private var multicastLock: WifiManager.MulticastLock? = null
-
     private var listener: TransportListener? = null
 
     @Volatile
@@ -121,9 +118,18 @@ class MulticastTransport(
 
     private fun runReceiveLoop() {
         val l = listener ?: return
+        // The multicast lock and socket are OWNED by this loop invocation
+        // and torn down through this invocation's own finally — never via
+        // a shared field. A network-swap starts a fresh loop before this
+        // one exits; if cleanup read shared state it would release the new
+        // loop's lock / null its socket (field is a global suppress toggle
+        // under setReferenceCounted(false), so a stray release kills RX for
+        // the session). Per-invocation ownership makes the overlap safe.
+        var lock: WifiManager.MulticastLock? = null
+        var sock: MulticastSocket? = null
         try {
-            acquireMulticastLock()
-            val sock = socketFactory(config.port)
+            lock = acquireMulticastLock()
+            sock = socketFactory(config.port)
             socket = sock
             val group = InetAddress.getByName(config.groupAddress)
             groupSocketAddress = InetSocketAddress(group, config.port)
@@ -203,7 +209,7 @@ class MulticastTransport(
                 l.onConnectionFailed(t)
             }
         } finally {
-            cleanup()
+            cleanup(lock, sock)
         }
     }
 
@@ -330,30 +336,34 @@ class MulticastTransport(
             }
     }
 
-    private fun cleanup() {
+    private fun cleanup(
+        lock: WifiManager.MulticastLock?,
+        sock: MulticastSocket?,
+    ) {
         try {
-            socket?.close()
+            sock?.close()
         } catch (_: Throwable) {
         }
-        socket = null
-        releaseMulticastLock()
+        // Only clear the shared field if it still points at OUR socket — a
+        // concurrent network-swap may already have published a new one, and
+        // nulling that would break TX for the fresh loop.
+        if (socket === sock) socket = null
+        releaseMulticastLock(lock)
     }
 
-    private fun acquireMulticastLock() {
-        val wifi = context?.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
-        multicastLock =
-            wifi.createMulticastLock("xv-multicast").apply {
-                setReferenceCounted(false)
-                acquire()
-            }
+    private fun acquireMulticastLock(): WifiManager.MulticastLock? {
+        val wifi = context?.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return null
+        return wifi.createMulticastLock("xv-multicast").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
     }
 
-    private fun releaseMulticastLock() {
+    private fun releaseMulticastLock(lock: WifiManager.MulticastLock?) {
         try {
-            multicastLock?.release()
+            lock?.release()
         } catch (_: Throwable) {
         }
-        multicastLock = null
     }
 
     /**
