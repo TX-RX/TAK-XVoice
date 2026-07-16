@@ -113,5 +113,11 @@ refinements are deferred:
 
 - Organize channels by originating server (multi-server): store known
   channels per-server, group the picker by server, tag ad-hoc/offline
-  channels; unify the mesh channel list with the primary channel picker;
-  restore mesh failover on VS2 (secondary slot). (Raised 2026-07-16.)
+  channels; restore mesh failover on VS2 (secondary slot). (Raised
+  2026-07-16.)
+  - *Partly done:* the main channel picker now folds offline/ad-hoc
+    channels in under an "Offline / ad-hoc" divider (deduped vs. the
+    server list, long-press to forget), so the main header is the single
+    channel list; the Mesh tab list is now the offline management view.
+    Still deferred: per-server grouping/tagging, and an "offline failover
+    armed" indicator on server-backed rows.

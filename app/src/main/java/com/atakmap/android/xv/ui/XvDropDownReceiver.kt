@@ -1075,8 +1075,79 @@ class XvDropDownReceiver(
                     },
                 )
             }
+            // Unify the lists: the offline / ad-hoc / peer channels used to
+            // live only in the Settings → Mesh tab, a second selector that
+            // confused operators. Fold them into THIS picker (primary slot
+            // only — mesh binds VS1) under a divider, so the main header is
+            // the one complete channel list. Server-backed channels are
+            // deduped out (they're already listed above).
+            appendOfflineChannels(list, slot, channels.map { it.name })
         }
         showDropDown(v, FIVE_TWELFTHS_WIDTH, FULL_HEIGHT, FULL_WIDTH, HALF_HEIGHT, this)
+    }
+
+    // Append offline/ad-hoc/peer mesh channels not already present in the
+    // server list [serverNames], as selectable rows under a small divider.
+    // Primary slot only. Long-press forgets, mirroring the Mesh tab, so all
+    // channel management is reachable from the main UI.
+    private fun appendOfflineChannels(
+        list: android.widget.LinearLayout,
+        slot: Int,
+        serverNames: List<String>,
+    ) {
+        if (slot != 0 || !controller.meshVoiceEnabled()) return
+        val serverCanon =
+            serverNames.map { MulticastGroupDerivation.canonicalChannelName(it) }.toSet()
+        val offlineOnly =
+            controller
+                .meshChannelCandidates()
+                .filter { MulticastGroupDerivation.canonicalChannelName(it) !in serverCanon }
+        if (offlineOnly.isEmpty()) return
+
+        list.addView(
+            TextView(pluginContext).apply {
+                text = "Offline / ad-hoc"
+                setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                textSize = 11f
+                setPadding(16, 20, 16, 6)
+            },
+        )
+        val active = controller.meshActiveChannelCanonical()
+        offlineOnly.forEach { name ->
+            val row =
+                buildChannelButton(
+                    label = name,
+                    isCurrent = active != null && MulticastGroupDerivation.canonicalChannelName(name) == active,
+                    participation = Participation.PARTICIPATE,
+                ) {
+                    controller.selectMeshChannel(name)
+                    mainHandler.post { inflateMainAndShow() }
+                }
+            row.setOnLongClickListener {
+                confirmForgetOfflineChannel(name, slot)
+                true
+            }
+            list.addView(row)
+        }
+    }
+
+    // Forget an offline channel from the main picker, then re-open the
+    // picker so the row disappears in place. (The Mesh tab's own forget
+    // refreshes that section instead; both call the same Controller.)
+    private fun confirmForgetOfflineChannel(
+        name: String,
+        slot: Int,
+    ) {
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Forget “$name”?")
+            .setMessage("Removes this channel's saved settings and key from this device. It won't affect anyone else.")
+            .setPositiveButton("Forget") { _, _ ->
+                controller.forgetMeshChannel(name)
+                meshToast("Forgot “$name”.")
+                mainHandler.post { showChannelPicker(slot) }
+            }.setNegativeButton("Cancel", null)
+            .show()
     }
 
     // Channel Members picker — historical doc block from when this was

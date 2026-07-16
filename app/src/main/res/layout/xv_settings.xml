@@ -906,16 +906,26 @@
 
                 <!-- Channels known offline (last-joined + peer-advertised).
                      Tapping one binds the mesh leg to it. Populated in
-                     wireMeshSection. -->
+                     wireMeshSection. These same channels also appear in the
+                     main channel selector now — this list is the offline
+                     management view (long-press or "Forget all" to prune). -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Channels"
+                    android:text="Offline channels"
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:textAllCaps="true"
                     android:letterSpacing="0.1"
                     android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Also shown in the main channel selector. Long-press a channel to forget it."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="2dp"/>
 
                 <LinearLayout
                     android:id="@+id/xv_mesh_channel_list"
