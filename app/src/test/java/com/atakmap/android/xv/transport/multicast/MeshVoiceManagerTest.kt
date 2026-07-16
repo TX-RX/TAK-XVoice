@@ -76,6 +76,7 @@ class MeshVoiceManagerTest {
         val certFps = mutableMapOf<String, String>()
         val callsigns = mutableMapOf<String, String>() // uid → presence callsign
         val mumbleNames = mutableMapOf<Int, String>() // session → roster username
+        val warnings = mutableListOf<String>()
 
         val manager =
             MeshVoiceManager(
@@ -100,6 +101,7 @@ class MeshVoiceManagerTest {
                 ourCertDer = { byteArrayOf(1, 2, 3) },
                 unwrapKey = { it.reversedArray() },
                 wrapKeyFor = { _, key -> key.reversedArray() },
+                logWarn = { warnings += it },
                 nowMs = { now },
             )
 
@@ -329,6 +331,23 @@ class MeshVoiceManagerTest {
         h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
         h.manager.onVoice("ops-1", byteArrayOf(2), "ssrc:cafebabe", seqInBurst = 1)
         assertEquals(listOf(true, false), h.relayedToMumble)
+    }
+
+    @Test
+    fun `bridging an unresolved ssrc still relays but warns (rate-limited)`() {
+        val h = Harness()
+        h.makeUsBridge()
+        // Unresolved SSRC (no uid mapping): the relay MUST still fire (a
+        // legitimate offline mesh-only peer), and a warning is surfaced.
+        h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
+        assertEquals(listOf(true), h.relayedToMumble)
+        assertTrue("unresolved relay should warn", h.warnings.any { it.contains("unresolved") })
+
+        // A second unresolved relay within the throttle window doesn't
+        // re-warn — the log must not spam at frame rate.
+        val warnCount = h.warnings.size
+        h.manager.onVoice("ops-1", byteArrayOf(2), "ssrc:cafebabe", seqInBurst = 1)
+        assertEquals(warnCount, h.warnings.size)
     }
 
     @Test

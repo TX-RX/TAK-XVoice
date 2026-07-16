@@ -3068,6 +3068,7 @@ class XvMapComponent : AbstractMapComponent() {
                         null
                     }
                 },
+                logWarn = { msg -> Log.w(TAG, msg) },
             )
         meshVoiceManager = manager
         // Re-install persisted per-channel keys (encrypted at rest) before

@@ -83,6 +83,8 @@ class MeshVoiceManager(
     private val unwrapKey: (wrapped: ByteArray) -> ByteArray? = { null },
     /** Wrap a channel key to a recipient cert (DER). Null on failure. */
     private val wrapKeyFor: (recipientCertDer: ByteArray, key: ByteArray) -> ByteArray? = { _, _ -> null },
+    /** Warn sink for rare operator-relevant anomalies. No-op by default (pure-JVM tests). */
+    private val logWarn: (String) -> Unit = {},
     private val generateKey: () -> ByteArray = { AeadCodec.generateChannelKey() },
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val failoverPolicy: FailoverPolicy = FailoverPolicy(),
@@ -147,6 +149,24 @@ class MeshVoiceManager(
 
     private var meshTxActive = false
     private var lastBeaconAtMs = Long.MIN_VALUE
+    private var lastUnresolvedRelayWarnMs = Long.MIN_VALUE
+
+    // Memoized fingerprint of OUR current per-channel key so the per-beacon
+    // (and beacon-driven) fingerprinting doesn't re-run SHA-256 every call.
+    // Keyed by channel; the identity check invalidates on key rotation,
+    // which installs a fresh ByteArray into currentKeys.
+    private val currentKeyFpCache = HashMap<String, Pair<ByteArray, Int>>()
+
+    private fun ourKeyFingerprint(
+        channel: String,
+        key: ByteArray,
+    ): Int {
+        val hit = currentKeyFpCache[channel]
+        if (hit != null && hit.first === key) return hit.second
+        val fp = keyFingerprint(key)
+        currentKeyFpCache[channel] = key to fp
+        return fp
+    }
 
     // Bounded, access-ordered so the hottest speakers survive: every
     // Mumble RX frame and every peer-refresh stamps an entry here, and on
@@ -228,6 +248,7 @@ class MeshVoiceManager(
         legs.remove(canonical)?.let { runCatching { it.close() } }
         discovered.keys.removeAll { MulticastGroupDerivation.canonicalChannelName(it) == canonical }
         currentKeys.remove(canonical)
+        currentKeyFpCache.remove(canonical)
         if (primaryChannel == canonical) primaryChannel = null
     }
 
@@ -238,6 +259,7 @@ class MeshVoiceManager(
         legs.clear()
         discovered.clear()
         currentKeys.clear()
+        currentKeyFpCache.clear()
         primaryChannel = null
     }
 
@@ -408,6 +430,22 @@ class MeshVoiceManager(
         val relay = bridging && canonical != ourUid && !serverOriginated && !uidMumbleConnected(canonical)
         var relayBurstStart = false
         if (relay) {
+            // A speaker key still in raw "ssrc:" form means we never
+            // resolved it to a uid. That's LEGITIMATE for a fully-offline
+            // mesh-only peer we bridge (no CoT presence for them), so we do
+            // NOT gate the relay on it — but it can also be a misconfigured
+            // or rogue sender, so surface a rate-limited warning for the
+            // operator/logs rather than relaying silently.
+            if (canonical.startsWith("ssrc:") &&
+                // Explicit sentinel check — (now - MIN_VALUE) overflows.
+                (lastUnresolvedRelayWarnMs == Long.MIN_VALUE || now - lastUnresolvedRelayWarnMs > UNRESOLVED_RELAY_WARN_THROTTLE_MS)
+            ) {
+                lastUnresolvedRelayWarnMs = now
+                logWarn(
+                    "bridging an unresolved mesh speaker ($canonical) onto Mumble on '$channelName' — " +
+                        "no presence for this SSRC (offline mesh-only peer, or a misconfigured/rogue sender)",
+                )
+            }
             // Burst tracking keys on the WIRE identity (ssrc), not the
             // canonical: refreshSsrcMap can learn the uid mapping on a
             // tick mid-burst, flipping the canonical and minting a
@@ -861,7 +899,7 @@ class MeshVoiceManager(
         val ourEpoch = registry.currentEpoch()
         if (ourEpoch == ChannelKeyRegistry.NO_EPOCH || ch.keyEpoch <= ourEpoch) return
         val key = currentKeys[ch.name] ?: return
-        if (ch.keyFp == 0 || ch.keyFp != keyFingerprint(key)) return
+        if (ch.keyFp == 0 || ch.keyFp != ourKeyFingerprint(ch.name, key)) return
         registry.install(ch.keyEpoch, key)
     }
 
@@ -883,7 +921,7 @@ class MeshVoiceManager(
     ) {
         val ourEpoch = registryFor(ch.name).currentEpoch()
         if (ourEpoch == ChannelKeyRegistry.NO_EPOCH || ch.keyEpoch != ourEpoch) return
-        val ourFp = currentKeys[ch.name]?.let { keyFingerprint(it) } ?: 0
+        val ourFp = currentKeys[ch.name]?.let { ourKeyFingerprint(ch.name, it) } ?: 0
         if (ourFp == 0 || ch.keyFp == 0 || ch.keyFp == ourFp) return
         if (ourUid > peerUid) return // the lower uid rotates; we wait for their new epoch
         // No MIN_VALUE sentinel here: (now - MIN_VALUE) overflows
@@ -1005,7 +1043,7 @@ class MeshVoiceManager(
                     group = leg.endpoint.groupAddress,
                     port = leg.endpoint.port,
                     keyEpoch = registryFor(name).currentEpoch(),
-                    keyFp = currentKeys[name]?.let { keyFingerprint(it) } ?: 0,
+                    keyFp = currentKeys[name]?.let { ourKeyFingerprint(name, it) } ?: 0,
                 )
             }
         val beacon =
@@ -1188,5 +1226,8 @@ class MeshVoiceManager(
          * longer than any real inter-burst gap.
          */
         private const val RELAY_IDLE_TTL_MS = 60_000L
+
+        /** Min spacing between "bridging an unresolved SSRC" warnings. */
+        private const val UNRESOLVED_RELAY_WARN_THROTTLE_MS = 30_000L
     }
 }
