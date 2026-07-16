@@ -2721,7 +2721,14 @@ class XvMapComponent : AbstractMapComponent() {
                     ?.let { add(it) }
                 settings.persistedKnownChannels().forEach { add(it) }
                 meshVoiceManager?.discoveredChannels()?.forEach { add(it.name) }
-                return out.values.toList()
+                // Sort alphabetically (case-insensitive) with Lobby pinned
+                // to the top — matches the live Mumble picker's ordering so
+                // the offline list reads the same as the online one.
+                val lobby = com.atakmap.android.xv.transport.MumbleTransport.LOBBY_DISPLAY_NAME
+                return out.values.sortedWith(
+                    compareByDescending<String> { it.equals(lobby, ignoreCase = true) }
+                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it },
+                )
             }
 
             override fun meshActiveChannelCanonical(): String? =
