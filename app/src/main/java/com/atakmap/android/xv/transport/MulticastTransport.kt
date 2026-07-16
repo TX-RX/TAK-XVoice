@@ -250,6 +250,10 @@ class MulticastTransport(
     }
 
     private fun sendOnTxThread(datagram: ByteArray) {
+        // Skip once torn down: disconnect() flips this false before closing
+        // the socket, so a task still draining the executor doesn't send on
+        // a closed socket and bump txSendFailed with a phantom failure.
+        if (!connected) return
         val sock = socket ?: return
         val target = groupSocketAddress ?: return
         try {
@@ -283,7 +287,11 @@ class MulticastTransport(
 
     override fun disconnect() {
         connected = false
-        txExecutor.shutdown()
+        // shutdownNow (not shutdown): drop queued sends rather than let
+        // them run against the socket we're about to close. Combined with
+        // the connected-guard in sendOnTxThread, this keeps teardown from
+        // dirtying txSendFailed with phantom failures.
+        txExecutor.shutdownNow()
         socket?.close()
         receiveThread?.interrupt()
         receiveThread = null
