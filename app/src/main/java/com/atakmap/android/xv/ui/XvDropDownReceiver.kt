@@ -555,6 +555,13 @@ class XvDropDownReceiver(
     @Volatile
     private var mainView: View? = null
 
+    // Open channel-picker tracking (#10): which slot's picker is on screen
+    // (null = none) and a signature of the channel set it was built from,
+    // so the refresh loop can re-populate it when Mumble drops/reconnects
+    // mid-picker instead of leaving a stale list the operator taps into.
+    private var openPickerSlot: Int? = null
+    private var openPickerSignature: Int = 0
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
@@ -575,9 +582,28 @@ class XvDropDownReceiver(
         object : Runnable {
             override fun run() {
                 refreshMain()
+                // Keep an open channel picker current: if the channel set
+                // changed since it was built (Mumble dropped or reconnected
+                // mid-picker — common on a failover product), rebuild it so
+                // the operator isn't tapping a stale list. Cheap: only fires
+                // when the signature actually flips.
+                val slot = openPickerSlot
+                if (slot != null && channelPickerSignature() != openPickerSignature) {
+                    showChannelPicker(slot)
+                }
                 mainHandler.postDelayed(this, REFRESH_MS)
             }
         }
+
+    // Signature of everything the channel picker renders, so a change
+    // (server channels appearing/disappearing on drop/reconnect, or an
+    // offline/mesh channel added) is detectable without diffing views.
+    private fun channelPickerSignature(): Int {
+        var h = controller.availableChannels().joinToString(" ") { it.name }.hashCode()
+        h = 31 * h + (controller.connectedTakHost()?.hashCode() ?: 0)
+        h = 31 * h + controller.meshChannelCandidates().hashCode()
+        return h
+    }
 
     fun show() {
         mainHandler.post {
@@ -604,6 +630,7 @@ class XvDropDownReceiver(
     override fun disposeImpl() {
         stopRefreshLoop()
         mainView = null
+        openPickerSlot = null
     }
 
     override fun onReceive(
@@ -637,6 +664,8 @@ class XvDropDownReceiver(
     }
 
     private fun inflateMain(): View {
+        // Any path that builds the main view means no picker is on screen.
+        openPickerSlot = null
         val inflater = LayoutInflater.from(pluginContext)
         val v = inflater.inflate(R.layout.xv_main, null)
         v.findViewById<Button>(R.id.xv_btn_settings).setOnClickListener { showSettings() }
@@ -1083,6 +1112,12 @@ class XvDropDownReceiver(
             // deduped out (they're already listed above).
             appendOfflineChannels(list, slot, channels.map { it.name })
         }
+        // Track this picker so the refresh loop can rebuild it on a
+        // mid-picker connection change (#10). Snapshot the signature that
+        // matches what we just rendered, so we only rebuild on a real
+        // change. Cleared in inflateMainAndShow (Back / selection).
+        openPickerSlot = slot
+        openPickerSignature = channelPickerSignature()
         showDropDown(v, FIVE_TWELFTHS_WIDTH, FULL_HEIGHT, FULL_WIDTH, HALF_HEIGHT, this)
     }
 
@@ -2916,7 +2951,24 @@ class XvDropDownReceiver(
     // was removed once the transition settled.)
 
     private fun inflateMainAndShow() {
-        val v = inflateMain()
+        // Returning to main (Back from any overlay) clears any open-picker
+        // tracking so the refresh loop stops watching it. See #10.
+        openPickerSlot = null
+        // Reuse the cached main view instead of re-inflating on every Back.
+        // The main view's state is 100% controller-derived (no local
+        // mutable UI state worth preserving), so a repaint via refreshMain
+        // is equivalent to a fresh inflate — minus the layout inflate +
+        // listener re-wiring that dropped a frame on mid-tier rugged
+        // hardware. Fresh inflate only when there's no cached view (first
+        // show, or after disposeImpl nulled it).
+        val cached = mainView
+        val v =
+            if (cached != null) {
+                refreshMain()
+                cached
+            } else {
+                inflateMain()
+            }
         showDropDown(v, FIVE_TWELFTHS_WIDTH, FULL_HEIGHT, FULL_WIDTH, HALF_HEIGHT, this)
         startRefreshLoop()
     }
