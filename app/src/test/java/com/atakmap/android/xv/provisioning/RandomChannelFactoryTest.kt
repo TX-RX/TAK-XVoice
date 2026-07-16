@@ -12,7 +12,12 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric supplies a real org.json — the mockable android.jar stubs
+// return defaults, which silently zeroes the comms-plan schema version.
+@RunWith(RobolectricTestRunner::class)
 class RandomChannelFactoryTest {
     @Test
     fun `generates a valid named channel with a 32-byte key`() {

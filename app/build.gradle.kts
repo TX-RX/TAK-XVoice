@@ -273,9 +273,9 @@ dependencies {
     // zxing isn't on the runtime classpath fails soft, not hard.
     compileOnly(libs.zxing.core)
     // Also visible to the unit suite so QrCarrierTest can round-trip a
-    // real QR (encode → decode) on the JVM.
+    // real QR (encode → decode) on the JVM. Core only — zxing-javase is
+    // AWT-based and java.awt isn't on this source set's boot classpath.
     testImplementation(libs.zxing.core)
-    testImplementation("com.google.zxing:javase:3.5.3")
 
     testImplementation(libs.junit)
     testImplementation(libs.mockk)

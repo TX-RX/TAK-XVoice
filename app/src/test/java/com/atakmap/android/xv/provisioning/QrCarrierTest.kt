@@ -4,19 +4,35 @@ import com.atakmap.android.xv.transport.multicast.AeadCodec
 import com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.MultiFormatReader
-import com.google.zxing.client.j2se.BufferedImageLuminanceSource
-import com.google.zxing.client.j2se.MatrixToImageWriter
+import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric supplies a real org.json — the mockable android.jar stubs
+// return defaults, which silently zeroes the comms-plan schema version.
+@RunWith(RobolectricTestRunner::class)
 class QrCarrierTest {
+    // Round-trips through zxing-core only: BitMatrix → ARGB pixels →
+    // RGBLuminanceSource → decode. No zxing-javase / java.awt — the
+    // Android unit-test compilation puts android.jar on the boot
+    // classpath, which has no java.awt, so an AWT-based round-trip
+    // does not even compile in this source set.
     private fun decode(text: String): String {
         val matrix = QrCarrier.encode(text, sizePx = 900)
-        val image = MatrixToImageWriter.toBufferedImage(matrix)
-        val source = BufferedImageLuminanceSource(image)
+        val w = matrix.width
+        val h = matrix.height
+        val pixels = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                pixels[y * w + x] = if (matrix.get(x, y)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+            }
+        }
+        val source = RGBLuminanceSource(w, h, pixels)
         val bitmap = BinaryBitmap(HybridBinarizer(source))
         return MultiFormatReader().decode(bitmap).text
     }
