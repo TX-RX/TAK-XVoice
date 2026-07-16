@@ -147,7 +147,19 @@ class MeshVoiceManager(
 
     private var meshTxActive = false
     private var lastBeaconAtMs = Long.MIN_VALUE
-    private val ssrcKeyToUid = HashMap<String, String>()
+
+    // Bounded, access-ordered so the hottest speakers survive: every
+    // Mumble RX frame and every peer-refresh stamps an entry here, and on
+    // a long mission with peer churn a plain HashMap grows without bound
+    // (synthetic "mumble:<session>" keys are never covered by a uid-based
+    // departure, so departure-eviction alone can't bound it). The LRU cap
+    // keeps it to any realistic team size regardless of churn. The third
+    // ctor arg (accessOrder=true) makes a get() count as use, so the
+    // hottest speakers are the last evicted.
+    private val ssrcKeyToUid =
+        object : LinkedHashMap<String, String>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > MAX_SSRC_ENTRIES
+        }
 
     // Burst-gap tracking for the two relay directions. Server→mesh keys
     // on the canonical speaker (session-derived, stable). Mesh→server
@@ -233,6 +245,14 @@ class MeshVoiceManager(
     @Synchronized
     fun onPeerDeparted(uid: String) {
         bridgeElection.observePeerDeparted(uid)
+        // Evict this peer's long-lived state so a multi-hour mission with
+        // 40-peer churn doesn't accumulate stale entries: peerCerts holds
+        // 1-2 KB of DER each, pendingOffers dangles if the peer left before
+        // its cert arrived, and the SSRC map keeps a dead mapping. (The
+        // SSRC map also self-bounds via LRU for the synthetic keys.)
+        peerCerts.remove(uid)
+        pendingOffers.remove(uid)
+        ssrcKeyToUid.remove("ssrc:%08x".format(RtpFraming.fnv1aSsrc(uid)))
         legs.forEach { (channel, leg) ->
             val election = elections[channel] ?: return@forEach
             if (election.observePeerDeparted(uid)) {
@@ -1012,8 +1032,17 @@ class MeshVoiceManager(
         leg.sendRelayOpus(canonicalSpeaker, opus, burstStart)
     }
 
+    // Snapshot of the peer set the SSRC map was last built from, so the
+    // per-tick refresh is a no-op unless membership actually changed —
+    // the mapping is pure (uid → derived ssrc key), so re-deriving it for
+    // an unchanged set every second is wasted work under the tick monitor.
+    private var lastSsrcPeerSet: Set<String> = emptySet()
+
     private fun refreshSsrcMap() {
-        knownPeerUids().forEach { uid ->
+        val peers = knownPeerUids().toSet()
+        if (peers == lastSsrcPeerSet) return
+        lastSsrcPeerSet = peers
+        peers.forEach { uid ->
             val key = "ssrc:%08x".format(RtpFraming.fnv1aSsrc(uid))
             ssrcKeyToUid[key] = uid
         }
@@ -1127,5 +1156,12 @@ class MeshVoiceManager(
 
         /** Sanity cap on the bridge-announced name directory. */
         private const val MAX_ANNOUNCED_NAMES = 256
+
+        /**
+         * LRU cap on the SSRC→uid map. Covers any realistic team size
+         * with headroom; bounds the synthetic "mumble:<session>" keys
+         * that no uid-based departure eviction can reach.
+         */
+        private const val MAX_SSRC_ENTRIES = 64
     }
 }

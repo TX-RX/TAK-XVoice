@@ -394,6 +394,30 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `onPeerDeparted drops the peer's ssrc mapping so stale frames don't resolve`() {
+        val h = Harness()
+        h.joinAndTick()
+        h.peerUids += "uid-zzz"
+        h.callsigns["uid-zzz"] = "Bravo-2"
+        h.now += 1_000
+        h.manager.tick() // maps ssrc(uid-zzz) -> uid-zzz
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKeyOf("uid-zzz"), seqInBurst = 0)
+        assertEquals(listOf("Bravo-2"), h.manager.meshActiveSpeakers())
+
+        // Peer leaves: presence drops it and departure fires the eviction.
+        h.peerUids.remove("uid-zzz")
+        h.callsigns.remove("uid-zzz")
+        h.manager.onPeerDeparted("uid-zzz")
+
+        // A late frame from the departed peer no longer resolves to Bravo-2
+        // (the stale SSRC→uid mapping is gone). Advance past TALKING_TTL_MS
+        // so the earlier talker ages out of the list first.
+        h.now += 1_000
+        h.manager.onVoice("ops-1", byteArrayOf(2), ssrcKeyOf("uid-zzz"), seqInBurst = 0)
+        assertFalse("departed peer's stale mapping must be evicted", h.manager.meshActiveSpeakers().contains("Bravo-2"))
+    }
+
+    @Test
     fun `mesh talkers fall back to beacon callsigns when presence has none`() {
         val h = Harness()
         h.joinAndTick()
