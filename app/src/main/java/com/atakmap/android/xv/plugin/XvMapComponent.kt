@@ -573,6 +573,11 @@ class XvMapComponent : AbstractMapComponent() {
                 } catch (t: Throwable) {
                     Log.w(TAG, "channel-directory snapshot threw", t)
                 }
+                try {
+                    sealMeshKeysIfRotated()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "key vault reseal threw", t)
+                }
                 meshTickHandler.postDelayed(this, MESH_TICK_MS)
             }
         }
@@ -3210,23 +3215,51 @@ class XvMapComponent : AbstractMapComponent() {
     // never plaintext, never JSON. Best-effort: a Keystore failure logs
     // and leaves the channel usable this session, just not persisted.
     private fun persistMeshKeysEncrypted() {
-        val keys =
-            synchronized(provisionedChannels) {
-                provisionedChannels.entries
-                    .mapNotNull { (canonical, ch) -> ch.preSharedKey?.let { canonical to it } }
-                    .toMap()
-            }
+        // Seal the LIVE key for each provisioned channel, not the
+        // provisioning-time snapshot: the key election may have rotated
+        // since, and restoring stale bytes re-creates the deaf-until-
+        // rekeyed state this vault exists to prevent (same defect class
+        // as the plan-export fix, field repro 2026-07-16).
+        val keys = liveProvisionedKeys()
         try {
             if (keys.isEmpty()) {
                 settings.persistSealedMeshKeyVault(null)
+                lastSealedKeyFps = emptyMap()
                 return
             }
             val blob = com.atakmap.android.xv.transport.multicast.MeshKeyVault.serialize(keys)
             val sealed = com.atakmap.android.xv.security.KeystoreSecretBox.seal(blob)
             settings.persistSealedMeshKeyVault(sealed)
+            lastSealedKeyFps = keys.mapValues { (_, k) -> MeshVoiceManager.keyFingerprint(k) }
         } catch (t: Throwable) {
             Log.w(TAG, "persistMeshKeysEncrypted failed — keys not saved this session", t)
         }
+    }
+
+    private fun liveProvisionedKeys(): Map<String, ByteArray> =
+        synchronized(provisionedChannels) {
+            provisionedChannels.entries
+                .mapNotNull { (canonical, ch) ->
+                    val key = meshVoiceManager?.currentKeyFor(canonical) ?: ch.preSharedKey
+                    key?.let { canonical to it }
+                }.toMap()
+        }
+
+    // Fingerprints of the key set at the last successful seal; null until
+    // the first seal/restore attempt of the session.
+    private var lastSealedKeyFps: Map<String, Int>? = null
+
+    // Sealing happens on provisioning EVENTS (create/import/forget), but
+    // keys also change without one: the election rotates on conflicts and
+    // the epoch-adoption rule re-labels. Driven from the 1 Hz mesh tick —
+    // compare fingerprints and re-seal only on drift, so the Keystore op
+    // runs on actual rotations, not every second.
+    private fun sealMeshKeysIfRotated() {
+        val fps = liveProvisionedKeys().mapValues { (_, k) -> MeshVoiceManager.keyFingerprint(k) }
+        // Null baseline = nothing sealed yet this session; seal once so a
+        // rotation in the restore→first-tick window can't slip through
+        // (one redundant Keystore op per session at worst).
+        if (fps != lastSealedKeyFps) persistMeshKeysEncrypted()
     }
 
     // Restore persisted per-channel keys at mesh startup: open the sealed
