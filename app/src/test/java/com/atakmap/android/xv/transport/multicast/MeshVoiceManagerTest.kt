@@ -21,6 +21,7 @@ class MeshVoiceManagerTest {
         val relayed = mutableListOf<Pair<String, Boolean>>() // speakerUid → burstStart
         var bursts = 0
         var closed = false
+        var relayStateCleared = false
 
         override val encryptedNow: Boolean
             get() = config.cryptoPolicy != CryptoPolicy.CLEARTEXT && registry.hasKey()
@@ -47,6 +48,10 @@ class MeshVoiceManagerTest {
             burstStart: Boolean,
         ) {
             relayed += speakerUid to burstStart
+        }
+
+        override fun clearRelayState() {
+            relayStateCleared = true
         }
 
         override fun close() {
@@ -324,6 +329,33 @@ class MeshVoiceManagerTest {
         h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
         h.manager.onVoice("ops-1", byteArrayOf(2), "ssrc:cafebabe", seqInBurst = 1)
         assertEquals(listOf(true, false), h.relayedToMumble)
+    }
+
+    @Test
+    fun `losing the bridge role sheds per-leg relay state`() {
+        val h = Harness()
+        h.makeUsBridge()
+        assertTrue(h.manager.isBridging())
+        val leg = h.channelLeg()
+
+        // A lower connected uid appears via beacon → we defer, losing the
+        // bridge role, and must drop the per-speaker relay codecs so they
+        // don't linger until a possible re-acquire.
+        h.manager.onControl(
+            "ops-1",
+            ControlPacket.Message.PeerBeacon(
+                uid = "uid-aaa",
+                callsign = "Bravo-2",
+                mumbleConnected = true,
+                bridging = false,
+                channels = emptyList(),
+            ),
+            sourceHost = "198.51.100.9",
+        )
+        h.now += 1_000
+        h.manager.tick()
+        assertFalse(h.manager.isBridging())
+        assertTrue("relay state shed on bridge-role loss", leg.relayStateCleared)
     }
 
     @Test

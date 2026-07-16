@@ -500,7 +500,17 @@ class MeshVoiceManager(
 
         // Bridge election (primary channel scope). CoT presence feeds
         // arrive via observePeerConnectivity; beacons via handleBeacon.
+        val wasBridging = bridging
         bridging = legs.isNotEmpty() && bridgeElection.evaluate(now, mumbleConnected())
+        if (wasBridging && !bridging) {
+            // Lost the bridge role: shed all per-speaker relay state so a
+            // later re-acquire starts clean and codecs/timestamps for
+            // speakers we'll never relay again don't linger.
+            legs.values.forEach { runCatching { it.clearRelayState() } }
+            rendezvousLeg?.let { runCatching { it.clearRelayState() } }
+            relayLastFrameMs.clear()
+            relayToServerLastMs.clear()
+        }
 
         // Discovery + election beacons.
         if (lastBeaconAtMs == Long.MIN_VALUE || now - lastBeaconAtMs >= BEACON_INTERVAL_MS) {
@@ -510,6 +520,11 @@ class MeshVoiceManager(
 
         deduper.prune(now)
         pruneDiscovered(now)
+        // Idle-prune the relay burst-gap maps: a speaker unheard for the
+        // TTL can drop its bookkeeping regardless of bridge-role changes
+        // (belt-and-suspenders for a very long single bridge session).
+        relayLastFrameMs.entries.removeAll { now - it.value > RELAY_IDLE_TTL_MS }
+        relayToServerLastMs.entries.removeAll { now - it.value > RELAY_IDLE_TTL_MS }
     }
 
     /**
@@ -652,6 +667,8 @@ class MeshVoiceManager(
         rendezvousLeg = null
         deduper.reset()
         bridgeElection.reset()
+        relayLastFrameMs.clear()
+        relayToServerLastMs.clear()
         if (meshTxActive) {
             meshTxActive = false
             onMeshTxStateChanged(false)
@@ -1163,5 +1180,13 @@ class MeshVoiceManager(
          * that no uid-based departure eviction can reach.
          */
         private const val MAX_SSRC_ENTRIES = 64
+
+        /**
+         * A relay burst-gap entry unused for this long is pruned. Only
+         * gates the burst-start heuristic, so an over-eager prune at
+         * worst marks one extra burst boundary — cheap. Comfortably
+         * longer than any real inter-burst gap.
+         */
+        private const val RELAY_IDLE_TTL_MS = 60_000L
     }
 }

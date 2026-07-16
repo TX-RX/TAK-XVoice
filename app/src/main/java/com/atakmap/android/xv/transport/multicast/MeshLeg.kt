@@ -62,6 +62,14 @@ interface MeshLeg {
      */
     fun notifyNetworkSwap() {}
 
+    /**
+     * This device lost the bridge role: drop all per-speaker relay
+     * state (codecs, relayed-SSRC bookkeeping) so a later re-acquire
+     * starts clean and idle entries don't accumulate across role
+     * transitions. Default no-op for test fakes / legs that don't relay.
+     */
+    fun clearRelayState() {}
+
     /** Tear the leg down. Idempotent. */
     fun close()
 }

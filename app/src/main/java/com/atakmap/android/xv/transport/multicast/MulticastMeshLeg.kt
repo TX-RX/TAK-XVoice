@@ -158,6 +158,16 @@ class MulticastMeshLeg(
     /** Network handoff nudge — forwards to the transport's swap path. */
     override fun notifyNetworkSwap() = transport.notifyNetworkSwap()
 
+    // Bridge-role loss: drop per-speaker relay state without tearing the
+    // leg down. relayCodecs otherwise allocates one codec per unique
+    // relayed speaker with no eviction until close(), so a device that
+    // bridges, yields, and re-acquires the role across a long session
+    // accumulates codecs for every speaker it ever relayed.
+    override fun clearRelayState() {
+        relayCodecs.clear()
+        relayedSpeakerLastMs.clear()
+    }
+
     override fun close() {
         relayCodecs.clear()
         relayedSpeakerLastMs.clear()
