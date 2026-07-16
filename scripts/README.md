@@ -84,6 +84,32 @@ Config can add patterns, never remove them. Put anything operator-specific — y
 
 Output goes to `build/tpp/`. `build/` is gitignored, so nothing accidentally lands in a commit — but it also gets wiped by `./gradlew clean`. If a submission spans days, copy the zips somewhere outside `build/` before running anything that could clean.
 
+## `pull-field-logs.ps1` — pull on-device diagnostic logs and scrub them
+
+Pulls the plugin's on-device logs (`DiagnosticLogger` writes them to the
+app-scoped `.../files/xv-logs/xv-YYYY-MM-DD.log`, `adb pull`-able without
+root) off every authorized device, then writes a **scrubbed** copy safe to
+hand to a reviewer.
+
+```powershell
+.\scripts\pull-field-logs.ps1                 # every authorized device
+.\scripts\pull-field-logs.ps1 -Serial <ID>    # single device
+.\scripts\pull-field-logs.ps1 -KeepRaw        # keep the un-scrubbed pull too
+```
+
+Both the raw pull and the scrubbed bundle land under the gitignored
+`logs/` directory — **never commit either** (CLAUDE.md; no `git add -f`).
+Scrubbing redacts Bluetooth MACs (first/last octet kept, mirroring
+`MacRedact.kt`), IPv4/IPv6 addresses, GPS lat,lon pairs, and your
+operator-specific strings from `config.forbiddenPatterns` (real TAK
+hostnames, callsigns, unit names). A final gate re-scans the scrubbed
+output and **fails with a non-zero exit** if any raw MAC, IPv4, or operator
+pattern survived — so a partial scrub can't be handed off. By default the
+raw pull is deleted after a clean scrub; `-KeepRaw` retains it (marked
+un-shareable). It over-redacts by design: 4-part version quads (an ATAK
+`5.7.0.10`) are masked as `[IPv4]` — the commit SHA in the log identifies
+the build.
+
 ## `lib/Read-Config.ps1`
 
 Shared config loader. Dot-source it (`. (Join-Path $repoRoot "scripts/lib/Read-Config.ps1")`) and call `Read-ScriptConfig -RepoRoot $repoRoot` to get a hashtable. Missing keys fall back to defaults. See the file for the full default list.
