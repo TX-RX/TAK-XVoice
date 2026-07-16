@@ -63,6 +63,35 @@ is a thin adapter, but all need on-device validation.
 - **ATAK data package:** package the plan via the ATAK MissionPackage /
   import API (needs the SDK API surface; validate on device).
 
+## In progress / next — sharing UX (selective share)
+
+Sharing currently bundles **every** channel this device holds a key for,
+which is both clumsy and a leak risk (you can hand someone channels they
+shouldn't have). Fix:
+
+- **Per-channel selection:** a checkbox picker on Share — choose which
+  channels go into the plan, not all of them. `buildChannelPlanCarrier`
+  takes a selected subset instead of the whole set.
+- **Share to one or many:** the Android share sheet already fans out to
+  any/multiple recipients; selection is per-channel, not per-recipient.
+- **Saved shareable plans (later):** name + persist a channel selection
+  so a recurring share is pre-canned and ready to re-send without
+  re-picking. Persist the *selection* (channel names); the keys come from
+  the encrypted key store below.
+
+## In progress — encrypted key persistence + panic wipe
+
+- Persist per-channel PSKs **encrypted at rest** via an Android
+  Keystore-wrapped AES-GCM key; ciphertext lives in ATAK's data dir so
+  ATAK "Clear data" wipes it. Never plaintext / JSON. (`MeshKeyVault`
+  pure serialization + a Keystore box.) Lets channels survive a restart
+  and stay shareable across sessions — kills the manual-re-key pain.
+- **Panic "Wipe mesh keys"** action gated behind a **double
+  slide-to-confirm** bar, to zeroize keys + configs on demand without a
+  full ATAK data clear.
+- Keep all key material plugin-side (ATAK's wipe scope), never in the
+  separate XV service APK.
+
 ## Deferred — mission auto-channels hardening
 
 - Explicit server-refusal detection for channel creation (currently
@@ -73,6 +102,7 @@ is a thin adapter, but all need on-device validation.
 
 ## Deferred — misc
 
-- Provisioned/imported channel keys are session-scoped (held in memory so
-  a freshly-created channel is shareable). Persisting them across
-  sessions is a separate secret-at-rest decision.
+- Organize channels by originating server (multi-server): store known
+  channels per-server, group the picker by server, tag ad-hoc/offline
+  channels; unify the mesh channel list with the primary channel picker;
+  restore mesh failover on VS2 (secondary slot). (Raised 2026-07-16.)
