@@ -148,7 +148,14 @@ class MeshVoiceManager(
     private var meshTxActive = false
     private var lastBeaconAtMs = Long.MIN_VALUE
     private val ssrcKeyToUid = HashMap<String, String>()
-    private val relayLastFrameMs = HashMap<String, Long>() // canonical speaker → last relayed frame
+
+    // Burst-gap tracking for the two relay directions. Server→mesh keys
+    // on the canonical speaker (session-derived, stable). Mesh→server
+    // keys on the WIRE ssrc — the canonical can flip mid-burst when
+    // refreshSsrcMap learns a uid mapping on a tick.
+    private val relayLastFrameMs = HashMap<String, Long>() // canonical → last server→mesh relay
+
+    private val relayToServerLastMs = HashMap<String, Long>() // ssrc speakerKey → last mesh→server relay
 
     // ---- speaker attribution ----
 
@@ -355,9 +362,15 @@ class MeshVoiceManager(
         val relay = bridging && canonical != ourUid && !serverOriginated && !uidMumbleConnected(canonical)
         var relayBurstStart = false
         if (relay) {
-            val last = relayLastFrameMs[canonical]
+            // Burst tracking keys on the WIRE identity (ssrc), not the
+            // canonical: refreshSsrcMap can learn the uid mapping on a
+            // tick mid-burst, flipping the canonical and minting a
+            // spurious second burst-start — which resets the Mumble TX
+            // sequence mid-stream (field repro 2026-07-16: doubled
+            // beginMumbleVoiceBurst ~15 ms apart on every relay).
+            val last = relayToServerLastMs[speakerKey]
             relayBurstStart = last == null || now - last > RELAY_BURST_GAP_MS
-            relayLastFrameMs[canonical] = now
+            relayToServerLastMs[speakerKey] = now
         }
         meshTalking.getOrPut(canonical) { MeshTalker(speakerKey, now) }.lastFrameMs = now
         return VoiceRxAction(play = true, relay = relay, relayBurstStart = relayBurstStart)

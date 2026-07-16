@@ -3007,9 +3007,25 @@ class XvMapComponent : AbstractMapComponent() {
                 },
                 relayToMumble = { opus, burstStart ->
                     // Bridge relay: a server-less mesh speaker's frame
-                    // goes onto the Mumble channel over OUR session.
-                    if (burstStart) beginMumbleVoiceBurst()
-                    sendOpusToActiveTransport(opus, targetSlot = 0)
+                    // goes onto the Mumble channel over OUR session —
+                    // and ONLY there. Never route this through
+                    // sendOpusToActiveTransport: while bridging, that
+                    // path's mesh copy (sendTxOpus) is live, so the
+                    // relayed frame would go straight BACK onto the
+                    // group with OUR ssrc — every mesh speaker echoed
+                    // once by the bridge, heard doubled by the whole
+                    // group (field repro 2026-07-16). Same reasoning
+                    // for the burst edge: reset only the Mumble
+                    // sequence, not the mesh legs' TX state.
+                    if (burstStart) mumbleTransport()?.beginVoiceBurst()
+                    activeTransport?.sendFrame(
+                        com.atakmap.android.xv.transport.VoiceFrame(
+                            opusPayload = opus,
+                            senderId = "self",
+                            monotonicTimestampMs = System.nanoTime() / 1_000_000,
+                            targetSlot = 0,
+                        ),
+                    )
                 },
                 onMeshTxStateChanged = { meshTxActive ->
                     // Server-less TX must stay allowed: while mesh is

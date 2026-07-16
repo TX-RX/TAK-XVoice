@@ -580,6 +580,30 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `learning a speaker's uid mid-burst does not restart the relay burst`() {
+        // refreshSsrcMap runs on the 1 Hz tick and can flip a speaker's
+        // canonical id (raw ssrc → uid) between two frames of one burst.
+        // Burst tracking must key on the wire ssrc, or the flip mints a
+        // spurious second burstStart that resets the Mumble TX sequence
+        // mid-stream (field repro 2026-07-16: doubled
+        // beginMumbleVoiceBurst ~15 ms apart on every relayed burst).
+        val h = Harness()
+        h.makeUsBridge()
+        val speakerUid = "uid-mesh-talker"
+        val ssrcKey = ssrcKeyOf(speakerUid)
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKey, seqInBurst = 0)
+        // The uid becomes known between frames; the next tick maps it.
+        // (20 ms — one frame gap, well inside RELAY_BURST_GAP_MS, so a
+        // burst restart here can only come from the canonical flip.)
+        h.peerUids += speakerUid
+        h.now += 20
+        h.manager.tick()
+        h.manager.onVoice("ops-1", byteArrayOf(2), ssrcKey, seqInBurst = 1)
+        h.manager.onVoice("ops-1", byteArrayOf(3), ssrcKey, seqInBurst = 2)
+        assertEquals(listOf(true, false, false), h.relayedToMumble)
+    }
+
+    @Test
     fun `bridge does not re-relay speakers who are already on the server`() {
         val h = Harness()
         h.peerUids += "uid-peer"
