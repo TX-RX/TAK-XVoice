@@ -274,6 +274,39 @@ class MeshVoiceManagerTest {
     fun `mesh-only speakers play with a mesh label`() {
         val h = Harness()
         h.joinAndTick()
+        // We only PLAY multicast voice when the server isn't the live path:
+        // failover (server down) or as the bridge. Model failover here — a
+        // healthy-server non-bridge client now drops the copy (see the
+        // failover playback gate / the dedicated gate test below).
+        h.mumbleUp = false
+        h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
+        assertEquals(listOf("mcast:ops-1:ssrc:cafebabe"), h.playedRx)
+    }
+
+    @Test
+    fun `healthy-server non-bridge client drops multicast voice — no double audio`() {
+        val h = Harness()
+        h.joinAndTick() // server healthy (mumbleUp=true), not the bridge
+        // The failover playback gate: this client already hears everyone via
+        // Mumble, so the multicast copy must NOT play — that copy is the
+        // double audio the operator reported.
+        h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
+        assertTrue("healthy-server non-bridge client must not play mesh voice", h.playedRx.isEmpty())
+
+        // The very same speaker DOES play once the server drops (failover).
+        // Dedup wasn't polluted by the gated frame (gate returns before it),
+        // so the failover copy plays cleanly.
+        h.mumbleUp = false
+        h.manager.onVoice("ops-1", byteArrayOf(2), "ssrc:cafebabe", seqInBurst = 1)
+        assertEquals(listOf("mcast:ops-1:ssrc:cafebabe"), h.playedRx)
+    }
+
+    @Test
+    fun `the bridge still plays multicast voice while the server is healthy`() {
+        val h = Harness()
+        h.makeUsBridge() // healthy server, but we hold the bridge role
+        // The bridge must hear serverless peers directly (they never reach
+        // it via Mumble), so it is exempt from the failover gate.
         h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0)
         assertEquals(listOf("mcast:ops-1:ssrc:cafebabe"), h.playedRx)
     }
@@ -436,6 +469,7 @@ class MeshVoiceManagerTest {
     fun `mesh talkers resolve to presence callsigns for ATAK peers`() {
         val h = Harness()
         h.joinAndTick()
+        h.mumbleUp = false // hearing mesh voice ⇒ failover / bridge context
         h.peerUids += "uid-zzz"
         h.callsigns["uid-zzz"] = "Bravo-2"
         h.now += 1_000
@@ -448,6 +482,7 @@ class MeshVoiceManagerTest {
     fun `onPeerDeparted drops the peer's ssrc mapping so stale frames don't resolve`() {
         val h = Harness()
         h.joinAndTick()
+        h.mumbleUp = false // hearing mesh voice ⇒ failover / bridge context
         h.peerUids += "uid-zzz"
         h.callsigns["uid-zzz"] = "Bravo-2"
         h.now += 1_000
@@ -510,6 +545,7 @@ class MeshVoiceManagerTest {
     fun `announced names attribute relayed speakers on mesh-only receivers`() {
         val h = Harness()
         h.joinAndTick()
+        h.mumbleUp = false // a mesh-only receiver has no live server
         h.manager.onControl(
             "ops-1",
             ControlPacket.Message.SpeakerName(

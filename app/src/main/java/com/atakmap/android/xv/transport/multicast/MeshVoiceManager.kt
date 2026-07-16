@@ -416,6 +416,23 @@ class MeshVoiceManager(
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
         }
         val now = nowMs()
+        // Failover playback gate. On a FAILOVER channel with a healthy
+        // server, a non-bridge client already gets everything via Mumble
+        // (server clients directly; serverless peers via the bridge's relay
+        // onto Mumble). Playing the multicast copy TOO is the double audio
+        // operators hear — RxDeduper can't always collapse it, because a
+        // relayed frame whose SSRC doesn't resolve to the same canonical id
+        // as its Mumble copy (unresolved "ssrc:", presence asymmetry,
+        // OPENMANET "ip:" attribution) reads as a distinct speaker. Drop it
+        // here, BEFORE the deduper, so the deduper's per-speaker state isn't
+        // polluted for a frame we won't play (which would then suppress the
+        // real Mumble copy). The bridge is exempt: it must play serverless
+        // peers to hear them, and relays them onward. Once the server is
+        // gone (meshTxActive) nobody is gated — that is failover working.
+        val mode = legs[channelName]?.config?.mode
+        if (mode == MulticastMode.FAILOVER && mumbleConnected() && !meshTxActive && !bridging) {
+            return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
+        }
         val canonical = ssrcKeyToUid[speakerKey] ?: speakerKey
         if (!deduper.shouldPlay(legId = "mesh:$channelName", speaker = canonical, nowMs = now)) {
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
