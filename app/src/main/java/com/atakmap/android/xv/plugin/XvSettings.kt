@@ -386,6 +386,32 @@ class XvSettings(
         }
     }
 
+    // Sealed per-channel key vault. The bytes stored here are the output
+    // of KeystoreSecretBox.seal(MeshKeyVault.serialize(...)) — i.e. GCM
+    // ciphertext of the binary key blob, never the keys themselves. We
+    // Base64 it only because SharedPreferences stores strings; the
+    // confidentiality lives in the Keystore-held AES key, not here.
+    // java.util.Base64 (API 26+, matches minSdk) keeps this unit-testable
+    // off-device, unlike android.util.Base64's stubbed test double.
+    fun persistSealedMeshKeyVault(sealed: ByteArray?) {
+        prefs()?.edit()?.apply {
+            if (sealed == null || sealed.isEmpty()) {
+                remove(PREF_MESH_KEY_VAULT)
+            } else {
+                putString(PREF_MESH_KEY_VAULT, java.util.Base64.getEncoder().encodeToString(sealed))
+            }
+        }?.apply()
+    }
+
+    fun sealedMeshKeyVault(): ByteArray? {
+        val enc = prefs()?.getString(PREF_MESH_KEY_VAULT, null)?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            java.util.Base64.getDecoder().decode(enc)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
     companion object {
         // SharedPreferences file name. Lives under the plugin's own
         // Context so we don't pollute ATAK's prefs file.
@@ -451,6 +477,12 @@ class XvSettings(
         private const val PREF_MESH_VOICE_ENABLED = "mesh_voice_enabled"
         private const val PREF_KNOWN_CHANNELS = "known_channels"
         private const val PREF_CHANNEL_MULTICAST = "channel_multicast_configs"
+
+        // Keystore-sealed per-channel key vault (Base64 of GCM
+        // ciphertext). See persistSealedMeshKeyVault. Lives in the
+        // plugin's own prefs file under ATAK's data dir, so ATAK
+        // "Clear data" wipes it alongside the configs.
+        private const val PREF_MESH_KEY_VAULT = "mesh_key_vault_sealed"
 
         // Mission auto-channels master toggle. See
         // persistedMissionChannelsEnabled.

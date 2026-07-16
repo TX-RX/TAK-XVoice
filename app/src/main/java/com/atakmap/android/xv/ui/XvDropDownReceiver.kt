@@ -384,6 +384,12 @@ class XvDropDownReceiver(
         // name-derived default still works if rejoined later.
         fun forgetMeshChannel(name: String) {}
 
+        // Panic wipe: zeroize every stored mesh channel key + config and
+        // delete the Keystore key that seals them at rest, shredding the
+        // on-disk vault without a full ATAK data clear. Destructive and
+        // irreversible — the UI gates it behind a double slide-to-confirm.
+        fun wipeMeshKeys() {}
+
         // Live mesh state for the main panel, or null when mesh voice
         // is dormant (off, or no leg up). Rendered as a status line so
         // the operator can see failover/bridge state at a glance — and,
@@ -1701,7 +1707,76 @@ class XvDropDownReceiver(
             promptImportChannelPlan(v)
         }
 
+        v.findViewById<Button>(R.id.xv_btn_mesh_wipe).setOnClickListener {
+            promptWipeMeshKeys(v)
+        }
+
         refreshMeshSection(v)
+    }
+
+    // Panic wipe, gated behind a *double* slide-to-confirm so it can't
+    // fire on a stray tap or a single accidental drag. The operator must
+    // drag the bar fully across twice; anything short snaps back. Only the
+    // second completed slide calls through to the destructive wipe.
+    private fun promptWipeMeshKeys(section: View) {
+        val ctx = mapView.context
+        val label =
+            TextView(ctx).apply {
+                text = "Slide to confirm (1 of 2)"
+                setTextColor(pluginContext.resources.getColor(R.color.xv_text, null))
+                textSize = 14f
+            }
+        val bar =
+            android.widget.SeekBar(ctx).apply {
+                max = 100
+                setPadding(paddingLeft, 32, paddingRight, 32)
+            }
+        val container =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(48, 24, 48, 8)
+                addView(label)
+                addView(bar)
+            }
+        val dialog =
+            android.app.AlertDialog
+                .Builder(ctx)
+                .setTitle("Wipe mesh keys?")
+                .setMessage("Erases every mesh channel key and setting from this device. This can't be undone.")
+                .setView(container)
+                .setNegativeButton("Cancel", null)
+                .create()
+
+        var stage = 0
+        bar.setOnSeekBarChangeListener(
+            object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    sb: android.widget.SeekBar,
+                    progress: Int,
+                    fromUser: Boolean,
+                ) {}
+
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
+
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar) {
+                    if (sb.progress < sb.max) {
+                        sb.progress = 0 // didn't reach the end — snap back
+                        return
+                    }
+                    stage++
+                    sb.progress = 0
+                    if (stage >= 2) {
+                        controller.wipeMeshKeys()
+                        meshToast("Mesh keys wiped from this device.")
+                        refreshMeshSection(section)
+                        dialog.dismiss()
+                    } else {
+                        label.text = "Slide again to confirm (2 of 2)"
+                    }
+                }
+            },
+        )
+        dialog.show()
     }
 
     // Sets a passphrase, builds the locked plan, and hands it to the

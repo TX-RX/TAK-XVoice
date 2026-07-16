@@ -2768,8 +2768,11 @@ class XvMapComponent : AbstractMapComponent() {
                     com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
                         .canonicalChannelName(name)
                 provisionedChannels.remove(canonical)
+                persistMeshKeysEncrypted()
                 Log.i(TAG, "forgot mesh channel '$canonical'")
             }
+
+            override fun wipeMeshKeys() = wipeMeshKeysInternal()
 
             override fun missingPermissionLabels(): List<String> = currentlyMissingPermissions()
 
@@ -3039,6 +3042,10 @@ class XvMapComponent : AbstractMapComponent() {
                 },
             )
         meshVoiceManager = manager
+        // Re-install persisted per-channel keys (encrypted at rest) before
+        // seeding, so a channel provisioned/imported in a prior session is
+        // keyed and shareable again the moment mesh comes up.
+        restoreMeshKeysEncrypted()
         // Seed the primary channel: the live Mumble join when there is
         // one, else the persisted last channel. The persisted fallback
         // is the cold-start failover case — plugin loads while the
@@ -3165,6 +3172,7 @@ class XvMapComponent : AbstractMapComponent() {
                 preSharedKey = gen.preSharedKey,
             ),
         )
+        persistMeshKeysEncrypted()
         // Join it as the primary so it goes live and a later Mumble
         // reconnect lands on the same channel.
         settings.persistPrimaryChannel(gen.name)
@@ -3178,6 +3186,82 @@ class XvMapComponent : AbstractMapComponent() {
             com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
                 .canonicalChannelName(ch.config.channelName)
         provisionedChannels[canonical] = ch
+    }
+
+    // ---- encrypted-at-rest key persistence ----
+
+    // Re-seal and persist the full per-channel key set from the current
+    // shareable-channel map. Called after any change that adds or drops a
+    // key. Keys are serialized to a compact binary blob and AES-GCM-sealed
+    // under a non-exportable Android Keystore key before they touch disk —
+    // never plaintext, never JSON. Best-effort: a Keystore failure logs
+    // and leaves the channel usable this session, just not persisted.
+    private fun persistMeshKeysEncrypted() {
+        val keys =
+            synchronized(provisionedChannels) {
+                provisionedChannels.entries
+                    .mapNotNull { (canonical, ch) -> ch.preSharedKey?.let { canonical to it } }
+                    .toMap()
+            }
+        try {
+            if (keys.isEmpty()) {
+                settings.persistSealedMeshKeyVault(null)
+                return
+            }
+            val blob = com.atakmap.android.xv.transport.multicast.MeshKeyVault.serialize(keys)
+            val sealed = com.atakmap.android.xv.security.KeystoreSecretBox.seal(blob)
+            settings.persistSealedMeshKeyVault(sealed)
+        } catch (t: Throwable) {
+            Log.w(TAG, "persistMeshKeysEncrypted failed — keys not saved this session", t)
+        }
+    }
+
+    // Restore persisted per-channel keys at mesh startup: open the sealed
+    // vault, install each key into the manager, and re-hydrate
+    // provisionedChannels so channels stay shareable across restarts. Each
+    // key pairs with its persisted config (or the name-derived default).
+    private fun restoreMeshKeysEncrypted() {
+        val sealed = settings.sealedMeshKeyVault() ?: return
+        val keys =
+            try {
+                val blob = com.atakmap.android.xv.security.KeystoreSecretBox.open(sealed)
+                com.atakmap.android.xv.transport.multicast.MeshKeyVault.deserialize(blob)
+            } catch (t: Throwable) {
+                // Undecryptable (wiped key / new device / tamper) — drop it
+                // rather than wedge startup, and clear the stale blob so we
+                // don't retry every load.
+                Log.w(TAG, "restoreMeshKeysEncrypted: vault unreadable, clearing", t)
+                settings.persistSealedMeshKeyVault(null)
+                return
+            }
+        if (keys.isEmpty()) return
+        keys.forEach { (name, key) ->
+            meshVoiceManager?.installPresharedKey(name, key)
+            val config =
+                settings.channelMulticastConfigFor(name)
+                    ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(name)
+            recordShareableChannel(
+                com.atakmap.android.xv.provisioning.CommsPlan.Channel(
+                    displayName = name,
+                    config = config,
+                    preSharedKey = key,
+                ),
+            )
+        }
+        Log.i(TAG, "restored ${keys.size} mesh channel key(s) from sealed vault")
+    }
+
+    // Panic wipe: zeroize every persisted mesh key + config and delete the
+    // Keystore wrapping key (cryptographically shredding any sealed blob
+    // that outlives this call), without a full ATAK data clear. Gated in
+    // the UI behind a double slide-to-confirm.
+    private fun wipeMeshKeysInternal() {
+        val names = synchronized(provisionedChannels) { provisionedChannels.keys.toList() }
+        names.forEach { settings.removeChannelMulticastConfig(it) }
+        synchronized(provisionedChannels) { provisionedChannels.clear() }
+        settings.persistSealedMeshKeyVault(null)
+        com.atakmap.android.xv.security.KeystoreSecretBox.wipe()
+        Log.i(TAG, "panic wipe: cleared ${names.size} mesh channel(s) + sealed key vault")
     }
 
     // Provisioning path 3 — "configure manually" / interop. Validate the
@@ -3217,6 +3301,7 @@ class XvMapComponent : AbstractMapComponent() {
                 preSharedKey = key,
             ),
         )
+        persistMeshKeysEncrypted()
         settings.persistPrimaryChannel(config.channelName)
         meshVoiceManager?.onChannelJoined(0, config.channelName)
         Log.i(TAG, "saved mesh channel '${config.channelName}' (pinned=${config.pinnedGroup != null}, keyed=${key != null})")
@@ -3269,6 +3354,7 @@ class XvMapComponent : AbstractMapComponent() {
             // carried one, else its config alone (cleartext/interop).
             recordShareableChannel(ch)
         }
+        persistMeshKeysEncrypted()
         settings.persistMeshVoiceEnabled(true)
         if (settings.persistedPrimaryChannel().isBlank()) {
             plan.channels.firstOrNull()?.let { first ->

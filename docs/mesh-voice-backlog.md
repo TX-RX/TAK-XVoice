@@ -26,6 +26,14 @@ prefer *derived* or *shared-via-comms-plan* over hand-typed addresses.
   file), QR display (scan-to-import), paste import.
 - Mesh status + CLEAR (unencrypted) badge on the main panel.
 - Dedicated Mesh & Offline settings tab; long-press to forget a channel.
+- Per-channel keys persisted **encrypted at rest**: `MeshKeyVault`
+  binary blob → `KeystoreSecretBox` AES-256-GCM under a non-exportable
+  Android Keystore key; ciphertext lives in the plugin's prefs (ATAK
+  data dir, so "Clear data" wipes it). Restored on mesh startup, so a
+  provisioned/imported channel survives a restart and stays shareable.
+- Panic **"Wipe mesh keys"** in Mesh & Offline → Danger zone: double
+  slide-to-confirm, then zeroize configs + delete the Keystore key
+  (shreds the sealed vault) without a full ATAK data clear.
 
 ## Deferred — channel bridge / patch (two groups on one channel)
 
@@ -79,18 +87,18 @@ shouldn't have). Fix:
   re-picking. Persist the *selection* (channel names); the keys come from
   the encrypted key store below.
 
-## In progress — encrypted key persistence + panic wipe
+## Deferred — encrypted key persistence follow-ups
 
-- Persist per-channel PSKs **encrypted at rest** via an Android
-  Keystore-wrapped AES-GCM key; ciphertext lives in ATAK's data dir so
-  ATAK "Clear data" wipes it. Never plaintext / JSON. (`MeshKeyVault`
-  pure serialization + a Keystore box.) Lets channels survive a restart
-  and stay shareable across sessions — kills the manual-re-key pain.
-- **Panic "Wipe mesh keys"** action gated behind a **double
-  slide-to-confirm** bar, to zeroize keys + configs on demand without a
-  full ATAK data clear.
-- Keep all key material plugin-side (ATAK's wipe scope), never in the
-  separate XV service APK.
+The core (seal-at-rest, restore-on-start, panic wipe) shipped; these
+refinements are deferred:
+
+- **On-device validation** of the Keystore round-trip across an app
+  restart and an ATAK "Clear data" (confirm the sealed blob is gone and
+  the channel is unrecoverable afterward).
+- **StrongBox** (`setIsStrongBoxBacked`) opportunistically where the
+  device advertises a secure element, falling back to TEE.
+- **Re-key / rotate** the wrapping key without losing channels
+  (re-seal under a fresh Keystore key).
 
 ## Deferred — mission auto-channels hardening
 
