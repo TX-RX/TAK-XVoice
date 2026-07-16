@@ -2747,7 +2747,15 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun canShareChannelPlan(): Boolean = provisionedChannels.isNotEmpty()
 
-            override fun buildChannelPlanCarrier(passphrase: CharArray): String? = buildChannelPlanCarrierInternal(passphrase)
+            override fun shareableChannels(): List<String> =
+                synchronized(provisionedChannels) {
+                    provisionedChannels.values.map { it.displayName }
+                }
+
+            override fun buildChannelPlanCarrier(
+                passphrase: CharArray,
+                selected: List<String>,
+            ): String? = buildChannelPlanCarrierInternal(passphrase, selected)
 
             override fun importChannelPlanCarrier(
                 text: String,
@@ -3308,11 +3316,30 @@ class XvMapComponent : AbstractMapComponent() {
         return null
     }
 
-    // Build a passphrase-locked carrier for every shareable channel, or
-    // null when there's nothing to share. Always locked — the plan
-    // carries pre-shared keys, so it never travels a transport in clear.
-    private fun buildChannelPlanCarrierInternal(passphrase: CharArray): String? {
-        val channels = synchronized(provisionedChannels) { provisionedChannels.values.toList() }
+    // Build a passphrase-locked carrier for the operator-chosen subset of
+    // shareable channels (by display name), or null when the selection is
+    // empty / resolves to nothing. Always locked — the plan carries
+    // pre-shared keys, so it never travels a transport in clear. Selecting
+    // per-channel is the point: you never hand a peer a key for a channel
+    // you didn't pick.
+    private fun buildChannelPlanCarrierInternal(
+        passphrase: CharArray,
+        selected: List<String>,
+    ): String? {
+        val wanted =
+            selected
+                .map {
+                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                        .canonicalChannelName(it)
+                }.toSet()
+        if (wanted.isEmpty()) return null
+        val channels =
+            synchronized(provisionedChannels) {
+                provisionedChannels
+                    .filterKeys { it in wanted }
+                    .values
+                    .toList()
+            }
         if (channels.isEmpty()) return null
         val identity =
             try {

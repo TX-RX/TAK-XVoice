@@ -71,21 +71,22 @@ is a thin adapter, but all need on-device validation.
 - **ATAK data package:** package the plan via the ATAK MissionPackage /
   import API (needs the SDK API surface; validate on device).
 
-## In progress / next — sharing UX (selective share)
+## Sharing UX (selective share)
 
-Sharing currently bundles **every** channel this device holds a key for,
-which is both clumsy and a leak risk (you can hand someone channels they
-shouldn't have). Fix:
+Sharing used to bundle **every** channel this device held a key for —
+clumsy and a leak risk (you could hand someone channels they shouldn't
+have).
 
-- **Per-channel selection:** a checkbox picker on Share — choose which
-  channels go into the plan, not all of them. `buildChannelPlanCarrier`
-  takes a selected subset instead of the whole set.
+- **Per-channel selection (shipped):** Share now opens a checkbox picker
+  (defaults to all checked, every box editable); only the chosen channels
+  go into the plan. `buildChannelPlanCarrier(passphrase, selected)` builds
+  from the subset. A single-channel device skips the picker.
 - **Share to one or many:** the Android share sheet already fans out to
   any/multiple recipients; selection is per-channel, not per-recipient.
-- **Saved shareable plans (later):** name + persist a channel selection
-  so a recurring share is pre-canned and ready to re-send without
-  re-picking. Persist the *selection* (channel names); the keys come from
-  the encrypted key store below.
+- **Saved shareable plans (deferred):** name + persist a channel
+  selection so a recurring share is pre-canned and ready to re-send
+  without re-picking. Persist the *selection* (channel names); the keys
+  come from the encrypted key store.
 
 ## Deferred — encrypted key persistence follow-ups
 

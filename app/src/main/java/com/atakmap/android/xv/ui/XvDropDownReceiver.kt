@@ -408,11 +408,21 @@ class XvDropDownReceiver(
         // (provisioned or imported), so there is something shareable.
         fun canShareChannelPlan(): Boolean = false
 
-        // Build a passphrase-locked comms-plan carrier string for every
-        // shareable channel, or null if there's nothing to share. The
-        // plan carries the pre-shared keys, so it is always passphrase-
-        // locked — never handed to a transport in the clear.
-        fun buildChannelPlanCarrier(passphrase: CharArray): String? = null
+        // Display names of every channel this device could share, in a
+        // stable order — the choices offered by the selective-share
+        // picker. Empty when there is nothing to share.
+        fun shareableChannels(): List<String> = emptyList()
+
+        // Build a passphrase-locked comms-plan carrier string for the
+        // chosen subset of channels (by display name), or null if the
+        // selection is empty / unresolvable. The plan carries the
+        // pre-shared keys, so it is always passphrase-locked — never
+        // handed to a transport in the clear. Sharing is deliberately
+        // per-channel: you never hand someone a key they shouldn't have.
+        fun buildChannelPlanCarrier(
+            passphrase: CharArray,
+            selected: List<String>,
+        ): String? = null
 
         // Import a comms-plan carrier string (pasted, scanned, received).
         // Persists each channel's config, installs its key, joins the
@@ -1699,7 +1709,7 @@ class XvDropDownReceiver(
             if (!controller.canShareChannelPlan()) {
                 meshToast("No channels to share yet — create one first.")
             } else {
-                promptPassphraseThenShare()
+                promptSelectChannelsThenShare()
             }
         }
 
@@ -1779,12 +1789,46 @@ class XvDropDownReceiver(
         dialog.show()
     }
 
-    // Sets a passphrase, builds the locked plan, and hands it to the
-    // Android share sheet (which surfaces Quick Share, messaging, email,
-    // file — every share target the device offers). The plan carries
-    // channel keys, so it is always passphrase-locked; the operator
-    // passes the passphrase to the team out-of-band.
-    private fun promptPassphraseThenShare() {
+    // Selective share, step 1: pick which channels go into the plan.
+    // Sharing used to bundle every channel this device held a key for —
+    // clumsy and a leak risk. Now the operator checks exactly the
+    // channels to hand out; only those are carried. Defaults to all
+    // checked (the common "share what I just made" case) but every box is
+    // editable, and the plan is built from the final selection.
+    private fun promptSelectChannelsThenShare() {
+        val names = controller.shareableChannels()
+        if (names.isEmpty()) {
+            meshToast("No channels to share yet — create one first.")
+            return
+        }
+        // Single channel: nothing to choose — go straight to passphrase.
+        if (names.size == 1) {
+            promptPassphraseThenShare(names)
+            return
+        }
+        val checked = BooleanArray(names.size) { true }
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Share which channels?")
+            .setMultiChoiceItems(names.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }.setPositiveButton("Next") { _, _ ->
+                val selected = names.filterIndexed { i, _ -> checked[i] }
+                if (selected.isEmpty()) {
+                    meshToast("Pick at least one channel to share.")
+                } else {
+                    promptPassphraseThenShare(selected)
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Sets a passphrase, builds the locked plan from [selected], and hands
+    // it to the Android share sheet (which surfaces Quick Share, messaging,
+    // email, file — every share target the device offers). The plan
+    // carries channel keys, so it is always passphrase-locked; the
+    // operator passes the passphrase to the team out-of-band.
+    private fun promptPassphraseThenShare(selected: List<String>) {
         val input =
             android.widget.EditText(mapView.context).apply {
                 hint = "Passphrase (your team enters this to import)"
@@ -1801,7 +1845,7 @@ class XvDropDownReceiver(
                     meshToast("Passphrase can't be empty.")
                     return@setPositiveButton
                 }
-                val carrier = controller.buildChannelPlanCarrier(pass.toCharArray())
+                val carrier = controller.buildChannelPlanCarrier(pass.toCharArray(), selected)
                 if (carrier == null) {
                     meshToast("Nothing to share.")
                 } else {
