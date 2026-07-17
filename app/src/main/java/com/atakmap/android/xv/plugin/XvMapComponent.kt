@@ -3365,9 +3365,22 @@ class XvMapComponent : AbstractMapComponent() {
     // A teammate shared channel(s) with us — raise a Join prompt on the UI
     // thread. Accepting records + joins each channel; the endpoint derives
     // and (for encrypted channels) the key auto-exchanges.
+    // Share event uids already prompted for, so multi-path delivery and
+    // server backlog replays can't raise duplicate Join prompts (field
+    // repro 2026-07-16 23:07: every event arrived 3×). Bounded LRU;
+    // touched only on the main thread (mv.post below).
+    private val handledShareEventUids =
+        object : LinkedHashMap<String, Boolean>(16, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 64
+        }
+
     private fun handleIncomingChannelShare(signal: com.atakmap.android.xv.provisioning.XvChannelShare.ShareSignal) {
         val mv = heldMapView ?: return
         mv.post {
+            val dedupKey = signal.eventUid
+            if (dedupKey != null && handledShareEventUids.put(dedupKey, true) != null) {
+                return@post // duplicate delivery of an already-prompted share
+            }
             val ctx = mv.context
             val who = signal.sharerCallsign.ifBlank { "A teammate" }
             val body =
@@ -3418,10 +3431,16 @@ class XvMapComponent : AbstractMapComponent() {
         )
         lastKnownChannelsSnapshot = null
         settings.persistMeshVoiceEnabled(true)
-        // The operator tapped Join — land on the first shared channel.
-        signal.channelNames.firstOrNull()?.let { first ->
-            settings.persistPrimaryChannel(first)
-            meshVoiceManager?.onChannelJoined(0, first)
+        // Land on the first shared channel ONLY when nothing is selected
+        // yet. Unconditionally re-pointing the primary let a burst of
+        // accepts thrash the operator's active slot (field repro
+        // 2026-07-16 23:07); accepted channels are always in the picker
+        // now, so switching stays a deliberate act.
+        if (settings.persistedPrimaryChannel().isBlank()) {
+            signal.channelNames.firstOrNull()?.let { first ->
+                settings.persistPrimaryChannel(first)
+                meshVoiceManager?.onChannelJoined(0, first)
+            }
         }
         Log.i(TAG, "accepted ${signal.channelNames.size} shared channel(s) from ${signal.sharerUid}")
     }

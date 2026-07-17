@@ -54,6 +54,13 @@ object XvChannelShare {
         /** Sharer's server host, so a recipient can derive/label correctly. Null = ad-hoc. */
         val serverHost: String?,
         val channelNames: List<String>,
+        /**
+         * Outer CoT event uid — the receiver's dedup key. A TAK server
+         * can deliver the same event several times (multi-path, and a
+         * full backlog replay to a freshly connected client), and each
+         * copy must not raise another Join prompt.
+         */
+        val eventUid: String? = null,
     )
 
     fun send(signal: ShareSignal): Boolean =
@@ -108,6 +115,23 @@ object XvChannelShare {
         ourUid: String?,
     ): ShareSignal? {
         if (event.type != EVENT_TYPE) return null
+        // Enforce the event's own staleness. A share is a momentary
+        // nudge (60 s stale on send) — but a TAK server replays its CoT
+        // backlog to a newly connected client, and without this check a
+        // device that just enrolled received every share sent that DAY
+        // as a burst of Join prompts, each accept re-joining channels
+        // (field repro 2026-07-16 23:07: six stale events, delivered
+        // three times each, in five seconds).
+        val staleAtMs =
+            try {
+                event.stale?.milliseconds
+            } catch (_: Throwable) {
+                null
+            }
+        if (staleAtMs != null && staleAtMs < CoordinatedTime().milliseconds) {
+            Log.i(TAG, "ignoring stale share ${event.uid} (server replay)")
+            return null
+        }
         val detail =
             try {
                 event.findDetail(DETAIL_NAME)
@@ -176,6 +200,7 @@ object XvChannelShare {
             targetUids = targetUids,
             serverHost = serverHost?.takeIf { it.isNotBlank() },
             channelNames = channelNames,
+            eventUid = eventUid?.takeIf { it.isNotBlank() },
         )
     }
 }
