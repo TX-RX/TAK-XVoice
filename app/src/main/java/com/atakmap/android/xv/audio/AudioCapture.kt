@@ -49,6 +49,19 @@ import android.util.Log
 // marshalling if the consumer isn't thread-safe. Restarts execute ON the
 // read thread (the watchers only request them and unblock the read), so
 // the record field is never swapped under a concurrent read.
+// File-backed diagnostic mirror for capture-lifecycle events — same
+// rationale as TxController's txDiag: the Sonim XP9900's logcat
+// filtering swallows XV app tags, and the capture self-heal events are
+// exactly what a first-transmission post-mortem needs. No-throw no-op
+// before DiagnosticLogger.init(); messages carry no MACs (addresses
+// are redacted upstream of any logging here).
+private fun capDiag(
+    message: String,
+    severity: Char = 'I',
+) {
+    com.atakmap.android.xv.util.DiagnosticLogger.event(tag = "XvAudioCapture", severity = severity, message = message)
+}
+
 @SuppressLint("MissingPermission")
 class AudioCapture(
     private val context: Context? = null,
@@ -151,6 +164,7 @@ class AudioCapture(
                 "input routing changed mid-capture → ${dev?.productName}/${dev?.let { typeName(it.type) }} " +
                     "(was device id=$lastRoutedDeviceId) — restarting AudioRecord in place",
             )
+            capDiag("routing changed mid-capture → ${dev?.productName}/${dev?.let { typeName(it.type) }} — restart", 'W')
             lastRoutedDeviceId = id
             requestRestart()
         }
@@ -168,6 +182,7 @@ class AudioCapture(
                             "read loop stalled (no frames for ~${stallStrikes * STALL_CHECK_INTERVAL_MS}ms " +
                                 "at frame #$frames) — forcing in-place restart",
                         )
+                        capDiag("read loop stalled at frame #$frames — restart", 'W')
                         stallStrikes = 0
                         requestRestart()
                     }
@@ -364,6 +379,7 @@ class AudioCapture(
                 "preferred=${r.preferredDevice?.productName} " +
                 "routed=${routed?.productName}/${routed?.let { typeName(it.type) }})",
         )
+        capDiag("AudioRecord $verb routed=${routed?.productName}/${routed?.let { typeName(it.type) }}")
     }
 
     // Returns the AudioDeviceInfo.TYPE_* of the picked input, or
@@ -456,6 +472,7 @@ class AudioCapture(
                 TAG,
                 "in-place restart budget exhausted ($restartCount/$MAX_INPLACE_RESTARTS) — giving up on this capture",
             )
+            capDiag("restart budget exhausted ($restartCount) — capture abandoned", 'E')
             onCaptureError("mic input path keeps dropping (restarted $restartCount times) — check BT/audio state")
             return null
         }

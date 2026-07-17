@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioManager
 import androidx.test.core.app.ApplicationProvider
 import io.mockk.mockk
+import io.mockk.verify
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -50,11 +51,11 @@ class TxControllerReadinessBarrierTest {
         telecomSettled = false
     }
 
-    private fun buildController(): TxController =
+    private fun buildController(tptPlayer: TptPlayer = mockk(relaxed = true)): TxController =
         TxController(
             scoLink = mockk(relaxed = true),
             btPolicy = mockk(relaxed = true), // classify() → NONE → non-SCO path
-            tptPlayer = mockk(relaxed = true),
+            tptPlayer = tptPlayer,
             audioCaptureFactory = { _ -> mockk(relaxed = true) },
             opusEncoderFactory = { mockk(relaxed = true) },
             audioManager = audioManager,
@@ -160,92 +161,146 @@ class TxControllerReadinessBarrierTest {
     // ============================================================
 
     @Test
-    fun `cold-call priming — hard-zero frames never satisfy the alive gate`() {
-        val tx = buildController()
+    fun `cold-call priming — quiet completion routes to PROBING, not straight to TPT`() {
+        // Priming's job on a cold-call burst is bare liveness (frames
+        // flowing); the DSP-readiness verification belongs to PROBING.
+        // Quiet frames (the Pixel's suppressed floor reads rms 1-11)
+        // must therefore land in PROBING — releasing the tone here is
+        // exactly how the first word went out silent on the 2026-07-17
+        // capture.
+        val tpt = mockk<TptPlayer>(relaxed = true)
+        val tx = buildController(tptPlayer = tpt)
         tx.setStateForTest(TxController.State.PRIMING)
         tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
 
-        // 40 frames of literal digital silence — more than the 30-frame
-        // cold gate. A dead input path (pre-reroute AudioRecord, muted
-        // HAL) delivers exactly this; declaring "mic alive" on it is
-        // how the first word went out silent on the 2026-07-17 capture.
-        val silent = ShortArray(480) { 0 }
-        repeat(40) { tx.onPcmFrameForTest(silent) }
+        val noiseFloor = ShortArray(480) { 3 }
+        repeat(5) { tx.onPcmFrameForTest(noiseFloor) }
 
         assertEquals(
-            "literal-zero frames are evidence of a dead path, not a live mic",
-            TxController.State.PRIMING,
+            "liveness-only completion on a cold-call burst must enter PROBING",
+            TxController.State.PROBING,
             tx.currentStateForTest(),
         )
+        verify(exactly = 0) { tpt.play(any(), any(), any()) }
+        verify(exactly = 0) { tpt.playInterrupt(any(), any()) }
     }
 
     @Test
-    fun `cold-call priming — noise-floor frames satisfy the alive gate at the cold frame count`() {
+    fun `cold-call priming — hard-zero frames also route to PROBING`() {
+        // Samsung's converging DSP delivers literal zeros; the read
+        // loop is alive, the path is not. PROBING is what tells those
+        // apart — priming just needs to see frames flowing.
         val tx = buildController()
         tx.setStateForTest(TxController.State.PRIMING)
         tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
 
-        // rms ≈ 3: a real mic's idle noise floor — below the cold
-        // speech threshold (200) but non-zero, so each frame counts
-        // toward the 30-frame alive gate.
-        val noiseFloor = ShortArray(480) { 3 }
-        repeat(29) {
-            tx.onPcmFrameForTest(noiseFloor)
-            assertEquals(
-                "must still be PRIMING after ${it + 1} noise-floor frames",
-                TxController.State.PRIMING,
-                tx.currentStateForTest(),
-            )
-        }
-        tx.onPcmFrameForTest(noiseFloor)
+        val silent = ShortArray(480) { 0 }
+        repeat(5) { tx.onPcmFrameForTest(silent) }
 
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+    }
+
+    @Test
+    fun `cold-SCO priming still requires non-silent frames for the alive gate`() {
+        // The non-silent rule stays on the SCO axis: a cold BT chipset
+        // that only produces zeros is not ready, and cold-SCO bursts
+        // have no PROBING phase to catch it later.
+        val tx = buildController()
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = true, coldCall = false)
+
+        val silent = ShortArray(480) { 0 }
+        repeat(40) { tx.onPcmFrameForTest(silent) }
         assertEquals(
-            "30 non-silent frames = mic verifiably alive on a cold burst",
+            "40 zero frames must not satisfy the 30-non-silent cold-SCO gate",
+            TxController.State.PRIMING,
+            tx.currentStateForTest(),
+        )
+
+        val noiseFloor = ShortArray(480) { 3 }
+        repeat(30) { tx.onPcmFrameForTest(noiseFloor) }
+        assertEquals(
+            "30 non-silent frames complete the cold-SCO gate",
             TxController.State.TPT,
             tx.currentStateForTest(),
         )
     }
 
     @Test
-    fun `cold-call priming — zero frames do not advance the count toward the alive gate`() {
+    fun `cold-call priming — genuine speech skips the probe entirely`() {
+        // A speech-detected completion is its own end-to-end proof: the
+        // operator's voice made it THROUGH the platform chain, so
+        // probing would only add latency.
         val tx = buildController()
         tx.setStateForTest(TxController.State.PRIMING)
         tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
 
-        // Interleave: 20 zeros, 29 noise-floor, 20 zeros. Only the 29
-        // non-silent frames count — one short of the 30-frame gate.
-        val silent = ShortArray(480) { 0 }
-        val noiseFloor = ShortArray(480) { 3 }
-        repeat(20) { tx.onPcmFrameForTest(silent) }
-        repeat(29) { tx.onPcmFrameForTest(noiseFloor) }
-        repeat(20) { tx.onPcmFrameForTest(silent) }
-        assertEquals(
-            "29 non-silent frames out of 69 total must NOT complete the 30-frame cold gate",
-            TxController.State.PRIMING,
-            tx.currentStateForTest(),
-        )
-
-        // The 30th non-silent frame completes it.
-        tx.onPcmFrameForTest(noiseFloor)
-        assertEquals(TxController.State.TPT, tx.currentStateForTest())
-    }
-
-    @Test
-    fun `cold-call priming — speech-level frame completes immediately`() {
-        val tx = buildController()
-        tx.setStateForTest(TxController.State.PRIMING)
-        tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
-
-        // rms well above the cold speech threshold (200) — one frame of
-        // actual speech is proof enough regardless of frame count.
+        // rms well above the cold speech threshold (200).
         val speech = ShortArray(480) { i -> (10_000.0 * kotlin.math.sin(i * 0.2)).toInt().toShort() }
         tx.onPcmFrameForTest(speech)
 
         assertEquals(
-            "speech-detected must complete cold priming on the first frame",
+            "speech through the chain proves the path — straight to TPT",
             TxController.State.TPT,
             tx.currentStateForTest(),
         )
+    }
+
+    // ============================================================
+    // PROBING — measured DSP readiness.
+    // ============================================================
+
+    @Test
+    fun `PROBING — capture energy at the heard threshold releases into TPT`() {
+        val tx = buildController()
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
+        val silent = ShortArray(480) { 0 }
+        repeat(5) { tx.onPcmFrameForTest(silent) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        // The probe tick (or any ambient sound) arriving through the
+        // capture path — constant amplitude at the threshold gives
+        // rms == PROBE_HEARD_RMS_THRESHOLD; the check is >=.
+        val heard = ShortArray(480) { TxController.PROBE_HEARD_RMS_THRESHOLD.toShort() }
+        tx.onPcmFrameForTest(heard)
+
+        assertEquals(
+            "energy through the chain = path verified = TPT",
+            TxController.State.TPT,
+            tx.currentStateForTest(),
+        )
+    }
+
+    @Test
+    fun `PROBING — suppressed-floor frames do not release the tone`() {
+        val tx = buildController()
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
+        val noiseFloor = ShortArray(480) { 3 }
+        repeat(5) { tx.onPcmFrameForTest(noiseFloor) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        // A closed DSP suppresses the probe tick to the floor — dozens
+        // of floor frames must keep holding the tone (the ceiling
+        // runnable, not frame count, bounds the wait).
+        repeat(100) { tx.onPcmFrameForTest(noiseFloor) }
+
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+    }
+
+    @Test
+    fun `PTT release during PROBING abandons cleanly to IDLE`() {
+        val tx = buildController()
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
+        val silent = ShortArray(480) { 0 }
+        repeat(5) { tx.onPcmFrameForTest(silent) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        tx.stop()
+
+        assertEquals(TxController.State.IDLE, tx.currentStateForTest())
     }
 
     @Test
