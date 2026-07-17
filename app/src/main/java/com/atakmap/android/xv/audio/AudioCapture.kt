@@ -192,6 +192,15 @@ class AudioCapture(
 
     fun start() {
         if (running) return
+        // Fresh capture session — reset the self-heal bookkeeping so a
+        // reused instance (stop() → start()) gets a full restart budget
+        // and clean stall counters. Today TxController allocates a new
+        // AudioCapture per session via the factory, but the API permits
+        // reuse and a silently pre-exhausted budget would disable the
+        // self-heal exactly when a reconnect path needs it.
+        restartCount = 0
+        totalFrames = 0
+        restartRequested = false
         val r = buildRecord() ?: return
 
         record = r
@@ -376,7 +385,7 @@ class AudioCapture(
             }
         Log.i(TAG, "available input devices: ${inputs.size}")
         for (d in inputs) {
-            Log.i(TAG, "  device: ${d.productName} type=${typeName(d.type)} address=${d.address}")
+            Log.i(TAG, "  device: ${d.productName} type=${typeName(d.type)} address=${redactAddress(d.address)}")
         }
         // BT SCO is the only "BT input" that exists at the OS level — the
         // earlier A2DP fallback was nonsense (A2DP is an output profile).
@@ -550,6 +559,17 @@ class AudioCapture(
     // re-convergence and unretained (GC-released) effect handles were the
     // root cause of the garbled start-of-transmission audio.
 
+    // Field logs get pulled and shared during debugging, and a BT SCO
+    // input's address IS the operator's device MAC — sensitive per the
+    // repo's content rules. Mask MAC-shaped addresses down to the last
+    // octet (enough to tell two pucks apart, mirroring the platform's
+    // own BluetoothGatt redaction); pass through non-MAC addresses
+    // ("bottom", "back") which are just mic placement labels.
+    private fun redactAddress(addr: String?): String {
+        if (addr.isNullOrEmpty()) return ""
+        return if (MAC_SHAPED.matches(addr)) "XX:XX:XX:XX:XX:${addr.takeLast(2)}" else addr
+    }
+
     private fun typeName(type: Int): String =
         when (type) {
             AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BLUETOOTH_SCO"
@@ -564,6 +584,8 @@ class AudioCapture(
 
     companion object {
         private const val TAG = "XvAudioCapture"
+
+        private val MAC_SHAPED = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
         // Ceiling on in-place restarts per capture lifetime. Three
         // covers the realistic cascade (Telecom activates → SCO comes
