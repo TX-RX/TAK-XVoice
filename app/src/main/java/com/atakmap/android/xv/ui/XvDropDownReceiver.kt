@@ -420,14 +420,33 @@ class XvDropDownReceiver(
         // picker. Empty when there is nothing to share.
         fun shareableChannels(): List<String> = emptyList()
 
-        // Build a passphrase-locked comms-plan carrier string for the
+        // Teammates to offer in the share picker: uid (to address) → callsign
+        // (to show). Empty when no XV peers are known (share to Everyone).
+        fun shareTargets(): List<Pair<String, String>> = emptyList()
+
+        // Broadcast a "join my channel(s)" CoT nudge to the chosen teammates
+        // (empty targetUids = everyone). No passphrase, no string, no key on
+        // the wire — the recipient derives the endpoint and auto-exchanges
+        // the key. Returns false when it couldn't be dispatched (e.g. no
+        // device UID / offline), so the UI can offer the offline QR instead.
+        fun shareChannels(
+            channelNames: List<String>,
+            targetUids: List<String>,
+        ): Boolean = false
+
+        // True iff the offline carrier for [selected] must be passphrase-
+        // locked (any selected channel resolves to a held key). Keyless /
+        // config-only plans go in the clear, so the UI can skip the prompt.
+        fun channelPlanNeedsPassphrase(selected: List<String>): Boolean = false
+
+        // Build a comms-plan carrier string for the
         // chosen subset of channels (by display name), or null if the
         // selection is empty / unresolvable. The plan carries the
-        // pre-shared keys, so it is always passphrase-locked — never
-        // handed to a transport in the clear. Sharing is deliberately
-        // per-channel: you never hand someone a key they shouldn't have.
+        // pre-shared keys only when a channel holds one; a config-only plan
+        // is emitted clear. Pass a null passphrase to accept clear when
+        // keyless. Used only by the offline / other-platform fallback.
         fun buildChannelPlanCarrier(
-            passphrase: CharArray,
+            passphrase: CharArray?,
             selected: List<String>,
         ): String? = null
 
@@ -603,7 +622,7 @@ class XvDropDownReceiver(
     // (server channels appearing/disappearing on drop/reconnect, or an
     // offline/mesh channel added) is detectable without diffing views.
     private fun channelPickerSignature(): Int {
-        var h = controller.availableChannels().joinToString(" ") { it.name }.hashCode()
+        var h = controller.availableChannels().joinToString(" ") { it.name }.hashCode()
         h = 31 * h + (controller.connectedTakHost()?.hashCode() ?: 0)
         h = 31 * h + controller.meshChannelCandidates().hashCode()
         return h
@@ -1945,9 +1964,9 @@ class XvDropDownReceiver(
             meshToast("No channels to share yet — create one first.")
             return
         }
-        // Single channel: nothing to choose — go straight to passphrase.
+        // Single channel: nothing to choose — go straight to teammates.
         if (names.size == 1) {
-            promptPassphraseThenShare(names)
+            promptPickTeammatesThenShare(names)
             return
         }
         val checked = BooleanArray(names.size) { true }
@@ -1961,10 +1980,65 @@ class XvDropDownReceiver(
                 if (selected.isEmpty()) {
                     meshToast("Pick at least one channel to share.")
                 } else {
-                    promptPassphraseThenShare(selected)
+                    promptPickTeammatesThenShare(selected)
                 }
             }.setNegativeButton("Cancel", null)
             .show()
+    }
+
+    // Pick who to share with, then push a CoT nudge — no passphrase, no
+    // string. Teammates come from the presence roster; "Everyone" broadcasts
+    // to the whole mission. The recipient gets a Join prompt; the endpoint
+    // derives locally and the key auto-exchanges. Falls back to the offline
+    // QR/carrier only if the CoT dispatch can't go out.
+    private fun promptPickTeammatesThenShare(selected: List<String>) {
+        val targets = controller.shareTargets() // uid → callsign
+        // Row 0 is "Everyone"; the rest are individual teammates.
+        val labels = (listOf("Everyone") + targets.map { it.second }).toTypedArray()
+        val checked = BooleanArray(labels.size) { it == 0 } // default: Everyone
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Share to whom?")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+                // "Everyone" and specific picks are mutually exclusive-ish:
+                // choosing Everyone clears the individuals and vice-versa.
+                // Kept simple — Everyone wins if checked at send time.
+            }.setPositiveButton("Send") { _, _ ->
+                val everyone = checked.getOrElse(0) { false }
+                val targetUids =
+                    if (everyone) {
+                        emptyList()
+                    } else {
+                        targets.filterIndexed { i, _ -> checked.getOrElse(i + 1) { false } }.map { it.first }
+                    }
+                if (!everyone && targetUids.isEmpty()) {
+                    meshToast("Pick Everyone or at least one teammate.")
+                    return@setPositiveButton
+                }
+                if (controller.shareChannels(selected, targetUids)) {
+                    meshToast("Shared ${selected.size} channel(s).")
+                } else {
+                    // Couldn't dispatch (no server / offline) — offer the
+                    // in-person QR / carrier instead.
+                    meshToast("Couldn't share over the network — use offline QR.")
+                    promptOfflineShare(selected)
+                }
+            }.setNeutralButton("Offline / QR") { _, _ -> promptOfflineShare(selected) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Offline / other-platform fallback: the QR / carrier string. Only asks
+    // for a passphrase when a selected channel carries a key (keyless plans
+    // go clear). This is the exception, not the default share.
+    private fun promptOfflineShare(selected: List<String>) {
+        if (controller.channelPlanNeedsPassphrase(selected)) {
+            promptPassphraseThenShare(selected)
+        } else {
+            val carrier = controller.buildChannelPlanCarrier(null, selected)
+            if (carrier == null) meshToast("Nothing to share.") else showChannelPlanShareDialog(carrier)
+        }
     }
 
     // Sets a passphrase, builds the locked plan from [selected], and hands

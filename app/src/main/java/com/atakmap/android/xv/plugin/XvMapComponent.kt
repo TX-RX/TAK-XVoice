@@ -2800,8 +2800,27 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun shareableChannels(): List<String> = meshChannelCandidates()
 
+            // CoT-push share (the default): no passphrase, no string.
+            override fun shareTargets(): List<Pair<String, String>> = shareTargetsInternal()
+
+            override fun shareChannels(
+                channelNames: List<String>,
+                targetUids: List<String>,
+            ): Boolean = shareChannelsViaCot(channelNames, targetUids)
+
+            // Offline carrier only needs a passphrase when a plan carries a
+            // key; a config-only plan goes clear. Lets the UI skip the
+            // passphrase prompt for the common keyless case.
+            override fun channelPlanNeedsPassphrase(selected: List<String>): Boolean =
+                selected.any { name ->
+                    val canonical =
+                        com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                            .canonicalChannelName(name)
+                    meshVoiceManager?.currentKeyFor(canonical) != null
+                }
+
             override fun buildChannelPlanCarrier(
-                passphrase: CharArray,
+                passphrase: CharArray?,
                 selected: List<String>,
             ): String? = buildChannelPlanCarrierInternal(passphrase, selected)
 
@@ -3581,7 +3600,7 @@ class XvMapComponent : AbstractMapComponent() {
     // per-channel is the point: you never hand a peer a key for a channel
     // you didn't pick.
     private fun buildChannelPlanCarrierInternal(
-        passphrase: CharArray,
+        passphrase: CharArray?,
         selected: List<String>,
     ): String? {
         if (selected.isEmpty()) return null
@@ -3640,7 +3659,11 @@ class XvMapComponent : AbstractMapComponent() {
         // travels passphrase-locked; a blank passphrase there is refused.
         val carriesKey = channels.any { it.preSharedKey != null }
         return if (carriesKey) {
-            if (passphrase.isEmpty()) null else com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeLocked(plan, passphrase)
+            if (passphrase == null || passphrase.isEmpty()) {
+                null
+            } else {
+                com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeLocked(plan, passphrase)
+            }
         } else {
             com.atakmap.android.xv.provisioning.CommsPlanCarrier.encodeClear(plan)
         }
