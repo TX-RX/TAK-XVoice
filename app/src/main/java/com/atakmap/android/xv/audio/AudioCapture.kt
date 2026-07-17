@@ -7,9 +7,6 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 
 // PCM capture for TX. Reads fixed-size frames from AudioRecord and pushes
@@ -18,8 +15,13 @@ import android.util.Log
 // AudioSource.VOICE_COMMUNICATION:
 //   - When SCO is up (ScoLink connected, AINA APTT or similar HFP-only BT
 //     selected as comm device): mic comes from the BT speakermic.
-//   - When no SCO: mic comes from the phone's built-in voice mic with AEC
-//     and noise suppression applied (which is what we want for voice).
+//   - When no SCO: mic comes from the phone's built-in voice mic.
+//   - Either way, the platform's tuned voice DSP (AEC + NS + AGC) runs on
+//     the capture path automatically — that is the whole reason this
+//     source is used instead of AudioSource.MIC. We deliberately do NOT
+//     layer an app-owned audiofx AEC/NS/AGC stage on top of it; see the
+//     comment at [start] for why that was the source of the garbled
+//     start-of-transmission audio.
 //
 // Threading: a dedicated read thread blocks in AudioRecord.read; frames
 // are delivered to onFrame on that thread. Caller is responsible for
@@ -43,14 +45,15 @@ class AudioCapture(
     // startRecording() succeeds, and again with null when capture stops
     // or fails after allocation. VoicePlant stores the current value so
     // AudioPlayback can attach its AudioTrack to the same session via
-    // AudioTrack.Builder.setSessionId(id) — that shared session id is
-    // what gives Android's AcousticEchoCanceler (created against the
-    // capture session in [configureAudioEffects]) a real downlink
-    // reference signal to subtract from the mic input. Without shared
-    // session ids, AEC sees only the mic path and can't suppress a
-    // peer's voice echoing back through the operator's speakermic.
-    // Default no-op keeps the constructor usable in tests / historical
-    // callsites that don't route through VoicePlant.
+    // AudioTrack.Builder.setSessionId(id). Capture uses AudioSource
+    // .VOICE_COMMUNICATION, so the platform's own voice DSP (AEC + NS +
+    // AGC) runs against this session; keeping capture and playback on one
+    // shared session id gives that platform effect chain a coherent
+    // uplink/downlink pair — the peer's voice played out on the shared
+    // session is what the platform AEC subtracts from the mic input, so
+    // the co-located speakermic case still works without any app-owned
+    // effect. Default no-op keeps the constructor usable in tests /
+    // historical callsites that don't route through VoicePlant.
     private val onSessionIdChanged: (Int?) -> Unit = {},
 ) {
     private val channelMask =
@@ -85,9 +88,10 @@ class AudioCapture(
             try {
                 AudioRecord
                     .Builder()
-                    // VOICE_COMMUNICATION pulls in the OEM voice DSP path on
-                    // its own — the explicit Android audiofx effects below
-                    // are layered on top per route.
+                    // VOICE_COMMUNICATION pulls in the OEM voice DSP path
+                    // (AEC + NS + AGC) on its own. That single platform
+                    // chain is the entire pre-processing story now — no
+                    // app-owned audiofx effects are layered on top.
                     .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                     .setAudioFormat(
                         AudioFormat
@@ -122,10 +126,23 @@ class AudioCapture(
             return
         }
 
-        // Pick the input device first so routing is settled before the
-        // DSP policy decides which Android effects to enable.
-        val picked = applyPreferredInputDevice(r)
-        configureAudioEffects(r, picked.type, picked.device)
+        // Pick the input device so routing is settled and logged. No
+        // app-level audiofx effects are attached here on purpose:
+        // AudioSource.VOICE_COMMUNICATION already routes through the
+        // platform's tuned voice DSP (AEC + NS + AGC). The plugin used to
+        // create a SECOND, app-owned AcousticEchoCanceler / NoiseSuppressor
+        // / AutomaticGainControl on the same session and enable them per
+        // route. That layer was the root cause of the "first couple
+        // seconds are garbled" bug two ways over: (1) every app effect is
+        // an adaptive stage that restarts its convergence on each fresh
+        // AudioRecord, so a new burst spent its first ~1-2 s with the
+        // app AEC/AGC still settling on top of the already-converged
+        // platform chain, and (2) the effect handles were never retained,
+        // so the GC finalized and released them at nondeterministic times,
+        // tearing the DSP down mid-stream ("sometimes the first one is
+        // completely garbled"). Trusting the single platform chain removes
+        // both failure modes and the double-processing entirely.
+        val pickedType = applyPreferredInputDevice(r)
 
         record = r
         running = true
@@ -146,13 +163,14 @@ class AudioCapture(
             Thread({ runReadLoop() }, "xv-mic-capture").also { it.start() }
         // Bubble the OS-assigned capture session id up to the plant so
         // AudioPlayback can bind its AudioTrack to the same session
-        // (setSessionId on AudioTrack). This is what closes the loop for
-        // AEC: the AcousticEchoCanceler created against this session id
-        // (see [configureAudioEffects]) then has a real downlink reference
-        // signal to subtract from the mic input. Session ids are not
-        // sensitive per CLAUDE.md — log unredacted for field debug.
+        // (setSessionId on AudioTrack). Capture + playback sharing one
+        // session keeps the platform VOICE_COMMUNICATION voice DSP chain
+        // operating on a coherent uplink/downlink pair, which is what lets
+        // the platform AEC subtract the peer's played-out voice from the
+        // mic. Session ids are not sensitive per CLAUDE.md — log
+        // unredacted for field debug.
         val sid = r.audioSessionId
-        Log.i(TAG, "capture session id=$sid — linked for AEC")
+        Log.i(TAG, "capture session id=$sid — shared with playback")
         try {
             onSessionIdChanged(sid)
         } catch (t: Throwable) {
@@ -174,33 +192,27 @@ class AudioCapture(
         Log.i(
             TAG,
             "AudioRecord started (rate=$sampleRateHz frame=$frameSamples " +
-                "pickedType=${typeName(picked.type)} preferred=${r.preferredDevice?.productName} " +
+                "pickedType=${typeName(pickedType)} preferred=${r.preferredDevice?.productName} " +
                 "routed=${routed?.productName}/${routed?.let { typeName(it.type) }})",
         )
     }
 
     // Returns the AudioDeviceInfo.TYPE_* of the picked input, or
-    // TYPE_UNKNOWN if we left routing to the OS default. Knowing the
-    // route is what lets configureAudioEffects below pick a sane DSP
-    // policy: AINA / Pryme / generic HFP speakermics ship strong
-    // vendor DSP and don't want Android stomping on it; the built-in
-    // mic does.
-    /** Result of [applyPreferredInputDevice] — device type plus optional
-     *  AudioDeviceInfo so [configureAudioEffects] can apply per-device
-     *  policy (e.g. AGC allowlist by productName). */
-    private data class PickedInput(val type: Int, val device: AudioDeviceInfo?)
-
-    private fun applyPreferredInputDevice(r: AudioRecord): PickedInput {
-        val ctx = context ?: return PickedInput(AudioDeviceInfo.TYPE_UNKNOWN, null)
+    // TYPE_UNKNOWN if we left routing to the OS default. Purely
+    // informational now — the route is logged for field debug, but no DSP
+    // policy branches on it any more: the platform voice DSP handles every
+    // route uniformly, so there is nothing per-device to decide.
+    private fun applyPreferredInputDevice(r: AudioRecord): Int {
+        val ctx = context ?: return AudioDeviceInfo.TYPE_UNKNOWN
         val am =
             ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                ?: return PickedInput(AudioDeviceInfo.TYPE_UNKNOWN, null)
+                ?: return AudioDeviceInfo.TYPE_UNKNOWN
         val inputs =
             try {
                 am.getDevices(AudioManager.GET_DEVICES_INPUTS)
             } catch (t: Throwable) {
                 Log.w(TAG, "getDevices(INPUTS) failed", t)
-                return PickedInput(AudioDeviceInfo.TYPE_UNKNOWN, null)
+                return AudioDeviceInfo.TYPE_UNKNOWN
             }
         Log.i(TAG, "available input devices: ${inputs.size}")
         for (d in inputs) {
@@ -214,14 +226,14 @@ class AudioCapture(
             Log.i(TAG, "preferring BT SCO input: ${sco.productName}")
             try {
                 r.preferredDevice = sco
-                return PickedInput(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, sco)
+                return AudioDeviceInfo.TYPE_BLUETOOTH_SCO
             } catch (t: Throwable) {
                 Log.w(TAG, "setPreferredDevice(SCO) failed — falling back to default", t)
             }
         }
-        // Identify the default route so the DSP policy below has
-        // something to decide on. Wired headset mic shows up as
-        // TYPE_WIRED_HEADSET; otherwise treat as built-in.
+        // Identify the default route purely for the field-debug log.
+        // Wired headset mic shows up as TYPE_WIRED_HEADSET; otherwise
+        // treat as built-in.
         val wired =
             inputs.firstOrNull {
                 it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
@@ -230,9 +242,9 @@ class AudioCapture(
             }
         if (wired != null) {
             Log.i(TAG, "default input looks wired (${wired.productName})")
-            return PickedInput(wired.type, wired)
+            return wired.type
         }
-        return PickedInput(AudioDeviceInfo.TYPE_BUILTIN_MIC, null)
+        return AudioDeviceInfo.TYPE_BUILTIN_MIC
     }
 
     fun stop() {
@@ -310,95 +322,13 @@ class AudioCapture(
         }
     }
 
-    // DSP policy.
-    //
-    // AEC is always on when available. Even a slightly-mistuned AEC on
-    // AINA / Pryme speakermics with vendor DSP tests as a net win in
-    // co-located operator scenarios (project memory: DSP-on-BT-audio is
-    // required for the co-located team case).
-    //
-    // AGC is route + device aware (audit M10):
-    //   - Built-in / wired: AGC on. Level varies widely with how the
-    //     operator holds the phone or where they wear the headset mic.
-    //   - BT SCO + KNOWN_GOOD_DSP_DEVICE (AINA APTT family): AGC off.
-    //     Vendor DSP already normalizes, and stacking Android's AGC on
-    //     top causes audible pump on PTT bursts.
-    //   - BT SCO + unknown device: AGC on. Generic headsets without
-    //     vendor DSP need the Android-side AGC to avoid the operator
-    //     sounding inaudible or clipped depending on how loud they
-    //     speak.
-    //
-    // NS is gated on "AGC will actually run" (field capture 2026-07-11):
-    //   - NoiseSuppressor without a co-running AutomaticGainControl
-    //     aggressively suppresses the first ~500 ms of every burst,
-    //     zeroing PCM samples during operator speech onset. Peer-side
-    //     recordings across Pixel 9 Pro (BUILTIN + AINA V1 SCO),
-    //     Samsung Tab Active5 (BUILTIN, AGC unavailable), and Sonim
-    //     XP9900 (BUILTIN) all showed the same alternating rms=0 /
-    //     rms=voice pattern at burst start when NS was on without AGC.
-    //     Symptom: "the first couple seconds are garbled" across every
-    //     route — including non-SCO Tab5, ruling out the cold-SCO
-    //     underrun in TxController as the sole cause.
-    //   - When AGC is available and enabled, NS's speech-suppression
-    //     is compensated for by the follow-on gain stage and stays
-    //     imperceptible.
-    //   - When AGC is off by design (known-good vendor DSP path), NS
-    //     is also off — vendor DSP already does noise reduction, so
-    //     stacking Android's NS on top just adds the speech-onset
-    //     suppression artifact without benefit.
-    //   - When AGC is unavailable at the device level (Tab5, some
-    //     ruggedized units), NS is off — nothing to compensate.
-    private fun configureAudioEffects(
-        record: AudioRecord,
-        pickedType: Int,
-        pickedDevice: AudioDeviceInfo?,
-    ) {
-        val sessionId = record.audioSessionId
-        val isBtSpeakermic = pickedType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-        val hasKnownGoodDsp = isBtSpeakermic && isKnownGoodBtDspDevice(pickedDevice)
-        val aecOn = true
-        val agcOn = !hasKnownGoodDsp
-        val agcWillRun = agcOn && AutomaticGainControl.isAvailable()
-        val nsOn = agcWillRun
-
-        Log.i(
-            TAG,
-            "DSP policy: route=${typeName(pickedType)} device='${pickedDevice?.productName ?: "?"}' " +
-                "knownGoodDsp=$hasKnownGoodDsp AEC=$aecOn NS=$nsOn (gated on agcWillRun=$agcWillRun) AGC=$agcOn",
-        )
-
-        applyEffect("AEC", AcousticEchoCanceler.isAvailable(), aecOn) {
-            AcousticEchoCanceler.create(sessionId)?.also { it.enabled = aecOn }
-        }
-        applyEffect("NS", NoiseSuppressor.isAvailable(), nsOn) {
-            NoiseSuppressor.create(sessionId)?.also { it.enabled = nsOn }
-        }
-        applyEffect("AGC", AutomaticGainControl.isAvailable(), agcOn) {
-            AutomaticGainControl.create(sessionId)?.also { it.enabled = agcOn }
-        }
-    }
-
-    private inline fun applyEffect(
-        tag: String,
-        available: Boolean,
-        enable: Boolean,
-        create: () -> Any?,
-    ) {
-        if (!available) {
-            Log.i(TAG, "$tag not available on this device")
-            return
-        }
-        try {
-            val eff = create()
-            if (eff == null) {
-                Log.w(TAG, "$tag create() returned null")
-                return
-            }
-            Log.i(TAG, "$tag ${if (enable) "ENABLED" else "disabled"}")
-        } catch (e: Throwable) {
-            Log.w(TAG, "$tag setup failed", e)
-        }
-    }
+    // NOTE: there is deliberately no configureAudioEffects() here any
+    // more. Capture relies entirely on the platform voice DSP pulled in
+    // by AudioSource.VOICE_COMMUNICATION (see the class header and
+    // [start]). The previous app-owned AEC/NS/AGC layer — and its
+    // per-device AGC allowlist — was removed because its per-session
+    // re-convergence and unretained (GC-released) effect handles were the
+    // root cause of the garbled start-of-transmission audio.
 
     private fun typeName(type: Int): String =
         when (type) {
@@ -412,35 +342,7 @@ class AudioCapture(
             else -> "type=$type"
         }
 
-    /** True when the BT input is from a device whose vendor DSP we
-     *  know handles AEC + AGC + NS competently, so Android-side AGC
-     *  should be SUPPRESSED to avoid double-processing pump. Default
-     *  for unknown BT devices is `false` (treat as generic HFP
-     *  headset, AGC ON). Match against productName because the BT
-     *  address varies per unit but the model name doesn't. */
-    private fun isKnownGoodBtDspDevice(device: AudioDeviceInfo?): Boolean {
-        if (device == null) return false
-        val name =
-            try {
-                device.productName?.toString() ?: ""
-            } catch (_: Throwable) {
-                return false
-            }
-        return KNOWN_GOOD_BT_DSP_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
-    }
-
     companion object {
         private const val TAG = "XvAudioCapture"
-
-        /** ProductName prefixes for BT speakermics whose vendor DSP
-         *  is known to do its own AEC/AGC/NS at firmware level. AGC
-         *  is suppressed for these; everything else (generic HFP) gets
-         *  Android's AGC enabled. Add new entries as field testing
-         *  identifies more devices with their own DSP. Audit M10. */
-        private val KNOWN_GOOD_BT_DSP_PREFIXES =
-            listOf(
-                "APTT", // AINA V1 / V2 family
-                "AINA",
-            )
     }
 }

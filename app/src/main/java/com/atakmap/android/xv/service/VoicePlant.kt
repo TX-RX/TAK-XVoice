@@ -343,8 +343,8 @@ class VoicePlant(
     // onSessionIdChanged callback wired below) and cleared by
     // AudioCapture.stop(). AudioPlayback consults it when building a
     // fresh AudioTrack so RX playback shares a session with the mic
-    // path — Android's AcousticEchoCanceler (attached to the capture
-    // session in AudioCapture.configureAudioEffects) then has a real
+    // path — the platform voice DSP that AudioSource.VOICE_COMMUNICATION
+    // pulls in on the capture session (its AEC) then has a real
     // downlink reference signal to subtract from the mic input, which
     // is what stops the operator's peer from hearing themselves
     // through the operator's own speakermic on a warm back-and-forth.
