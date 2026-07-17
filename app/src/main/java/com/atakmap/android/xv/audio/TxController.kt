@@ -275,6 +275,23 @@ class TxController(
     @Volatile
     private var probeTicksPlayed: Int = 0
 
+    // Consecutive capture frames at/above PROBE_HEARD_RMS_THRESHOLD.
+    // Samsung's converging DSP produced a single-frame false positive
+    // (tick leaked at rms 69, then the chain clamped back to rms 2 —
+    // 2026-07-17 17:27 tab burst): one frame of energy is a blip,
+    // sustained energy is an open path. Reset on every sub-threshold
+    // frame; each 80 ms tick spans ~8 frames, so a truly open chain
+    // passes the 3-frame requirement inside a single tick.
+    @Volatile
+    private var probeConsecutiveHeard: Int = 0
+
+    // Route the probe ticks over SCO when the burst is a cold-SCO one —
+    // the speakermic's speaker and mic are co-located in the puck, so
+    // coupling is excellent and the probe exercises the exact BT uplink
+    // the burst will transmit through.
+    @Volatile
+    private var probeUseSco: Boolean = false
+
     // Whether this burst faces a COLD BT SCO chipset ramp — i.e. we had
     // to acquire SCO from scratch this burst (currentBurstColdSco).
     // Captured at startPriming() so the gate values are stable through
@@ -419,14 +436,15 @@ class TxController(
                     // frames may be silent (peer hears nothing for
                     // 0.5-1 s) but then real audio flows. Better UX
                     // than bonking + retrying.
-                    if (primingColdCall && scoLink.state != ScoLink.State.CONNECTED) {
-                        // Frames flow but carry nothing — on a cold-call
-                        // burst that's the signature of the OEM DSP still
-                        // converging. Don't guess how much longer: probe.
+                    if (primingColdCall || primingUseColdScoGates) {
+                        // Frames flow but carry nothing — on a cold
+                        // burst that's the signature of the OEM DSP (or
+                        // BT chipset) still converging. Don't guess how
+                        // much longer: probe.
                         Log.w(
                             TAG,
                             "PRIMING: timeout after ${elapsed}ms ($primingFramesObserved frames seen, all silent) — " +
-                                "cold-call burst, probing DSP readiness before TPT",
+                                "cold burst, probing input-path readiness before TPT",
                         )
                         txDiag("priming timeout ${elapsed}ms all-silent → probe", 'W')
                         startProbing()
@@ -1039,10 +1057,7 @@ class TxController(
                 synchronized(this@TxController) {
                     if (state != State.PROBING) return
                     probeTicksPlayed++
-                    // Probe is scoped to non-SCO routes (see startProbing)
-                    // so the tick always goes out the loudspeaker path
-                    // the capture mic can hear.
-                    tptPlayer.playProbeTick(useScoRoute = false)
+                    tptPlayer.playProbeTick(useScoRoute = probeUseSco)
                     cooldownHandler.postDelayed(this, PROBE_TICK_INTERVAL_MS)
                 }
             }
@@ -1084,13 +1099,16 @@ class TxController(
         state = State.PROBING
         probeStartMs = System.currentTimeMillis()
         probeTicksPlayed = 0
+        probeConsecutiveHeard = 0
+        probeUseSco = primingUseColdScoGates && scoLink.state == ScoLink.State.CONNECTED
         Log.i(
             TAG,
-            "PROBING: verifying DSP readiness via acoustic probe " +
-                "(tick every ${PROBE_TICK_INTERVAL_MS}ms, heard-threshold rms=$PROBE_HEARD_RMS_THRESHOLD, " +
+            "PROBING: verifying input-path readiness via acoustic probe " +
+                "(useSco=$probeUseSco, tick every ${PROBE_TICK_INTERVAL_MS}ms, " +
+                "heard-threshold rms=$PROBE_HEARD_RMS_THRESHOLD x$PROBE_HEARD_CONSECUTIVE_FRAMES frames, " +
                 "ceiling=${PROBE_CEILING_MS}ms)",
         )
-        txDiag("probe start (cold-call burst)")
+        txDiag("probe start (coldCall=$primingColdCall coldSco=$primingUseColdScoGates useSco=$probeUseSco)")
         cooldownHandler.removeCallbacks(probeTickRunnable)
         cooldownHandler.removeCallbacks(probeCeilingRunnable)
         cooldownHandler.post(probeTickRunnable)
@@ -1349,19 +1367,23 @@ class TxController(
                                 primingUseColdScoGates -> "sco-cold"
                                 else -> "sco-warm"
                             }
-                        // A speech-detected completion is its own proof:
-                        // the operator's voice made it THROUGH the
-                        // platform chain, so the DSP is demonstrably
-                        // open. Only the ambiguous completion — frames
-                        // alive but nothing above the speech threshold —
-                        // needs the probe on a cold-call burst.
-                        val speechVerified = rms >= rmsThreshold
-                        if (primingColdCall && !speechVerified && scoLink.state != ScoLink.State.CONNECTED) {
+                        // A speech-detected completion is its own proof
+                        // — but only off-SCO: the operator's voice made
+                        // it THROUGH the platform chain, so the DSP is
+                        // demonstrably open. On SCO the shortcut is NOT
+                        // trustworthy — the BT chipset can deliver a
+                        // loud ramp burst mid-warmup and then go quiet
+                        // again (2026-07-17 Pixel cold-SCO: priming saw
+                        // rms 586, the TX head still went out at rms 10)
+                        // — so cold-SCO bursts ALWAYS probe.
+                        val speechVerified = rms >= rmsThreshold && !primingUseColdScoGates
+                        val coldBurst = primingColdCall || primingUseColdScoGates
+                        if (coldBurst && !speechVerified) {
                             Log.i(
                                 TAG,
                                 "PRIMING: mic alive after ${elapsed}ms ($reason: rms=$rms, " +
                                     "$primingFramesObserved frames observed / $primingNonSilentFramesObserved non-silent, " +
-                                    "route=$route) — cold-call burst, probing DSP readiness before TPT",
+                                    "route=$route) — cold burst, probing input-path readiness before TPT",
                             )
                             txDiag("priming alive ${elapsed}ms rms=$rms route=$route → probe")
                             startProbing()
@@ -1393,27 +1415,36 @@ class TxController(
             return
         }
         if (state == State.PROBING) {
-            // DSP-readiness watch: the moment capture registers real
-            // acoustic energy — our probe tick or any ambient sound —
-            // the platform chain is verifiably passing audio and the
-            // burst can proceed to the true TPT. Frames are observed,
-            // never encoded (nothing here is burst speech).
+            // Input-path readiness watch: sustained acoustic energy —
+            // our probe tick or ambient sound — proves the platform
+            // chain is passing audio and the burst can proceed to the
+            // true TPT. SUSTAINED matters: a partially-converged
+            // Samsung DSP leaked a single tick frame at rms 69 and then
+            // clamped shut again (2026-07-17), so one hot frame is a
+            // blip, [PROBE_HEARD_CONSECUTIVE_FRAMES] in a row is an
+            // open path. Frames are observed, never encoded (nothing
+            // here is burst speech).
             val rms = rms(pcm)
             if (rms >= PROBE_HEARD_RMS_THRESHOLD) {
-                synchronized(this@TxController) {
-                    if (state == State.PROBING) {
-                        val elapsed = System.currentTimeMillis() - probeStartMs
-                        cooldownHandler.removeCallbacks(probeTickRunnable)
-                        cooldownHandler.removeCallbacks(probeCeilingRunnable)
-                        Log.i(
-                            TAG,
-                            "PROBING: path verified after ${elapsed}ms (heard rms=$rms, " +
-                                "$probeTicksPlayed ticks) — playing TPT",
-                        )
-                        txDiag("probe verified ${elapsed}ms rms=$rms ticks=$probeTicksPlayed")
-                        startTpt()
+                probeConsecutiveHeard++
+                if (probeConsecutiveHeard >= PROBE_HEARD_CONSECUTIVE_FRAMES) {
+                    synchronized(this@TxController) {
+                        if (state == State.PROBING) {
+                            val elapsed = System.currentTimeMillis() - probeStartMs
+                            cooldownHandler.removeCallbacks(probeTickRunnable)
+                            cooldownHandler.removeCallbacks(probeCeilingRunnable)
+                            Log.i(
+                                TAG,
+                                "PROBING: path verified after ${elapsed}ms (heard rms=$rms sustained " +
+                                    "x$probeConsecutiveHeard, $probeTicksPlayed ticks) — playing TPT",
+                            )
+                            txDiag("probe verified ${elapsed}ms rms=$rms ticks=$probeTicksPlayed")
+                            startTpt()
+                        }
                     }
                 }
+            } else {
+                probeConsecutiveHeard = 0
             }
             return
         }
@@ -2081,6 +2112,15 @@ class TxController(
         // floor is 0-2. 50 sits an order of magnitude above the floor
         // and comfortably below any real acoustic pickup.
         internal const val PROBE_HEARD_RMS_THRESHOLD = 50
+
+        // Sustained-energy requirement: consecutive frames at/above the
+        // threshold before the probe declares the path open. One frame
+        // is a blip (Samsung's partially-converged DSP leaked a single
+        // tick frame at rms 69 and then clamped shut, 2026-07-17);
+        // three in a row (30 ms) is an open chain. Each ~80 ms tick
+        // spans ~8 frames, so a genuinely open path verifies within a
+        // single tick.
+        internal const val PROBE_HEARD_CONSECUTIVE_FRAMES = 3
 
         // Cadence of probe ticks. Each tick is ~80 ms of audio; ~350 ms
         // spacing gives the DSP continuous input to converge on while

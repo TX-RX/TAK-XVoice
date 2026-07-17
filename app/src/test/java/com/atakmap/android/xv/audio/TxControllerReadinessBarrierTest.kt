@@ -201,10 +201,12 @@ class TxControllerReadinessBarrierTest {
     }
 
     @Test
-    fun `cold-SCO priming still requires non-silent frames for the alive gate`() {
+    fun `cold-SCO priming still requires non-silent frames, then routes to PROBING`() {
         // The non-silent rule stays on the SCO axis: a cold BT chipset
-        // that only produces zeros is not ready, and cold-SCO bursts
-        // have no PROBING phase to catch it later.
+        // that only produces zeros is not ready. Completion then goes
+        // to PROBING (2026-07-17: the fixed 300 ms AOC hold was a
+        // guessed timer that let a Pixel+puck cold burst ship ~1.3 s of
+        // near-silence; the probe measures instead).
         val tx = buildController()
         tx.setStateForTest(TxController.State.PRIMING)
         tx.setPrimingGatesForTest(coldSco = true, coldCall = false)
@@ -220,8 +222,28 @@ class TxControllerReadinessBarrierTest {
         val noiseFloor = ShortArray(480) { 3 }
         repeat(30) { tx.onPcmFrameForTest(noiseFloor) }
         assertEquals(
-            "30 non-silent frames complete the cold-SCO gate",
-            TxController.State.TPT,
+            "30 non-silent frames complete the cold-SCO gate into PROBING",
+            TxController.State.PROBING,
+            tx.currentStateForTest(),
+        )
+    }
+
+    @Test
+    fun `cold-SCO priming — even genuine speech does NOT skip the probe`() {
+        // 2026-07-17 Pixel cold-SCO: priming detected rms 586, yet the
+        // TX head still went out near-silent — the BT chipset can burst
+        // energy mid-ramp and then go quiet. On SCO the speech shortcut
+        // is disabled; the probe is the only trusted readiness proof.
+        val tx = buildController()
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = true, coldCall = false)
+
+        val speech = ShortArray(480) { i -> (10_000.0 * kotlin.math.sin(i * 0.2)).toInt().toShort() }
+        tx.onPcmFrameForTest(speech)
+
+        assertEquals(
+            "speech during cold-SCO priming must still route to PROBING",
+            TxController.State.PROBING,
             tx.currentStateForTest(),
         )
     }
@@ -251,7 +273,7 @@ class TxControllerReadinessBarrierTest {
     // ============================================================
 
     @Test
-    fun `PROBING — capture energy at the heard threshold releases into TPT`() {
+    fun `PROBING — sustained energy at the heard threshold releases into TPT`() {
         val tx = buildController()
         tx.setStateForTest(TxController.State.PRIMING)
         tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
@@ -261,13 +283,49 @@ class TxControllerReadinessBarrierTest {
 
         // The probe tick (or any ambient sound) arriving through the
         // capture path — constant amplitude at the threshold gives
-        // rms == PROBE_HEARD_RMS_THRESHOLD; the check is >=.
+        // rms == PROBE_HEARD_RMS_THRESHOLD; the check is >=, sustained
+        // for PROBE_HEARD_CONSECUTIVE_FRAMES.
         val heard = ShortArray(480) { TxController.PROBE_HEARD_RMS_THRESHOLD.toShort() }
+        repeat(TxController.PROBE_HEARD_CONSECUTIVE_FRAMES - 1) {
+            tx.onPcmFrameForTest(heard)
+            assertEquals(
+                "fewer than the sustained requirement must keep probing",
+                TxController.State.PROBING,
+                tx.currentStateForTest(),
+            )
+        }
         tx.onPcmFrameForTest(heard)
 
         assertEquals(
-            "energy through the chain = path verified = TPT",
+            "sustained energy through the chain = path verified = TPT",
             TxController.State.TPT,
+            tx.currentStateForTest(),
+        )
+    }
+
+    @Test
+    fun `PROBING — a single-frame blip followed by suppression does not release the tone`() {
+        // The Samsung false-positive (2026-07-17 17:27 burst): the tick
+        // leaked through ONE frame at rms 69 while the DSP was only
+        // partially open, then the chain clamped shut again. A blip
+        // must reset the sustained counter, not fire the beep.
+        val tx = buildController()
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
+        val silent = ShortArray(480) { 0 }
+        repeat(5) { tx.onPcmFrameForTest(silent) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        val blip = ShortArray(480) { 69 }
+        val floor = ShortArray(480) { 2 }
+        repeat(4) {
+            tx.onPcmFrameForTest(blip)
+            tx.onPcmFrameForTest(floor)
+        }
+
+        assertEquals(
+            "blip-suppress cycles must never satisfy the sustained requirement",
+            TxController.State.PROBING,
             tx.currentStateForTest(),
         )
     }

@@ -566,6 +566,39 @@ class AudioCapture(
                 onFrame(buf.copyOf(n))
             }
         }
+        // Epilogue: the loop can exit while the capture is still
+        // nominally running — restart budget exhausted, a restart
+        // rebuild/startRecording failure, or a fatal read error with no
+        // restart pending. Without this, the AudioRecord outlives its
+        // read thread (native mic handle held, activeSessionId stale)
+        // and the stall watchdog keeps firing restart requests nothing
+        // will ever service. Tear down in place so the next capture
+        // attempt starts from a clean slate. A normal stop() flips
+        // `running` false before we get here and does its own teardown,
+        // so this path is skipped then; the guarded try/catch teardown
+        // is idempotent against a stop() racing us anyway.
+        if (running) {
+            Log.w(TAG, "read loop exiting while capture still marked running — cleaning up in place")
+            capDiag("read loop died — in-place cleanup", 'W')
+            running = false
+            removeWatchers(record)
+            record?.let {
+                try {
+                    it.stop()
+                } catch (_: Throwable) {
+                }
+                try {
+                    it.release()
+                } catch (_: Throwable) {
+                }
+            }
+            record = null
+            try {
+                onSessionIdChanged(null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "onSessionIdChanged(loop-death cleanup) threw", t)
+            }
+        }
     }
 
     // NOTE: there is deliberately no configureAudioEffects() here any
