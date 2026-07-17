@@ -129,3 +129,11 @@ refinements are deferred:
     different multicast channels. Rekey the config store to
     (server, channel) to match derivation. (Known-channel + server-tag
     stores are already split correctly; this is the remaining one.)
+- **Mesh indicator on the unified channel selector** (operator request
+  2026-07-16): the main-screen picker folds mesh/offline channels in, and
+  per-channel IP/port customization lives in the Mesh tab — but a row
+  gives no visual cue that a channel is mesh-backed (or mesh-only).
+  Rows should carry a mesh badge/icon so the unified list reads the
+  same as the Mesh view: which channels have a multicast leg, which are
+  server-only, which are offline/ad-hoc. Ties into the grouped-picker
+  work above.

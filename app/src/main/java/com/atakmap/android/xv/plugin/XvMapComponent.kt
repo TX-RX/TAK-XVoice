@@ -3011,9 +3011,33 @@ class XvMapComponent : AbstractMapComponent() {
                 },
                 meshEnabled = { settings.persistedMeshVoiceEnabled() },
                 configForChannel = { channel ->
-                    settings.channelMulticastConfigFor(channel)
-                        ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
-                            .defaultFor(channel)
+                    val cfg =
+                        settings.channelMulticastConfigFor(channel)
+                            ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+                                .defaultFor(channel)
+                    // A shared/known channel remembers its originating
+                    // server. On a device with no server identity of its
+                    // own (wiped / never enrolled), derive the endpoint
+                    // from that remembered host and hand the manager a
+                    // PINNED copy — otherwise resolveEndpoint has no
+                    // identity, no leg ever joins, and PTT bonks. Field
+                    // repro 2026-07-16 22:41: a wiped device accepted 11
+                    // CoT-shared channels and brought up zero legs.
+                    if (cfg.pinnedGroup == null && activeMumbleHost == null) {
+                        settings
+                            .channelServer(channel)
+                            ?.let { host ->
+                                runCatching {
+                                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation.derive(
+                                        com.atakmap.android.xv.transport.multicast.ServerIdentity.fromHostname(host),
+                                        channel,
+                                    )
+                                }.getOrNull()
+                            }?.let { endpoint -> cfg.copy(pinnedGroup = endpoint.groupAddress, pinnedPort = endpoint.port) }
+                            ?: cfg
+                    } else {
+                        cfg
+                    }
                 },
                 serverIdentity = {
                     // Live Mumble host when connected; otherwise the
@@ -3307,7 +3331,19 @@ class XvMapComponent : AbstractMapComponent() {
                 sharerUid = uid,
                 sharerCallsign = callsign,
                 targetUids = targetUids,
-                serverHost = activeMumbleHost,
+                // The receiver derives endpoints from this host — a wiped
+                // or never-enrolled device has NO server identity of its
+                // own, so a null here leaves it unable to bring up a
+                // single leg (field repro 2026-07-16 22:41). Fall back to
+                // the configured TAK server when Mumble isn't live at
+                // share time, same chain as mesh derivation itself.
+                serverHost =
+                activeMumbleHost
+                    ?: try {
+                        TakServerDiscovery.pickPreferred(settings.persistedPreferredTakHost())?.host
+                    } catch (_: Throwable) {
+                        null
+                    },
                 channelNames = channelNames,
             ),
         )
