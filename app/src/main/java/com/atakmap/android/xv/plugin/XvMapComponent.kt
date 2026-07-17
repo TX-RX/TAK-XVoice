@@ -3358,6 +3358,16 @@ class XvMapComponent : AbstractMapComponent() {
                 com.atakmap.android.xv.provisioning.CommsPlan.Channel(displayName = name, config = config),
             )
         }
+        // Merge the shared names into the known-channel directory —
+        // that directory (plus the primary + live beacons) is what
+        // meshChannelCandidates() renders in the picker. Persisting
+        // only the configs left accepted channels INVISIBLE on a wiped
+        // offline device: the operator tapped Join on 11 channels and
+        // saw one (the auto-primary) — field repro 2026-07-16 22:32.
+        settings.persistKnownChannels(
+            (settings.persistedKnownChannels() + signal.channelNames).toSet(),
+        )
+        lastKnownChannelsSnapshot = null
         settings.persistMeshVoiceEnabled(true)
         // The operator tapped Join — land on the first shared channel.
         signal.channelNames.firstOrNull()?.let { first ->
@@ -3688,6 +3698,14 @@ class XvMapComponent : AbstractMapComponent() {
             // carried one, else its config alone (cleartext/interop).
             recordShareableChannel(ch)
         }
+        // Same directory merge as acceptSharedChannels: the picker
+        // renders the known-channel directory, not the config store, so
+        // imported channels beyond the auto-primary were invisible on a
+        // wiped offline device.
+        settings.persistKnownChannels(
+            (settings.persistedKnownChannels() + plan.channels.map { it.config.channelName }).toSet(),
+        )
+        lastKnownChannelsSnapshot = null
         persistMeshKeysEncrypted()
         settings.persistMeshVoiceEnabled(true)
         if (settings.persistedPrimaryChannel().isBlank()) {
