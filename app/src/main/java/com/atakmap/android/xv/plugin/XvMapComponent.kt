@@ -2235,11 +2235,24 @@ class XvMapComponent : AbstractMapComponent() {
                     t.joinedChannelName()?.let { return it }
                 }
                 val cfg = activeTransport?.config
-                return if (cfg is com.atakmap.android.xv.transport.TransportConfig.Mumble) {
-                    cfg.channelName.takeIf { it.isNotBlank() }
-                } else {
-                    null
+                if (cfg is com.atakmap.android.xv.transport.TransportConfig.Mumble) {
+                    cfg.channelName.takeIf { it.isNotBlank() }?.let { return it }
                 }
+                // Server-less mesh mode: no Mumble session exists at all,
+                // but a multicast leg is carrying the primary channel.
+                // Without this fallback the main-screen PTT header went
+                // BLANK the moment the device ran mesh-only — the
+                // operator selected a channel and couldn't see which one
+                // they were keying (field report 2026-07-16).
+                if (settings.persistedMeshVoiceEnabled()) {
+                    val meshActive = meshVoiceManager?.activeLegs()?.keys?.firstOrNull { it != MeshVoiceManager.RENDEZVOUS_CHANNEL }
+                    settings
+                        .persistedPrimaryChannel()
+                        .takeIf { it.isNotBlank() }
+                        ?.let { return it }
+                    meshActive?.let { return it }
+                }
+                return null
             }
 
             override fun secondaryChannelName(): String? = lastSecondaryChannel?.takeIf { it.isNotBlank() }
