@@ -79,11 +79,19 @@ interface MeshLeg {
  * manager; called from the leg's receive thread.
  */
 interface MeshLegSink {
+    /**
+     * One playable frame off a leg. [sourceHost] is the datagram's
+     * source IP — dedup granularity for the bridge-handoff overlap,
+     * where two bridges relay the SAME speaker (same SSRC, independent
+     * sequences) and only the source address tells the copies apart.
+     * Defaults to "" for test fakes that don't model addressing.
+     */
     fun onVoice(
         channelName: String,
         opus: ByteArray,
         speakerKey: String,
         seqInBurst: Int?,
+        sourceHost: String = "",
     )
 
     fun onControl(

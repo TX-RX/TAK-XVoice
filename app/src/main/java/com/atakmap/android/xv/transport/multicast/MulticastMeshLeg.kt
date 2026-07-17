@@ -49,9 +49,9 @@ class MulticastMeshLeg(
             txCodec = config.newWireCodec(ourSsrc, effectiveRegistry),
             rxCodec = config.newWireCodec(ourSsrc, effectiveRegistry),
             localSpeakerKey = "ssrc:%08x".format(ourSsrc),
-            onIncomingOpus = { opus, speakerKey, seqInBurst ->
+            onIncomingOpus = { opus, speakerKey, seqInBurst, sourceHost ->
                 if (!isOwnRelaySpeaker(speakerKey)) {
-                    sink.onVoice(config.channelName, opus, speakerKey, seqInBurst)
+                    sink.onVoice(config.channelName, opus, speakerKey, seqInBurst, sourceHost)
                 }
             },
             onControlMessage = { msg, sourceHost ->

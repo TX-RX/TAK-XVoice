@@ -395,8 +395,9 @@ class MeshVoiceManager(
         opus: ByteArray,
         speakerKey: String,
         seqInBurst: Int?,
+        sourceHost: String,
     ) {
-        val action = decideVoiceRx(channelName, speakerKey)
+        val action = decideVoiceRx(channelName, speakerKey, sourceHost)
         if (!action.play) return
         onRxOpus(opus, "mcast:$channelName:$speakerKey")
         if (action.relay) {
@@ -420,6 +421,7 @@ class MeshVoiceManager(
     private fun decideVoiceRx(
         channelName: String,
         speakerKey: String,
+        sourceHost: String,
     ): VoiceRxAction {
         if (channelName == RENDEZVOUS_CHANNEL) {
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
@@ -452,7 +454,15 @@ class MeshVoiceManager(
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
         }
         val canonical = ssrcKeyToUid[speakerKey] ?: speakerKey
-        if (!deduper.shouldPlay(legId = "mesh:$channelName", speaker = canonical, nowMs = now)) {
+        // The dedup leg id includes the datagram's SOURCE: during a
+        // bridge handoff two bridges relay the SAME server speaker
+        // (same SSRC, independent sequence bases) for a few seconds,
+        // and without source granularity both copies share one leg id
+        // and both play — interleaved streams the operators heard as
+        // "packet collisions" (field repro 2026-07-16 ~23:15). With it,
+        // the first source to deliver owns the speaker for the burst;
+        // the second bridge's copy drops until the owner goes silent.
+        if (!deduper.shouldPlay(legId = "mesh:$channelName:$sourceHost", speaker = canonical, nowMs = now)) {
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
         }
         // Relay eligibility: never bounce server-originated audio back

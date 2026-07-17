@@ -47,8 +47,15 @@ class MulticastTransport(
     private val rxCodec: MulticastWireCodec,
     /** Our own RX-side speaker key (e.g. `ssrc:<hex8>`); frames matching it are looped-back TX and get dropped. */
     private val localSpeakerKey: String? = null,
-    /** One received voice frame: raw Opus + stable speaker key + burst-relative sequence (null on interop legs). */
-    private val onIncomingOpus: ((opus: ByteArray, speakerKey: String, seqInBurst: Int?) -> Unit)? = null,
+    /**
+     * One received voice frame: raw Opus + stable speaker key +
+     * burst-relative sequence (null on interop legs) + the datagram's
+     * source host. The source host feeds dedup: during a bridge handoff
+     * two bridges can relay the SAME server speaker (same SSRC,
+     * independent sequences) for a few seconds, and only the source
+     * address tells the copies apart.
+     */
+    private val onIncomingOpus: ((opus: ByteArray, speakerKey: String, seqInBurst: Int?, sourceHost: String) -> Unit)? = null,
     /** One received XVMC control-plane message. */
     private val onControlMessage: ((msg: ControlPacket.Message, sourceHost: String) -> Unit)? = null,
     // Test seam — production callers leave this at the default, which
@@ -171,7 +178,7 @@ class MulticastTransport(
                             // Our own TX looped back by the OS — not a peer.
                             continue
                         }
-                        onIncomingOpus?.invoke(r.opus, r.speakerKey, r.seqInBurst)
+                        onIncomingOpus?.invoke(r.opus, r.speakerKey, r.seqInBurst, sourceHost)
                         l.onVoiceFrame(
                             VoiceFrame(
                                 opusPayload = r.opus,

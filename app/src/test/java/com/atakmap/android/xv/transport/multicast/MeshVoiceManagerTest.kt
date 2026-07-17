@@ -770,6 +770,30 @@ class MeshVoiceManagerTest {
     }
 
     @Test
+    fun `same speaker from two mesh sources plays once - source-affinity dedup`() {
+        // Bridge-handoff overlap: for a few seconds TWO bridges relay
+        // the SAME server speaker onto the group — same SSRC,
+        // independent sequence bases. Without source granularity both
+        // copies shared one dedup leg id and both played, interleaving
+        // into the garbled audio operators reported as "packet
+        // collisions" (field repro 2026-07-16). First source to deliver
+        // owns the speaker for the burst.
+        val h = Harness()
+        h.joinAndTick()
+        val ssrcKey = ssrcKeyOf("uid-remote-speaker")
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKey, seqInBurst = 0, sourceHost = "192.0.2.10")
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKey, seqInBurst = 0, sourceHost = "192.0.2.20")
+        h.manager.onVoice("ops-1", byteArrayOf(2), ssrcKey, seqInBurst = 1, sourceHost = "192.0.2.10")
+        assertEquals("second bridge's copy must be suppressed", 2, h.playedRx.size)
+
+        // Owner falls silent (handoff completes) — the surviving bridge
+        // takes the speaker over cleanly.
+        h.now += 1_000
+        h.manager.onVoice("ops-1", byteArrayOf(3), ssrcKey, seqInBurst = 0, sourceHost = "192.0.2.20")
+        assertEquals(3, h.playedRx.size)
+    }
+
+    @Test
     fun `bridge does not re-relay speakers who are already on the server`() {
         val h = Harness()
         h.peerUids += "uid-peer"
