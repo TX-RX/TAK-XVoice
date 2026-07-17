@@ -6,7 +6,11 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioRouting
 import android.media.MediaRecorder
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 
 // PCM capture for TX. Reads fixed-size frames from AudioRecord and pushes
@@ -23,9 +27,28 @@ import android.util.Log
 //     comment at [start] for why that was the source of the garbled
 //     start-of-transmission audio.
 //
+// Self-healing (2026-07-17): the platform re-provisions the input path
+// when a self-managed Telecom call activates or the route otherwise
+// changes mid-capture (BT SCO up/down, wired attach). An AudioRecord
+// opened before such a reroute is invalidated in place — the observed
+// failure on the Galaxy Tab Active5 was a 2.6 s blocked read() at the
+// route change, then a stream alternating ~300 ms blocks of real audio
+// and hard digital zeros for the rest of the burst. Two watchers guard
+// against that:
+//   1. An [AudioRouting.OnRoutingChangedListener] on the record — any
+//      routed-device change while running triggers an in-place restart
+//      (fresh AudioRecord, same read loop, session id re-published).
+//   2. A stall watchdog on [callbackHandler] — if the read loop stops
+//      delivering frames for ~1.5 s with no routing callback (not every
+//      OEM fires one), the same restart path runs.
+// Restarts are bounded ([MAX_INPLACE_RESTARTS]) so a genuinely wedged
+// HAL degrades to onCaptureError instead of a restart loop.
+//
 // Threading: a dedicated read thread blocks in AudioRecord.read; frames
 // are delivered to onFrame on that thread. Caller is responsible for
-// marshalling if the consumer isn't thread-safe.
+// marshalling if the consumer isn't thread-safe. Restarts execute ON the
+// read thread (the watchers only request them and unblock the read), so
+// the record field is never swapped under a concurrent read.
 @SuppressLint("MissingPermission")
 class AudioCapture(
     private val context: Context? = null,
@@ -53,7 +76,9 @@ class AudioCapture(
     // session is what the platform AEC subtracts from the mic input, so
     // the co-located speakermic case still works without any app-owned
     // effect. Default no-op keeps the constructor usable in tests /
-    // historical callsites that don't route through VoicePlant.
+    // historical callsites that don't route through VoicePlant. Also
+    // fires on every in-place restart (the fresh record gets a fresh
+    // session id) so the playback side never binds to a dead session.
     private val onSessionIdChanged: (Int?) -> Unit = {},
 ) {
     private val channelMask =
@@ -82,8 +107,107 @@ class AudioCapture(
     @Volatile
     private var running: Boolean = false
 
+    // ---- self-heal state --------------------------------------------
+
+    // Set by the routing listener / stall watchdog; consumed by the read
+    // loop, which performs the actual restart on its own thread.
+    @Volatile
+    private var restartRequested: Boolean = false
+
+    @Volatile
+    private var restartCount: Int = 0
+
+    // Device id the record was routed to the last time we looked. Used
+    // to ignore no-op routing callbacks (some OEMs re-fire the listener
+    // with an unchanged device).
+    @Volatile
+    private var lastRoutedDeviceId: Int = -1
+
+    // Total frames delivered across the capture's lifetime (survives
+    // in-place restarts). Read by the stall watchdog.
+    @Volatile
+    private var totalFrames: Long = 0
+
+    private var stallCheckLastFrames: Long = -1
+    private var stallStrikes: Int = 0
+
+    // Handler for the routing listener + stall watchdog. Main looper —
+    // both callbacks are tiny (flag flip + record.stop()).
+    private val callbackHandler = Handler(Looper.getMainLooper())
+
+    private val routingListener =
+        AudioRouting.OnRoutingChangedListener { router ->
+            if (!running) return@OnRoutingChangedListener
+            val dev =
+                try {
+                    router.routedDevice
+                } catch (t: Throwable) {
+                    null
+                }
+            val id = dev?.id ?: -1
+            if (id == lastRoutedDeviceId) return@OnRoutingChangedListener
+            Log.w(
+                TAG,
+                "input routing changed mid-capture → ${dev?.productName}/${dev?.let { typeName(it.type) }} " +
+                    "(was device id=$lastRoutedDeviceId) — restarting AudioRecord in place",
+            )
+            lastRoutedDeviceId = id
+            requestRestart()
+        }
+
+    private val stallCheckRunnable =
+        object : Runnable {
+            override fun run() {
+                if (!running) return
+                val frames = totalFrames
+                if (frames == stallCheckLastFrames && !restartRequested) {
+                    stallStrikes++
+                    if (stallStrikes >= STALL_STRIKES_TO_RESTART) {
+                        Log.w(
+                            TAG,
+                            "read loop stalled (no frames for ~${stallStrikes * STALL_CHECK_INTERVAL_MS}ms " +
+                                "at frame #$frames) — forcing in-place restart",
+                        )
+                        stallStrikes = 0
+                        requestRestart()
+                    }
+                } else {
+                    stallStrikes = 0
+                }
+                stallCheckLastFrames = frames
+                callbackHandler.postDelayed(this, STALL_CHECK_INTERVAL_MS)
+            }
+        }
+
+    /** Ask the read thread to swap in a fresh AudioRecord. Safe from any
+     *  thread; stop() on the old record unblocks a read in flight. */
+    private fun requestRestart() {
+        if (!running) return
+        restartRequested = true
+        try {
+            record?.stop()
+        } catch (_: Throwable) {
+        }
+    }
+
     fun start() {
         if (running) return
+        val r = buildRecord() ?: return
+
+        record = r
+        running = true
+        if (!startRecordingOrFail(r)) return
+        installWatchers(r)
+        thread =
+            Thread({ runReadLoop() }, "xv-mic-capture").also { it.start() }
+        publishSessionId(r)
+        logStarted(r, restart = false)
+    }
+
+    /** Allocate + validate an AudioRecord. Returns null (after firing
+     *  onCaptureError) on any failure. Shared by [start] and the
+     *  in-place restart path. */
+    private fun buildRecord(): AudioRecord? {
         val r =
             try {
                 AudioRecord
@@ -111,11 +235,11 @@ class AudioCapture(
                 // silent PTT bonk with no log signature. Audit H5.
                 Log.e(TAG, "AudioRecord build threw SecurityException — RECORD_AUDIO permission revoked", t)
                 onCaptureError("RECORD_AUDIO permission revoked — re-grant in system Settings")
-                return
+                return null
             } catch (t: Throwable) {
                 Log.e(TAG, "AudioRecord build failed", t)
                 onCaptureError("AudioRecord init failed: ${t.message ?: t.javaClass.simpleName}")
-                return
+                return null
             }
         if (r.state != AudioRecord.STATE_INITIALIZED) {
             Log.e(TAG, "AudioRecord not initialized (state=${r.state}) — likely permission or audio-routing issue")
@@ -123,7 +247,7 @@ class AudioCapture(
             onCaptureError(
                 "AudioRecord init failed (state=${r.state}) — check RECORD_AUDIO permission and BT routing",
             )
-            return
+            return null
         }
 
         // Pick the input device so routing is settled and logged. No
@@ -142,25 +266,54 @@ class AudioCapture(
         // tearing the DSP down mid-stream ("sometimes the first one is
         // completely garbled"). Trusting the single platform chain removes
         // both failure modes and the double-processing entirely.
-        val pickedType = applyPreferredInputDevice(r)
+        applyPreferredInputDevice(r)
+        return r
+    }
 
-        record = r
-        running = true
+    private fun startRecordingOrFail(r: AudioRecord): Boolean {
         try {
             r.startRecording()
         } catch (t: SecurityException) {
             Log.e(TAG, "AudioRecord.startRecording threw SecurityException — RECORD_AUDIO permission revoked", t)
             onCaptureError("RECORD_AUDIO permission revoked — re-grant in system Settings")
             stop()
-            return
+            return false
         } catch (t: Throwable) {
             Log.e(TAG, "AudioRecord.startRecording threw", t)
             onCaptureError("AudioRecord startRecording failed: ${t.message ?: t.javaClass.simpleName}")
             stop()
-            return
+            return false
         }
-        thread =
-            Thread({ runReadLoop() }, "xv-mic-capture").also { it.start() }
+        return true
+    }
+
+    private fun installWatchers(r: AudioRecord) {
+        lastRoutedDeviceId =
+            try {
+                r.routedDevice?.id ?: -1
+            } catch (t: Throwable) {
+                -1
+            }
+        try {
+            r.addOnRoutingChangedListener(routingListener, callbackHandler)
+        } catch (t: Throwable) {
+            Log.w(TAG, "addOnRoutingChangedListener failed — reroute self-heal disabled", t)
+        }
+        stallCheckLastFrames = -1
+        stallStrikes = 0
+        callbackHandler.removeCallbacks(stallCheckRunnable)
+        callbackHandler.postDelayed(stallCheckRunnable, STALL_CHECK_INTERVAL_MS)
+    }
+
+    private fun removeWatchers(r: AudioRecord?) {
+        callbackHandler.removeCallbacks(stallCheckRunnable)
+        try {
+            r?.removeOnRoutingChangedListener(routingListener)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun publishSessionId(r: AudioRecord) {
         // Bubble the OS-assigned capture session id up to the plant so
         // AudioPlayback can bind its AudioTrack to the same session
         // (setSessionId on AudioTrack). Capture + playback sharing one
@@ -176,6 +329,12 @@ class AudioCapture(
         } catch (t: Throwable) {
             Log.w(TAG, "onSessionIdChanged(start) threw", t)
         }
+    }
+
+    private fun logStarted(
+        r: AudioRecord,
+        restart: Boolean,
+    ) {
         // The actually-routed input device may differ from the requested
         // preferredDevice — the OS picks routing per its policy. Log the
         // routed device so silent-mic bugs are diagnosable: if we asked
@@ -189,10 +348,11 @@ class AudioCapture(
             } catch (t: Throwable) {
                 null
             }
+        val verb = if (restart) "restarted in place (#$restartCount)" else "started"
         Log.i(
             TAG,
-            "AudioRecord started (rate=$sampleRateHz frame=$frameSamples " +
-                "pickedType=${typeName(pickedType)} preferred=${r.preferredDevice?.productName} " +
+            "AudioRecord $verb (rate=$sampleRateHz frame=$frameSamples " +
+                "preferred=${r.preferredDevice?.productName} " +
                 "routed=${routed?.productName}/${routed?.let { typeName(it.type) }})",
         )
     }
@@ -249,6 +409,8 @@ class AudioCapture(
 
     fun stop() {
         running = false
+        restartRequested = false
+        removeWatchers(record)
         thread?.interrupt()
         thread = null
         record?.let {
@@ -273,27 +435,86 @@ class AudioCapture(
         Log.i(TAG, "AudioRecord stopped")
     }
 
+    /** Executes an in-place restart ON the read thread: release the old
+     *  record, build + start a fresh one, rearm the watchers, republish
+     *  the session id. Returns the fresh record, or null when the
+     *  restart budget is exhausted / the rebuild failed (read loop
+     *  exits; [stop] semantics apply via the error callback). */
+    private fun performInPlaceRestart(old: AudioRecord): AudioRecord? {
+        restartRequested = false
+        if (restartCount >= MAX_INPLACE_RESTARTS) {
+            Log.e(
+                TAG,
+                "in-place restart budget exhausted ($restartCount/$MAX_INPLACE_RESTARTS) — giving up on this capture",
+            )
+            onCaptureError("mic input path keeps dropping (restarted $restartCount times) — check BT/audio state")
+            return null
+        }
+        restartCount++
+        removeWatchers(old)
+        try {
+            old.stop()
+        } catch (_: Throwable) {
+        }
+        try {
+            old.release()
+        } catch (_: Throwable) {
+        }
+        // Small settle pause: the HAL that just invalidated the old
+        // stream may reject an immediate re-open with the same config.
+        SystemClock.sleep(RESTART_SETTLE_MS)
+        if (!running) return null
+        val fresh = buildRecord() ?: return null
+        record = fresh
+        try {
+            fresh.startRecording()
+        } catch (t: Throwable) {
+            Log.e(TAG, "in-place restart: startRecording threw", t)
+            onCaptureError("AudioRecord restart failed: ${t.message ?: t.javaClass.simpleName}")
+            return null
+        }
+        installWatchers(fresh)
+        publishSessionId(fresh)
+        logStarted(fresh, restart = true)
+        return fresh
+    }
+
     private fun runReadLoop() {
         val buf = ShortArray(frameSamples)
-        val r = record ?: return
+        var r = record ?: return
         Log.i(TAG, "AudioCapture read loop started: frameSamples=$frameSamples sampleRate=$sampleRateHz")
         var frameCount = 0
-        var lastRms = 0
         while (running) {
+            if (restartRequested) {
+                r = performInPlaceRestart(r) ?: break
+                continue
+            }
             val n =
                 try {
                     r.read(buf, 0, buf.size, AudioRecord.READ_BLOCKING)
                 } catch (t: Throwable) {
-                    if (running) Log.w(TAG, "AudioRecord.read threw", t)
+                    if (running && !restartRequested) Log.w(TAG, "AudioRecord.read threw", t)
                     -1
                 }
             if (n <= 0) {
-                if (frameCount == 0) {
-                    Log.w(TAG, "AudioRecord.read returned $n on first read — no audio?")
+                // A watcher-initiated stop lands here (stop() on the old
+                // record makes the blocked read return an error) — swap
+                // in the fresh record and keep the loop alive. A read
+                // failure with no restart pending is treated the same
+                // way once: a dead record is exactly what the self-heal
+                // exists for. The restart budget bounds both cases.
+                if (running) {
+                    if (!restartRequested) {
+                        Log.w(TAG, "AudioRecord.read returned $n (frame #$frameCount) — attempting in-place restart")
+                    }
+                    restartRequested = true
+                    r = performInPlaceRestart(r) ?: break
+                    continue
                 }
                 break
             }
             frameCount++
+            totalFrames++
 
             // Diagnostic: compute RMS and show first few samples
             var sumSq = 0.0
@@ -302,7 +523,6 @@ class AudioCapture(
                 sumSq += v * v
             }
             val rms = kotlin.math.sqrt(sumSq / n).toInt()
-            lastRms = rms
 
             // Log first few frames and then every 30th frame
             if (frameCount <= 3 || frameCount % 30 == 0) {
@@ -344,5 +564,24 @@ class AudioCapture(
 
     companion object {
         private const val TAG = "XvAudioCapture"
+
+        // Ceiling on in-place restarts per capture lifetime. Three
+        // covers the realistic cascade (Telecom activates → SCO comes
+        // up → operator flips route) with one to spare; past that the
+        // HAL is wedged and the operator needs the error, not another
+        // silent retry.
+        private const val MAX_INPLACE_RESTARTS = 3
+
+        // Stall watchdog cadence and strike count: ~2 × 750 ms of zero
+        // frame delivery forces a restart. Comfortably above any normal
+        // read jitter (frames are 10 ms), comfortably below the 2.6 s
+        // stall observed in the field.
+        private const val STALL_CHECK_INTERVAL_MS = 750L
+        private const val STALL_STRIKES_TO_RESTART = 2
+
+        // Pause between releasing a dead record and re-opening. Gives
+        // the HAL's route re-provisioning a beat to finish so the fresh
+        // open lands on the post-reroute path.
+        private const val RESTART_SETTLE_MS = 50L
     }
 }
