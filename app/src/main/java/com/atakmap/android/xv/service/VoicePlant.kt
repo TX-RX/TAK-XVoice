@@ -1855,12 +1855,12 @@ class VoicePlant(
      * sources.
      */
     fun disconnectAinaReaderOnly() {
-        ainaBle?.disconnect()
+        // dispose() rather than disconnect() — see the analogous
+        // block in [disconnectExternalButton] for the rationale.
+        ainaBle?.dispose()
         ainaBle = null
         ainaSpp?.disconnect()
         ainaSpp = null
-        // dispose() rather than disconnect() — see the analogous
-        // block in [disconnectExternalButton] for the rationale.
         prymeBle?.dispose()
         prymeBle = null
         // Mirror [disconnectExternalButton]: if the operator (or a wholesale

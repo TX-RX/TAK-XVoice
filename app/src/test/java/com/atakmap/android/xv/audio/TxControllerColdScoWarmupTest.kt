@@ -161,18 +161,18 @@ class TxControllerColdScoWarmupTest {
     }
 
     @Test
-    fun `production drop count matches the field-tuned N=6`() {
-        // If someone bumps COLD_SCO_START_DROP_FRAMES away from 6, they
+    fun `production drop count matches the field-tuned N=0`() {
+        // If someone bumps COLD_SCO_START_DROP_FRAMES away from 0, they
         // should update the block comment in TxController explaining
         // why. Pin the current value here so a change is visible in
         // the same PR.
         //
         // History: N=3 was the original tuning (2026-07-08 field
-        // capture). Widened to N=6 on 2026-07-11 after peer reported
-        // residual screech at the head of cold-SCO bursts — 60 ms of
-        // drop covered the underrun burst itself but the SILK encoder
-        // was still catching the not-yet-clean tail. 120 ms clears it.
-        assertEquals(6, TxController.COLD_SCO_START_DROP_FRAMES)
+        // capture). Widened to N=6 on 2026-07-11. Reduced to N=0 on
+        // 2026-07-18 because the PROBING phase waits for DSP convergence
+        // prior to TPT, making post-TPT frame drops redundant (and
+        // harmful to the start of speech).
+        assertEquals(0, TxController.COLD_SCO_START_DROP_FRAMES)
     }
 
     // ============================================================

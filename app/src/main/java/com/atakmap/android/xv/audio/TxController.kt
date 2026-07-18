@@ -2174,7 +2174,7 @@ class TxController(
         //
         // Set to 0 to disable the drop entirely (useful for A/B
         // comparison or for platforms without the AOC modem behavior).
-        internal const val COLD_SCO_START_DROP_FRAMES: Int = 6
+        internal const val COLD_SCO_START_DROP_FRAMES: Int = 0
 
         internal val DEFAULT_COLD_START_POLICY: ColdStartMitigationPolicy =
             ColdStartMitigationPolicy(

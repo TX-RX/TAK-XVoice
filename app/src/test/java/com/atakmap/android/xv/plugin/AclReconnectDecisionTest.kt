@@ -31,7 +31,7 @@ class AclReconnectDecisionTest {
     @Test
     fun `matches when connected MAC equals saved MAC`() {
         assertTrue(
-            XvMapComponent.shouldReconnectOnAcl(
+            AclReconnectDecision.shouldReconnectOnAcl(
                 connectedMac = "AA:BB:CC:DD:EE:FF",
                 savedMac = "AA:BB:CC:DD:EE:FF",
             ),
@@ -44,7 +44,7 @@ class AclReconnectDecisionTest {
         // may have stored lower-case.  The comparison must be
         // case-insensitive so neither direction misses.
         assertTrue(
-            XvMapComponent.shouldReconnectOnAcl(
+            AclReconnectDecision.shouldReconnectOnAcl(
                 connectedMac = "AA:BB:CC:DD:EE:FF",
                 savedMac = "aa:bb:cc:dd:ee:ff",
             ),
@@ -54,7 +54,7 @@ class AclReconnectDecisionTest {
     @Test
     fun `matches case-insensitively — lower connected, upper saved`() {
         assertTrue(
-            XvMapComponent.shouldReconnectOnAcl(
+            AclReconnectDecision.shouldReconnectOnAcl(
                 connectedMac = "aa:bb:cc:dd:ee:ff",
                 savedMac = "AA:BB:CC:DD:EE:FF",
             ),
@@ -67,7 +67,7 @@ class AclReconnectDecisionTest {
         // slot.  An ACL_CONNECTED from any MAC must not trigger a
         // reconnect attempt for an unconfigured slot.
         assertFalse(
-            XvMapComponent.shouldReconnectOnAcl(
+            AclReconnectDecision.shouldReconnectOnAcl(
                 connectedMac = "AA:BB:CC:DD:EE:FF",
                 savedMac = null,
             ),
@@ -79,7 +79,7 @@ class AclReconnectDecisionTest {
         // A different device reconnected — do not disturb the slot
         // that is waiting for its own device.
         assertFalse(
-            XvMapComponent.shouldReconnectOnAcl(
+            AclReconnectDecision.shouldReconnectOnAcl(
                 connectedMac = "AA:BB:CC:DD:EE:01",
                 savedMac = "AA:BB:CC:DD:EE:FF",
             ),

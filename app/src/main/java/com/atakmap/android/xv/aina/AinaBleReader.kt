@@ -37,6 +37,9 @@ class AinaBleReader(
     private var targetDevice: BluetoothDevice? = null
 
     @Volatile
+    private var disposed: Boolean = false
+
+    @Volatile
     private var intentionalDisconnect: Boolean = false
 
     private var directRetryCount: Int = 0
@@ -106,12 +109,17 @@ class AinaBleReader(
 
     fun isConnecting(): Boolean = gatt != null
 
+    fun dispose() {
+        disposed = true
+        disconnect()
+    }
+
     fun disconnect() {
         intentionalDisconnect = true
         targetDevice = null
         handler.removeCallbacks(retryRunnable)
         closeGatt()
-        onConnectionState(false)
+        dispatchConnectionState(false)
     }
 
     private fun closeGatt() {
@@ -169,6 +177,16 @@ class AinaBleReader(
         handler.postDelayed(retryRunnable, delayMs)
     }
 
+    private fun dispatchConnectionState(state: Boolean) {
+        if (disposed) return
+        onConnectionState(state)
+    }
+
+    private fun dispatchEvent(button: AinaButton, isDown: Boolean) {
+        if (disposed) return
+        onEvent(button, isDown)
+    }
+
     private val callback =
         object : BluetoothGattCallback() {
             override fun onConnectionStateChange(
@@ -190,7 +208,7 @@ class AinaBleReader(
                         // pendingConfigReadModifyWrite window).
                         directRetryCount = 0
                         autoConnectArmed = false
-                        onConnectionState(true)
+                        dispatchConnectionState(true)
                         g.discoverServices()
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
@@ -212,7 +230,7 @@ class AinaBleReader(
                             )
                             pendingConfigReadModifyWrite = false
                         }
-                        onConnectionState(false)
+                        dispatchConnectionState(false)
                         if (!intentionalDisconnect) {
                             scheduleReconnect("status=$status ${gattStatusName(status)}")
                         }
@@ -419,6 +437,7 @@ class AinaBleReader(
                 g: BluetoothGatt,
                 ch: BluetoothGattCharacteristic,
             ) {
+                if (disposed) return
                 if (ch.uuid != BUTTON_CHAR_UUID) return
                 handleMask(ch.value)
             }
@@ -428,6 +447,7 @@ class AinaBleReader(
                 ch: BluetoothGattCharacteristic,
                 value: ByteArray,
             ) {
+                if (disposed) return
                 if (ch.uuid != BUTTON_CHAR_UUID) return
                 handleMask(value)
             }
@@ -436,7 +456,7 @@ class AinaBleReader(
                 if (bytes == null || bytes.isEmpty()) return
                 val mask = bytes[0].toInt() and 0xFF
                 for ((button, isDown) in decoder.process(mask)) {
-                    onEvent(button, isDown)
+                    dispatchEvent(button, isDown)
                 }
             }
         }

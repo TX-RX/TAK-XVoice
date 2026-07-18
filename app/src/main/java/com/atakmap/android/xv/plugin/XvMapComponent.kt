@@ -1271,7 +1271,7 @@ class XvMapComponent : AbstractMapComponent() {
                     val mac = device.address ?: return
                     val savedAinaMac = settings.persistedAinaMac()
                     val savedExtMac = settings.persistedExternalButtonMac()
-                    if (shouldReconnectOnAcl(mac, savedAinaMac)) {
+                    if (AclReconnectDecision.shouldReconnectOnAcl(mac, savedAinaMac)) {
                         Log.i(
                             TAG,
                             "ACL_CONNECTED for primary AINA MAC — " +
@@ -1287,7 +1287,7 @@ class XvMapComponent : AbstractMapComponent() {
                             ACL_RECONNECT_SETTLE_MS,
                         )
                     }
-                    if (shouldReconnectOnAcl(mac, savedExtMac)) {
+                    if (AclReconnectDecision.shouldReconnectOnAcl(mac, savedExtMac)) {
                         Log.i(
                             TAG,
                             "ACL_CONNECTED for external button MAC — " +
@@ -4826,10 +4826,7 @@ class XvMapComponent : AbstractMapComponent() {
          * (Android upper-cases MACs in broadcasts; some persist paths
          * may have lower-cased them).
          */
-        fun shouldReconnectOnAcl(
-            connectedMac: String,
-            savedMac: String?,
-        ): Boolean = savedMac != null && connectedMac.equals(savedMac, ignoreCase = true)
+        // Moved to AclReconnectDecision.kt
 
         // Persistent default for VX-compat handshake. HYBRID is the current
         // operational default: it makes XV "callable" from VX clients via
