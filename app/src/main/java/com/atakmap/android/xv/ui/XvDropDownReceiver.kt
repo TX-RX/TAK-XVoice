@@ -1636,7 +1636,7 @@ class XvDropDownReceiver(
                     val isOsBonded = com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac)
                     if (isOsBonded) {
                         val base = d.displayLabel()
-                        val warn = "\n[INCOMPATIBLE: Click to unpair from Android]"
+                        val warn = "\n[Tap to fix: Pair directly in app, not Android]"
                         val s = android.text.SpannableString(base + warn)
                         s.setSpan(
                             android.text.style.ForegroundColorSpan(android.graphics.Color.RED),
