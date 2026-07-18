@@ -1063,10 +1063,18 @@ class TxController(
             }
         }
 
-    // Bounded fallback: routes where the speaker can't reach the mic
-    // (wired headset in a quiet room) or a genuinely wedged path never
-    // satisfy the probe — past the ceiling, play the TPT anyway. This
-    // degrades to exactly the pre-probe behavior, never worse.
+    // Bounded fallback: "nothing heard" is AMBIGUOUS — a still-closed
+    // DSP, a converged platform AEC cancelling our own tick from
+    // capture (it is downlink echo by definition; the probe only works
+    // because the unconverged window leaks it), an OS-silenced mic
+    // (#87), or a route where speaker and mic don't couple (wired
+    // headset). A verified probe is proof; a ceiling is a shrug — so
+    // the ceiling path does NOT fire the tone immediately. It enters
+    // TPT state and defers the audible tone by
+    // PROBE_CEILING_FALLBACK_HOLD_MS, giving an unverifiable-but-
+    // actually-converging DSP its remaining settle time before the
+    // operator is invited to talk. Net worst case vs the pre-probe
+    // world: the fallback hold, only when verification failed.
     private val probeCeilingRunnable =
         Runnable {
             synchronized(this@TxController) {
@@ -1075,11 +1083,12 @@ class TxController(
                 Log.w(
                     TAG,
                     "PROBING: ceiling after ${elapsed}ms ($probeTicksPlayed ticks, nothing heard) — " +
-                        "speaker/mic may not couple on this route; proceeding to TPT anyway",
+                        "unverifiable path (AEC-cancelled tick / silenced mic / non-coupling route); " +
+                        "holding ${PROBE_CEILING_FALLBACK_HOLD_MS}ms before TPT",
                 )
-                txDiag("probe ceiling ${elapsed}ms ticks=$probeTicksPlayed — TPT anyway", 'W')
+                txDiag("probe ceiling ${elapsed}ms ticks=$probeTicksPlayed — fallback hold then TPT", 'W')
                 cooldownHandler.removeCallbacks(probeTickRunnable)
-                startTpt()
+                scheduleColdScoTptHold(PROBE_CEILING_FALLBACK_HOLD_MS)
             }
         }
 
@@ -1100,7 +1109,13 @@ class TxController(
         probeStartMs = System.currentTimeMillis()
         probeTicksPlayed = 0
         probeConsecutiveHeard = 0
-        probeUseSco = primingUseColdScoGates && scoLink.state == ScoLink.State.CONNECTED
+        // Tick route must follow the CAPTURE route, not the cold-SCO
+        // flag: a warm-SCO + cold-call burst captures from the BT puck
+        // while coldSco=false, and a tick played out the phone path can
+        // never reach the puck's mic (2026-07-17 17:48 field capture —
+        // structural ceiling false-negative). If the SCO link is live,
+        // the mic is the puck; probe through it.
+        probeUseSco = scoLink.state == ScoLink.State.CONNECTED
         Log.i(
             TAG,
             "PROBING: verifying input-path readiness via acoustic probe " +
@@ -1116,15 +1131,17 @@ class TxController(
     }
 
     /**
-     * Post a delayed [startTpt] to give a cold-SCO burst's AOC modem
-     * time to stabilize (see [computePrimingHoldMs]). State is flipped
-     * to [State.TPT] BEFORE the delay so incoming PCM frames get
-     * dropped by the existing state==TPT branch — no risk of
+     * Post a delayed [startTpt] to give a cold burst's settling layer
+     * its remaining time — the AOC modem on the cold-SCO priming path
+     * (see [computePrimingHoldMs]) and the unverifiable-DSP case on the
+     * probe-ceiling path ([PROBE_CEILING_FALLBACK_HOLD_MS]). State is
+     * flipped to [State.TPT] BEFORE the delay so incoming PCM frames
+     * get dropped by the existing state==TPT branch — no risk of
      * re-entering the PRIMING-completion branch and scheduling
      * multiple TPT plays.
      *
      * INVARIANT: caller holds the this@TxController monitor and state
-     * is currently PRIMING.
+     * is currently PRIMING or PROBING.
      */
     private fun scheduleColdScoTptHold(holdMs: Long) {
         state = State.TPT
@@ -2129,12 +2146,22 @@ class TxController(
 
         // Bounded ceiling on the probe wait. Covers routes where the
         // speaker output can't reach the mic (wired headset in a quiet
-        // room) and a genuinely wedged path: past this, play the TPT
-        // anyway — behavior degrades to exactly the pre-probe world,
-        // never worse. Field-observed DSP-open times were 1.5-2.6 s
-        // from record creation; 2.5 s of probing (after ~0.7 s of
-        // settle+priming) bounds the worst honest case.
+        // room) and a genuinely wedged path. Field-observed DSP-open
+        // times were 1.5-2.6 s from record creation; 2.5 s of probing
+        // (after ~0.7 s of settle+priming) bounds the worst honest
+        // case.
         internal const val PROBE_CEILING_MS = 2_500L
+
+        // Tone hold applied ONLY when the probe hits its ceiling. A
+        // heard probe is proof the chain is open — beep immediately.
+        // An unheard probe is ambiguous (a converged platform AEC
+        // cancels our own tick from capture — it is downlink echo by
+        // definition; or the mic is OS-silenced per #87; or the route
+        // doesn't couple), so the ceiling grants a converging-but-
+        // unverifiable DSP its remaining settle time before the beep.
+        // Sized to the residual convergence window observed after a
+        // full ceiling wait (~0.5-1.5 s on Pixel 9 Pro).
+        internal const val PROBE_CEILING_FALLBACK_HOLD_MS = 1_500L
 
         // ---------- PRIMING gate selection (cold-SCO vs everything else) ----------
         //

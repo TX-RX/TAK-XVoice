@@ -2,14 +2,18 @@ package com.atakmap.android.xv.audio
 
 import android.content.Context
 import android.media.AudioManager
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 
 /**
  * Coverage for the TX readiness barrier (2026-07-17): TPT must not
@@ -51,9 +55,12 @@ class TxControllerReadinessBarrierTest {
         telecomSettled = false
     }
 
-    private fun buildController(tptPlayer: TptPlayer = mockk(relaxed = true)): TxController =
+    private fun buildController(
+        tptPlayer: TptPlayer = mockk(relaxed = true),
+        scoLink: ScoLink = mockk(relaxed = true),
+    ): TxController =
         TxController(
-            scoLink = mockk(relaxed = true),
+            scoLink = scoLink,
             btPolicy = mockk(relaxed = true), // classify() → NONE → non-SCO path
             tptPlayer = tptPlayer,
             audioCaptureFactory = { _ -> mockk(relaxed = true) },
@@ -345,6 +352,58 @@ class TxControllerReadinessBarrierTest {
         repeat(100) { tx.onPcmFrameForTest(noiseFloor) }
 
         assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+    }
+
+    @Test
+    fun `PROBING — tick routes over SCO whenever the live capture route is SCO`() {
+        // 2026-07-17 17:48 field capture: a warm-SCO + cold-call burst
+        // captured from the BT puck's mic while the tick played out the
+        // phone path (probeUseSco was keyed off the cold-SCO flag) —
+        // structural ceiling false-negative. The tick route must follow
+        // the LIVE capture route.
+        val tpt = mockk<TptPlayer>(relaxed = true)
+        val sco = mockk<ScoLink>(relaxed = true)
+        every { sco.state } returns ScoLink.State.CONNECTED
+        val tx = buildController(tptPlayer = tpt, scoLink = sco)
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = false, coldCall = true) // warm SCO, fresh call
+
+        val silent = ShortArray(480) { 0 }
+        repeat(5) { tx.onPcmFrameForTest(silent) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        // Run the immediately-posted first tick.
+        shadowOf(Looper.getMainLooper()).idle()
+
+        verify { tpt.playProbeTick(useScoRoute = true) }
+    }
+
+    @Test
+    fun `PROBING ceiling defers the tone by the fallback hold instead of firing immediately`() {
+        // A heard probe is proof; a ceiling is ambiguity (AEC-cancelled
+        // tick, OS-silenced mic, non-coupling route). The ceiling path
+        // must grant the fallback hold before the beep rather than
+        // inviting speech into a possibly-still-converging chain.
+        val tpt = mockk<TptPlayer>(relaxed = true)
+        val tx = buildController(tptPlayer = tpt)
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = false, coldCall = true)
+        val silent = ShortArray(480) { 0 }
+        repeat(5) { tx.onPcmFrameForTest(silent) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        val looper = shadowOf(Looper.getMainLooper())
+        looper.idleFor(Duration.ofMillis(TxController.PROBE_CEILING_MS + 50))
+
+        assertEquals(
+            "ceiling must flip to TPT state (frames drop during the hold)",
+            TxController.State.TPT,
+            tx.currentStateForTest(),
+        )
+        verify(exactly = 0) { tpt.play(any(), any(), any()) }
+
+        looper.idleFor(Duration.ofMillis(TxController.PROBE_CEILING_FALLBACK_HOLD_MS + 50))
+        verify(exactly = 1) { tpt.play(any(), any(), any()) }
     }
 
     @Test
