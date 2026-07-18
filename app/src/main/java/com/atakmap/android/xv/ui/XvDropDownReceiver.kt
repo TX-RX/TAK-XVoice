@@ -1627,17 +1627,37 @@ class XvDropDownReceiver(
     // a connect to a device that we already know is unreachable).
     // The custom adapter is ~20 lines of code but gives us both the
     // color + tap-guard properties the leading call-picker UIs use.
-    private fun buildAinaPickerAdapter(devices: List<AinaDeviceInfo>): ArrayAdapter<String> {
+    private fun buildAinaPickerAdapter(devices: List<AinaDeviceInfo>): ArrayAdapter<CharSequence> {
         // Row 0 sentinel is always tappable/enabled.
         val entries =
             mutableListOf<PickerRow>().apply {
                 add(PickerRow(label = AINA_NONE_LABEL, available = true))
                 for (d in devices) {
-                    val suffix = if (d.available) "" else "  ·  unavailable"
-                    add(PickerRow(label = d.displayLabel() + suffix, available = d.available))
+                    val isOsBonded = com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac)
+                    if (isOsBonded) {
+                        val base = d.displayLabel()
+                        val warn = "\n[INCOMPATIBLE: Click to unpair from Android]"
+                        val s = android.text.SpannableString(base + warn)
+                        s.setSpan(
+                            android.text.style.ForegroundColorSpan(android.graphics.Color.RED),
+                            base.length,
+                            s.length,
+                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                        s.setSpan(
+                            android.text.style.RelativeSizeSpan(0.85f),
+                            base.length,
+                            s.length,
+                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                        add(PickerRow(label = s, available = true, incompatible = true))
+                    } else {
+                        val suffix = if (d.available) "" else "  ·  unavailable"
+                        add(PickerRow(label = d.displayLabel() + suffix, available = d.available))
+                    }
                 }
             }
-        return object : ArrayAdapter<String>(
+        return object : ArrayAdapter<CharSequence>(
             pluginContext,
             R.layout.xv_spinner_item,
             entries.map { it.label },
@@ -1669,8 +1689,9 @@ class XvDropDownReceiver(
     }
 
     private data class PickerRow(
-        val label: String,
+        val label: CharSequence,
         val available: Boolean,
+        val incompatible: Boolean = false,
     )
 
     // Replaces the old Connect / Disconnect buttons. Lists every bonded
@@ -2040,12 +2061,12 @@ class XvDropDownReceiver(
 
         val disp = name?.takeIf { it.isNotBlank() } ?: mac
         val msg =
-            "This Pryme button ($disp) is paired in Android Settings. " +
+            "This Bluetooth button ($disp) is paired in Android Settings. " +
                 "This causes severe pairing loops when the button is turned off and back on.\n\n" +
                 "To use this button reliably with TAK-XVoice, you MUST unpair it from Android Settings."
 
         val builder = android.app.AlertDialog.Builder(mapView.context)
-        builder.setTitle("Pryme Button Configuration Error")
+        builder.setTitle("Bluetooth Button Configuration Error")
         builder.setMessage(msg)
         builder.setCancelable(false)
         builder.setPositiveButton("Unpair Automatically") { _, _ ->

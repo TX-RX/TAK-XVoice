@@ -200,6 +200,11 @@ class AinaBleReader(
                             TAG,
                             "Connected (status=$status ${gattStatusName(status)}), discovering services",
                         )
+                        try {
+                            g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                        } catch (e: SecurityException) {
+                            Log.w(TAG, "Lacking BLUETOOTH_CONNECT permission to request high priority", e)
+                        }
                         // Quick-win M6 part 1: retry counter resets on
                         // any successful CONNECTED transition. Part 2
                         // mirrors this in onServicesDiscovered to

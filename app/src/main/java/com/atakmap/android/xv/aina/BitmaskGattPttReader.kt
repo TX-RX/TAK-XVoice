@@ -239,6 +239,11 @@ open class BitmaskGattPttReader(
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         Log.i(config.tag, "Connected (status=$status), discovering services")
+                        try {
+                            g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                        } catch (e: SecurityException) {
+                            Log.w(config.tag, "Lacking BLUETOOTH_CONNECT permission to request high priority", e)
+                        }
                         directRetryCount = 0
                         autoConnectArmed = false
                         dispatchConnectionState(true)
