@@ -413,6 +413,68 @@ class TptPlayer(
         mainHandler.postDelayed(r, TptToneGenerator.NO_PERMIT_DURATION_MS + COMPLETION_SLACK_MS)
     }
 
+    // DSP-readiness probe tick — see TptToneGenerator.probeTick and
+    // TxController.startProbing. Fire-and-forget: TxController owns the
+    // repeat cadence and the "heard it in capture" detection; this just
+    // puts ~80 ms of two-tone energy on the voice-comm path. Same
+    // routing/usage as the TPT so the probe exercises the exact
+    // speaker→air→mic→DSP loop the burst will use. Deliberately does
+    // NOT call stop() first — the probe repeats on a short cadence and
+    // must never cancel a TPT that a racing state change just started;
+    // callers guarantee no TPT is in flight while PROBING.
+    fun playProbeTick(useScoRoute: Boolean) {
+        val pcm = TptToneGenerator.probeTick()
+        val attrs =
+            AudioAttributes
+                .Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+        val format =
+            AudioFormat
+                .Builder()
+                .setSampleRate(sampleRateHz)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+        val t =
+            try {
+                AudioTrack
+                    .Builder()
+                    .setAudioAttributes(attrs)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(pcm.size * 2)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+            } catch (th: Throwable) {
+                Log.e(TAG, "probe AudioTrack build failed", th)
+                return
+            }
+        pinDeviceForTone(t, useScoRoute, "PROBE")
+        try {
+            t.write(pcm, 0, pcm.size)
+            t.play()
+        } catch (th: Throwable) {
+            Log.e(TAG, "probe write/play failed", th)
+            try {
+                t.release()
+            } catch (_: Throwable) {
+            }
+            return
+        }
+        Log.d(TAG, "probe tick")
+        mainHandler.postDelayed({
+            try {
+                t.stop()
+            } catch (_: Throwable) {
+            }
+            try {
+                t.release()
+            } catch (_: Throwable) {
+            }
+        }, TptToneGenerator.PROBE_TICK_DURATION_MS + COMPLETION_SLACK_MS)
+    }
+
     // Stronger reject tone for "you're in the channel but the server
     // says you can't speak here" (OTS direction OUT, Mumble admin
     // mute). Uses the dedicated descending-double-tone generator —

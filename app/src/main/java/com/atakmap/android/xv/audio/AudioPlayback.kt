@@ -84,12 +84,12 @@ class AudioPlayback(
     // by AudioCapture, or null when no capture is active. When non-null,
     // AudioTrack.Builder.setSessionId(id) is called so the RX playback
     // path shares a session with the mic path — that shared session id
-    // gives Android's AcousticEchoCanceler (attached to the capture
-    // session in AudioCapture.configureAudioEffects) a real downlink
-    // reference signal to subtract from the mic input. Without shared
-    // session ids, AEC has no visibility into what's coming out of the
-    // speaker and can't suppress a peer's voice echoing back through
-    // the operator's speakermic. Limitation: the very first RX before
+    // gives the platform voice DSP that AudioSource.VOICE_COMMUNICATION
+    // pulls in on the capture session (its AEC) a real downlink reference
+    // signal to subtract from the mic input. Without shared session ids,
+    // the AEC has no visibility into what's coming out of the speaker and
+    // can't suppress a peer's voice echoing back through the operator's
+    // speakermic. Limitation: the very first RX before
     // any TX still races (no capture session exists yet); the field
     // bug is warm back-and-forth, which this covers.
     private val captureSessionIdProvider: () -> Int? = { null },
@@ -593,10 +593,10 @@ class AudioPlayback(
                 .setChannelMask(channelMask)
                 .build()
         // If AudioCapture has an active session, bind the AudioTrack to
-        // the same session id so Android's AcousticEchoCanceler (attached
-        // to the capture session in AudioCapture.configureAudioEffects)
-        // has a real downlink reference signal to subtract from the mic
-        // input. First RX before any TX still races (captureSessionId
+        // the same session id so the platform voice DSP that
+        // AudioSource.VOICE_COMMUNICATION pulls in on the capture session
+        // (its AEC) has a real downlink reference signal to subtract from
+        // the mic input. First RX before any TX still races (captureSessionId
         // == null); on any RX burst that follows a PTT press, AEC is
         // now looking at the same session pair. Session ids are not
         // sensitive per CLAUDE.md — log unredacted for field debug.

@@ -274,31 +274,36 @@ class TxControllerColdScoWarmupTest {
     }
 
     // ============================================================
-    // Part 4 — PRIMING gate selection keys off COLD SCO, not "SCO up"
+    // Part 4 — PRIMING gate selection keys off a COLD burst, not "SCO up"
     //
     // 2026-07-13 field repro: SCO was held WARM across a full session
     // (the cool-down tail working as intended), yet every burst still
     // used the 30-frame (~300 ms) cold gate because the selection was
     // tied to "SCO connected." With bursty keying the operator released
     // before TX started and ZERO frames went out. The gates must be
-    // slow ONLY for a cold acquire; warm-SCO and non-SCO get fast gates.
+    // slow ONLY for a cold burst; warm-SCO and non-SCO get fast gates.
+    //
+    // 2026-07-17: the parameter widened from coldSco to coldBurst — a
+    // fresh Telecom session (cold-call axis) selects the same
+    // ramp-tolerant gates, because the OEM voice DSP re-converges after
+    // the VoIP-call reroute exactly like a cold SCO chipset ramps.
     // ============================================================
 
     @Test
-    fun `cold-SCO burst uses the ramp-tolerant gates`() {
-        assertEquals(30, TxController.primingMinFramesToConfirmAlive(coldSco = true))
-        assertEquals(200, TxController.primingRmsThreshold(coldSco = true))
-        assertEquals(1500L, TxController.primingTimeoutMs(coldSco = true))
+    fun `cold burst uses the ramp-tolerant gates`() {
+        assertEquals(30, TxController.primingMinFramesToConfirmAlive(coldBurst = true))
+        assertEquals(200, TxController.primingRmsThreshold(coldBurst = true))
+        assertEquals(1500L, TxController.primingTimeoutMs(coldBurst = true))
     }
 
     @Test
-    fun `warm-SCO or non-SCO burst uses the fast gates`() {
-        // The regression guard: coldSco=false MUST select the fast
+    fun `warm burst uses the fast gates`() {
+        // The regression guard: coldBurst=false MUST select the fast
         // gates so a warm-held-SCO key reaches the tone in ~50 ms
         // (5 frames), not ~300 ms.
-        assertEquals(5, TxController.primingMinFramesToConfirmAlive(coldSco = false))
-        assertEquals(5, TxController.primingRmsThreshold(coldSco = false))
-        assertEquals(500L, TxController.primingTimeoutMs(coldSco = false))
+        assertEquals(5, TxController.primingMinFramesToConfirmAlive(coldBurst = false))
+        assertEquals(5, TxController.primingRmsThreshold(coldBurst = false))
+        assertEquals(500L, TxController.primingTimeoutMs(coldBurst = false))
     }
 
     @Test
@@ -306,12 +311,44 @@ class TxControllerColdScoWarmupTest {
         // Intent invariant independent of the exact tuned values: a warm
         // burst never waits longer than a cold one to declare mic-alive.
         assertTrue(
-            TxController.primingMinFramesToConfirmAlive(coldSco = false) <
-                TxController.primingMinFramesToConfirmAlive(coldSco = true),
+            TxController.primingMinFramesToConfirmAlive(coldBurst = false) <
+                TxController.primingMinFramesToConfirmAlive(coldBurst = true),
         )
         assertTrue(
-            TxController.primingTimeoutMs(coldSco = false) <
-                TxController.primingTimeoutMs(coldSco = true),
+            TxController.primingTimeoutMs(coldBurst = false) <
+                TxController.primingTimeoutMs(coldBurst = true),
         )
+    }
+
+    // ============================================================
+    // Part 5 — ColdStartMitigationPolicy centralization
+    // ============================================================
+
+    @Test
+    fun `default cold-start policy mirrors companion tuning constants`() {
+        val policy = TxController.DEFAULT_COLD_START_POLICY
+        assertEquals(TxController.COLD_SCO_TPT_HOLD_MS, policy.coldScoTptHoldMs)
+        assertEquals(TxController.COLD_SCO_START_DROP_FRAMES, policy.coldScoStartDropFrames)
+    }
+
+    @Test
+    fun `policy-computed hold follows configured hold value`() {
+        val policy = ColdStartMitigationPolicy(coldScoTptHoldMs = 420L, coldScoStartDropFrames = 6)
+        assertEquals(
+            420L,
+            policy.computePrimingHoldMs(route = TxRoute.SCO, cold = true, baseMs = 0L),
+        )
+        assertEquals(
+            500L,
+            policy.computePrimingHoldMs(route = TxRoute.SCO, cold = true, baseMs = 80L),
+        )
+    }
+
+    @Test
+    fun `policy-configured drop window controls leading frame suppression`() {
+        val policy = ColdStartMitigationPolicy(coldScoTptHoldMs = 300L, coldScoStartDropFrames = 2)
+        assertTrue(policy.shouldDropStartFrame(frameNumber = 1, route = TxRoute.SCO, cold = true))
+        assertTrue(policy.shouldDropStartFrame(frameNumber = 2, route = TxRoute.SCO, cold = true))
+        assertFalse(policy.shouldDropStartFrame(frameNumber = 3, route = TxRoute.SCO, cold = true))
     }
 }
