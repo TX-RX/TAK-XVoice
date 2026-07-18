@@ -1301,19 +1301,21 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
             }
-        try {
-            androidx.core.content.ContextCompat.registerReceiver(
-                pluginContext,
-                aclReconnectReceiver!!,
-                IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED),
-                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
-            )
-            Log.i(
-                TAG,
-                "aclReconnectReceiver registered — will reconnect saved AINA / external button on ACL_CONNECTED",
-            )
-        } catch (t: Throwable) {
-            Log.w(TAG, "registerReceiver(aclReconnectReceiver) threw", t)
+        aclReconnectReceiver?.let { receiver ->
+            try {
+                androidx.core.content.ContextCompat.registerReceiver(
+                    pluginContext,
+                    receiver,
+                    IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED),
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+                Log.i(
+                    TAG,
+                    "aclReconnectReceiver registered — will reconnect saved AINA / external button on ACL_CONNECTED",
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "registerReceiver(aclReconnectReceiver) threw", t)
+            }
         }
 
         // XV-native peer discovery via CoT detail. Publishes a `<__xv>`
