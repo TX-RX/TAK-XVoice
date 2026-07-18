@@ -1406,10 +1406,10 @@ class TxController(
         Log.w(
             TAG,
             "capture restarted mid-burst — applying mitigation " +
-                "(holdMs=$holdMs dropFrames=${postRestartDropFramesRemaining})",
+                "(holdMs=$holdMs dropFrames=$postRestartDropFramesRemaining)",
         )
         txDiag(
-            "capture restart mid-burst: holdMs=$holdMs dropFrames=${postRestartDropFramesRemaining}",
+            "capture restart mid-burst: holdMs=$holdMs dropFrames=$postRestartDropFramesRemaining",
             'W',
         )
     }

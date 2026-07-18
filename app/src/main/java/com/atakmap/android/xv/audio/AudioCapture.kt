@@ -178,21 +178,21 @@ class AudioCapture(
                 }
             val id = dev?.id ?: -1
             if (id == lastRoutedDeviceId) return@OnRoutingChangedListener
-                if (!hasResolvedInitialRoute && lastRoutedDeviceId == -1 && id != -1) {
-                    hasResolvedInitialRoute = true
-                    lastRoutedDeviceId = id
-                    Log.i(
-                        TAG,
-                        "input route settled after start (device id=$id) — suppressing initial-settle restart",
-                    )
-                    capDiag("route settled after start (id=$id) — no restart")
-                    return@OnRoutingChangedListener
-                }
-                if (id == -1) {
-                    lastRoutedDeviceId = id
-                    Log.i(TAG, "input route unresolved (id=-1) — waiting for stable route before restart")
-                    return@OnRoutingChangedListener
-                }
+            if (!hasResolvedInitialRoute && lastRoutedDeviceId == -1 && id != -1) {
+                hasResolvedInitialRoute = true
+                lastRoutedDeviceId = id
+                Log.i(
+                    TAG,
+                    "input route settled after start (device id=$id) — suppressing initial-settle restart",
+                )
+                capDiag("route settled after start (id=$id) — no restart")
+                return@OnRoutingChangedListener
+            }
+            if (id == -1) {
+                lastRoutedDeviceId = id
+                Log.i(TAG, "input route unresolved (id=-1) — waiting for stable route before restart")
+                return@OnRoutingChangedListener
+            }
             Log.w(
                 TAG,
                 "input routing changed mid-capture → ${dev?.productName}/${dev?.let { typeName(it.type) }} " +
