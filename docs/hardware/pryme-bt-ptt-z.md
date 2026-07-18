@@ -14,7 +14,7 @@ If you pair the device in the Android Bluetooth settings:
 5. This cycle will repeat every time you turn the puck on and off, or every time you press the button (if it tries to wake up its HID keyboard profile).
 
 ### Correct Setup
-1. If you have already paired the Pryme button in Android, go to your Android **Settings > Connected Devices / Bluetooth**, find the Pryme device, and select **Forget** or **Unpair**.
+1. If you have already paired the Bluetooth button in Android, go to your Android **Settings > Connected Devices / Bluetooth**, find the Bluetooth device, and select **Forget** or **Unpair**.
 2. Put the Pryme puck in pairing mode.
 3. Open the TAK-XVoice plugin.
 4. Go to the plugin's Bluetooth device picker.

@@ -71,7 +71,7 @@ class OsBondedBleHidDetectorTest {
 
     @Test
     fun `returns true for bonded BLE_HID device`() {
-        // A Pryme button
+        // A Bluetooth button
         val device = mockBondedDevice("99:88:77:66:55:44", "PTT-Z")
         val adapter = mockAdapter(device)
 
