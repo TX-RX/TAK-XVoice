@@ -1760,7 +1760,26 @@ class XvDropDownReceiver(
         val statusLabel = v.findViewById<TextView>(R.id.xv_label_aina_secondary_status)
         val devices = controller.availableExternalButtonDevices()
         spinner.adapter = buildAinaPickerAdapter(devices)
-        val selectedMac = controller.selectedExternalButtonMac()
+
+        var selectedMac = controller.selectedExternalButtonMac()
+
+        // Mid-session auto-assign: if the operator paired a button in Android
+        // Settings while ATAK was running, autoConnectExternalButton (which only
+        // runs on plugin load) won't catch it. If the slot is empty and there's
+        // exactly one BLE_HID puck available, auto-assign it now so they don't
+        // have to manually pick it from the dropdown.
+        if (selectedMac == null) {
+            val bleHidDevices = devices.filter { it.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID }
+            if (bleHidDevices.size == 1) {
+                val autoPicked = bleHidDevices.first()
+                controller.setSelectedExternalButton(autoPicked.mac)
+                selectedMac = autoPicked.mac
+                // The warning below might not trigger if it's not in bondedDevices (e.g. lost bond),
+                // but we also have the persistent UI text now.
+                maybeWarnIfBleHidIsBonded(autoPicked.mac, autoPicked.name, autoPicked.buttonProtocol)
+            }
+        }
+
         val selectedIdx =
             if (selectedMac == null) {
                 0
@@ -1942,7 +1961,11 @@ class XvDropDownReceiver(
             ).show()
         if (err == null) {
             controller.setSelectedExternalButton(picked.mac)
-            maybeWarnIfBleHidIsBonded(picked.mac, picked.name, com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID)
+            maybeWarnIfBleHidIsBonded(
+                picked.mac,
+                picked.name,
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID,
+            )
             // Rebuild both pickers so the new device appears in the
             // dropdowns immediately without a settings re-open.
             wireAinaPicker(rootView)
@@ -1961,7 +1984,9 @@ class XvDropDownReceiver(
             val isBonded = adapter?.bondedDevices?.any { it.address.equals(mac, ignoreCase = true) } == true
             if (isBonded) {
                 val disp = name?.takeIf { it.isNotBlank() } ?: mac
-                val warning = "WARNING: $disp is paired in Android Settings.\n\nFor Pryme buttons, you MUST unpair/forget it in Android Settings to avoid pairing loops!"
+                val warning =
+                    "WARNING: $disp is paired in Android Settings.\n\n" +
+                        "For Pryme buttons, you MUST unpair/forget it in Android Settings to avoid pairing loops!"
                 android.widget.Toast.makeText(pluginContext, warning, android.widget.Toast.LENGTH_LONG).show()
             }
         } catch (_: SecurityException) {
