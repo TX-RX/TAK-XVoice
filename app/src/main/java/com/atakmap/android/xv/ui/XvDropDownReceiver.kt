@@ -1740,10 +1740,26 @@ class XvDropDownReceiver(
                         }
                     val current = controller.selectedAinaMac()
                     if (pickedMac != current) {
-                        controller.setSelectedAina(pickedMac)
-                        statusLabel.text = formatAinaStatus(devices, pickedMac, controller.ainaConnectionUp())
                         val dev = if (pos == 0) null else devices.getOrNull(pos - 1)
-                        maybeWarnIfBleHidIsBonded(dev?.mac, dev?.name, dev?.buttonProtocol)
+                        checkAndEnforceBleHidUnbonded(
+                            dev?.mac,
+                            dev?.name,
+                            dev?.buttonProtocol,
+                            onAllowed = {
+                                controller.setSelectedAina(pickedMac)
+                                statusLabel.text = formatAinaStatus(devices, pickedMac, controller.ainaConnectionUp())
+                            },
+                            onCancel = {
+                                suppressFirstFire = true
+                                val currentIdx =
+                                    if (current == null) {
+                                        0
+                                    } else {
+                                        (devices.indexOfFirst { it.mac.equals(current, ignoreCase = true) } + 1).coerceAtLeast(0)
+                                    }
+                                p?.setSelection(currentIdx)
+                            },
+                        )
                     }
                 }
 
@@ -1772,11 +1788,17 @@ class XvDropDownReceiver(
             val bleHidDevices = devices.filter { it.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID }
             if (bleHidDevices.size == 1) {
                 val autoPicked = bleHidDevices.first()
-                controller.setSelectedExternalButton(autoPicked.mac)
-                selectedMac = autoPicked.mac
-                // The warning below might not trigger if it's not in bondedDevices (e.g. lost bond),
-                // but we also have the persistent UI text now.
-                maybeWarnIfBleHidIsBonded(autoPicked.mac, autoPicked.name, autoPicked.buttonProtocol)
+                val isBonded =
+                    try {
+                        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                        adapter?.bondedDevices?.any { it.address.equals(autoPicked.mac, ignoreCase = true) } == true
+                    } catch (_: SecurityException) {
+                        false
+                    }
+                if (!isBonded) {
+                    controller.setSelectedExternalButton(autoPicked.mac)
+                    selectedMac = autoPicked.mac
+                }
             }
         }
 
@@ -1814,11 +1836,27 @@ class XvDropDownReceiver(
                         }
                     val current = controller.selectedExternalButtonMac()
                     if (pickedMac != current) {
-                        controller.setSelectedExternalButton(pickedMac)
-                        statusLabel?.text =
-                            formatAinaStatus(devices, pickedMac, controller.externalButtonConnectionUp())
                         val dev = if (pos == 0) null else devices.getOrNull(pos - 1)
-                        maybeWarnIfBleHidIsBonded(dev?.mac, dev?.name, dev?.buttonProtocol)
+                        checkAndEnforceBleHidUnbonded(
+                            dev?.mac,
+                            dev?.name,
+                            dev?.buttonProtocol,
+                            onAllowed = {
+                                controller.setSelectedExternalButton(pickedMac)
+                                statusLabel?.text =
+                                    formatAinaStatus(devices, pickedMac, controller.externalButtonConnectionUp())
+                            },
+                            onCancel = {
+                                suppressFirstFire = true
+                                val currentIdx =
+                                    if (current == null) {
+                                        0
+                                    } else {
+                                        (devices.indexOfFirst { it.mac.equals(current, ignoreCase = true) } + 1).coerceAtLeast(0)
+                                    }
+                                p?.setSelection(currentIdx)
+                            },
+                        )
                     }
                 }
 
@@ -1960,38 +1998,97 @@ class XvDropDownReceiver(
                 if (err == null) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_LONG,
             ).show()
         if (err == null) {
-            controller.setSelectedExternalButton(picked.mac)
-            maybeWarnIfBleHidIsBonded(
+            checkAndEnforceBleHidUnbonded(
                 picked.mac,
                 picked.name,
                 com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID,
+                onAllowed = {
+                    controller.setSelectedExternalButton(picked.mac)
+                    wireAinaPicker(rootView)
+                    wireExternalButtonPicker(rootView)
+                },
+                onCancel = {
+                    wireAinaPicker(rootView)
+                    wireExternalButtonPicker(rootView)
+                },
             )
-            // Rebuild both pickers so the new device appears in the
-            // dropdowns immediately without a settings re-open.
-            wireAinaPicker(rootView)
-            wireExternalButtonPicker(rootView)
         }
     }
 
-    private fun maybeWarnIfBleHidIsBonded(
+    private fun checkAndEnforceBleHidUnbonded(
         mac: String?,
         name: String?,
-        protocol: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?
+        protocol: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?,
+        onAllowed: () -> Unit,
+        onCancel: () -> Unit,
     ) {
-        if (mac == null || protocol != com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID) return
-        try {
-            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-            val isBonded = adapter?.bondedDevices?.any { it.address.equals(mac, ignoreCase = true) } == true
-            if (isBonded) {
-                val disp = name?.takeIf { it.isNotBlank() } ?: mac
-                val warning =
-                    "WARNING: $disp is paired in Android Settings.\n\n" +
-                        "For Pryme buttons, you MUST unpair/forget it in Android Settings to avoid pairing loops!"
-                android.widget.Toast.makeText(pluginContext, warning, android.widget.Toast.LENGTH_LONG).show()
-            }
-        } catch (_: SecurityException) {
-            // Ignore missing BLUETOOTH permissions if any
+        if (mac == null || protocol != com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID) {
+            onAllowed()
+            return
         }
+        val isBonded =
+            try {
+                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                adapter?.bondedDevices?.any { it.address.equals(mac, ignoreCase = true) } == true
+            } catch (_: SecurityException) {
+                false
+            }
+        if (!isBonded) {
+            onAllowed()
+            return
+        }
+
+        val disp = name?.takeIf { it.isNotBlank() } ?: mac
+        val msg =
+            "This Pryme button ($disp) is paired in Android Settings. " +
+                "This causes severe pairing loops when the button is turned off and back on.\n\n" +
+                "To use this button reliably with TAK-XVoice, you MUST unpair it from Android Settings."
+
+        val builder = android.app.AlertDialog.Builder(mapView.context)
+        builder.setTitle("Pryme Button Configuration Error")
+        builder.setMessage(msg)
+        builder.setCancelable(false)
+        builder.setPositiveButton("Unpair Automatically") { _, _ ->
+            var success = false
+            try {
+                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                val dev = adapter?.getRemoteDevice(mac)
+                if (dev != null) {
+                    val method = dev.javaClass.getMethod("removeBond")
+                    success = method.invoke(dev) as? Boolean == true
+                }
+            } catch (e: Exception) {
+                // Fall through to failure handling
+            }
+            if (success) {
+                android.widget.Toast.makeText(
+                    pluginContext,
+                    "Successfully unpaired $disp from Android Settings.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+                onAllowed()
+            } else {
+                android.widget.Toast.makeText(
+                    pluginContext,
+                    "Could not unpair automatically. Please tap 'Open Settings' and select 'Forget'.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+                onCancel()
+            }
+        }
+        builder.setNeutralButton("Open Settings") { _, _ ->
+            try {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                pluginContext.startActivity(intent)
+            } catch (_: Exception) {}
+            onCancel()
+        }
+        builder.setNegativeButton("Cancel") { _, _ ->
+            onCancel()
+        }
+        builder.setOnCancelListener { onCancel() }
+        builder.show()
     }
 
     private fun wireAutoConnectBtSwitch(v: View) {
