@@ -1633,28 +1633,7 @@ class XvDropDownReceiver(
             mutableListOf<PickerRow>().apply {
                 add(PickerRow(label = AINA_NONE_LABEL, available = true))
                 for (d in devices) {
-                    val isOsBonded = com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac)
-                    if (isOsBonded) {
-                        val base = d.displayLabel()
-                        val warn = "\n[Tap to fix: Pair directly in app, not Android]"
-                        val s = android.text.SpannableString(base + warn)
-                        s.setSpan(
-                            android.text.style.ForegroundColorSpan(android.graphics.Color.RED),
-                            base.length,
-                            s.length,
-                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
-                        s.setSpan(
-                            android.text.style.RelativeSizeSpan(0.85f),
-                            base.length,
-                            s.length,
-                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
-                        add(PickerRow(label = s, available = true, incompatible = true))
-                    } else {
-                        val suffix = if (d.available) "" else "  ·  unavailable"
-                        add(PickerRow(label = d.displayLabel() + suffix, available = d.available))
-                    }
+                    add(pickerRowFor(d))
                 }
             }
         return object : ArrayAdapter<CharSequence>(
@@ -1686,6 +1665,33 @@ class XvDropDownReceiver(
                 return view
             }
         }
+    }
+
+    // Builds the picker row for a single device. OS-bonded BLE_HID pucks
+    // get a red "tap to fix" warning suffix; everything else gets the plain
+    // label with an optional "unavailable" annotation. Extracted from
+    // buildAinaPickerAdapter to keep that method's block nesting shallow.
+    private fun pickerRowFor(d: AinaDeviceInfo): PickerRow {
+        if (!com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac)) {
+            val suffix = if (d.available) "" else "  ·  unavailable"
+            return PickerRow(label = d.displayLabel() + suffix, available = d.available)
+        }
+        val base = d.displayLabel()
+        val warn = "\n[Tap to fix: Pair directly in app, not Android]"
+        val s = android.text.SpannableString(base + warn)
+        s.setSpan(
+            android.text.style.ForegroundColorSpan(android.graphics.Color.RED),
+            base.length,
+            s.length,
+            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        s.setSpan(
+            android.text.style.RelativeSizeSpan(0.85f),
+            base.length,
+            s.length,
+            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        return PickerRow(label = s, available = true, incompatible = true)
     }
 
     private data class PickerRow(
@@ -2079,7 +2085,14 @@ class XvDropDownReceiver(
                     success = method.invoke(dev) as? Boolean == true
                 }
             } catch (e: Exception) {
-                // Fall through to failure handling
+                // Reflection-based removeBond() is best-effort; log the
+                // cause and fall through to the manual-forget guidance
+                // below rather than silently dropping it.
+                android.util.Log.w(
+                    "XvSettings",
+                    "removeBond() reflection failed for ${com.atakmap.android.xv.aina.redactMac(mac)} — prompting manual forget",
+                    e,
+                )
             }
             if (success) {
                 android.widget.Toast.makeText(

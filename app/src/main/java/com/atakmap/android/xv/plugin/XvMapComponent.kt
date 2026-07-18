@@ -1264,11 +1264,23 @@ class XvMapComponent : AbstractMapComponent() {
                     intent: Intent,
                 ) {
                     if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED) return
-                    @Suppress("DEPRECATION")
-                    val device =
-                        intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                            ?: return
-                    val mac = device.address ?: return
+                    // Resolving the device + its address can throw on
+                    // Android 12+ (SecurityException when BLUETOOTH_CONNECT
+                    // isn't granted) or yield null on a malformed broadcast.
+                    // An uncaught throw in onReceive crashes the whole
+                    // plugin process, turning a transient reconnect race
+                    // into a hard failure — so swallow-and-log here and
+                    // just skip this broadcast.
+                    val mac =
+                        try {
+                            @Suppress("DEPRECATION")
+                            intent
+                                .getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                                ?.address
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "aclReconnectReceiver: device/address extraction threw — skipping broadcast", t)
+                            null
+                        } ?: return
                     val savedAinaMac = settings.persistedAinaMac()
                     val savedExtMac = settings.persistedExternalButtonMac()
                     if (AclReconnectDecision.shouldReconnectOnAcl(mac, savedAinaMac)) {

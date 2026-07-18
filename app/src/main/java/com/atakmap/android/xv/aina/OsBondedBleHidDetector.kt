@@ -20,16 +20,16 @@ object OsBondedBleHidDetector {
                 null
             },
     ): Boolean {
-        if (mac.isNullOrBlank()) return false
-        if (adapter == null) return false
+        if (mac.isNullOrBlank() || adapter == null) return false
 
         val bonded =
             try {
                 adapter.bondedDevices?.find { it.address.equals(mac, ignoreCase = true) }
             } catch (_: SecurityException) {
                 null
-            } ?: return false
+            }
 
-        return AinaDeviceClassifier.classifyButtonProtocol(bonded) == AinaDeviceInfo.ButtonProtocol.BLE_HID
+        return bonded != null &&
+            AinaDeviceClassifier.classifyButtonProtocol(bonded) == AinaDeviceInfo.ButtonProtocol.BLE_HID
     }
 }
