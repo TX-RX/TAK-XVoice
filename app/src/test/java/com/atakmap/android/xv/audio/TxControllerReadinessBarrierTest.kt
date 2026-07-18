@@ -379,11 +379,12 @@ class TxControllerReadinessBarrierTest {
     }
 
     @Test
-    fun `PROBING ceiling defers the tone by the fallback hold instead of firing immediately`() {
-        // A heard probe is proof; a ceiling is ambiguity (AEC-cancelled
-        // tick, OS-silenced mic, non-coupling route). The ceiling path
-        // must grant the fallback hold before the beep rather than
-        // inviting speech into a possibly-still-converging chain.
+    fun `PROBING ceiling on a non-SCO route fires the tone immediately`() {
+        // 2026-07-17 forensics: a ceiling on a healthy device most
+        // likely means a converged AEC cancelled our own tick — i.e.
+        // the DSP is ALREADY open — so waiting (the old 1.5 s fallback
+        // hold) only punished the common case. A non-SCO ceiling now
+        // beeps immediately.
         val tpt = mockk<TptPlayer>(relaxed = true)
         val tx = buildController(tptPlayer = tpt)
         tx.setStateForTest(TxController.State.PRIMING)
@@ -395,14 +396,37 @@ class TxControllerReadinessBarrierTest {
         val looper = shadowOf(Looper.getMainLooper())
         looper.idleFor(Duration.ofMillis(TxController.PROBE_CEILING_MS + 50))
 
-        assertEquals(
-            "ceiling must flip to TPT state (frames drop during the hold)",
-            TxController.State.TPT,
-            tx.currentStateForTest(),
-        )
+        assertEquals(TxController.State.TPT, tx.currentStateForTest())
+        verify(exactly = 1) { tpt.play(any(), any(), any()) }
+    }
+
+    @Test
+    fun `PROBING ceiling on a cold-SCO route applies the AOC hold before the tone`() {
+        // Cold-SCO is the exception: the BT AOC modem's post-warmup
+        // underrun window (COLD_SCO_TPT_HOLD_MS) is a real, separate
+        // screech risk, so a cold-SCO ceiling still holds that long
+        // before the tone.
+        val tpt = mockk<TptPlayer>(relaxed = true)
+        val sco = mockk<ScoLink>(relaxed = true)
+        every { sco.state } returns ScoLink.State.CONNECTED
+        val tx = buildController(tptPlayer = tpt, scoLink = sco)
+        tx.setStateForTest(TxController.State.PRIMING)
+        tx.setPrimingGatesForTest(coldSco = true, coldCall = false)
+        // Cold-SCO priming needs 30 NON-SILENT frames to confirm the
+        // chipset is alive; rms 3 is below the 200 speech threshold, so
+        // completion routes to PROBING rather than skipping it.
+        val noiseFloor = ShortArray(480) { 3 }
+        repeat(30) { tx.onPcmFrameForTest(noiseFloor) }
+        assertEquals(TxController.State.PROBING, tx.currentStateForTest())
+
+        val looper = shadowOf(Looper.getMainLooper())
+        looper.idleFor(Duration.ofMillis(TxController.PROBE_CEILING_MS + 50))
+
+        // Ceiling flips to TPT state but holds the tone for the AOC window.
+        assertEquals(TxController.State.TPT, tx.currentStateForTest())
         verify(exactly = 0) { tpt.play(any(), any(), any()) }
 
-        looper.idleFor(Duration.ofMillis(TxController.PROBE_CEILING_FALLBACK_HOLD_MS + 50))
+        looper.idleFor(Duration.ofMillis(TxController.COLD_SCO_TPT_HOLD_MS + 50))
         verify(exactly = 1) { tpt.play(any(), any(), any()) }
     }
 

@@ -491,12 +491,52 @@ class AudioCapture(
         SystemClock.sleep(RESTART_SETTLE_MS)
         if (!running) return null
         val fresh = buildRecord() ?: return null
+        // Re-check AFTER buildRecord() (tens of ms): an external stop()
+        // — PTT release, yield, disarm — can land in that window. If it
+        // did, do NOT start the fresh record or publish its session id;
+        // release it and bail. Without this, stop() has already set
+        // running=false + record=null + session=null, and we would then
+        // start a record nobody owns.
+        if (!running) {
+            try {
+                fresh.release()
+            } catch (_: Throwable) {
+            }
+            return null
+        }
         record = fresh
         try {
             fresh.startRecording()
         } catch (t: Throwable) {
             Log.e(TAG, "in-place restart: startRecording threw", t)
             onCaptureError("AudioRecord restart failed: ${t.message ?: t.javaClass.simpleName}")
+            return null
+        }
+        // Final re-check: stop() can land DURING startRecording() itself.
+        // If the capture was torn down out from under us, the fresh
+        // record is now RECORDING with no read thread to service it and
+        // the while(running) loop is about to exit skipping the epilogue
+        // — a leaked mic handle (privacy indicator stuck, other apps
+        // blocked, stale playback session). Tear it down here. Guarded
+        // try/catch makes this idempotent against a concurrent stop()
+        // that may also be releasing the same record (2026-07-17
+        // forensics — found independently by all five investigators).
+        if (!running) {
+            Log.w(TAG, "in-place restart raced stop() — tearing down fresh record")
+            capDiag("restart raced stop() — fresh record torn down", 'W')
+            try {
+                fresh.stop()
+            } catch (_: Throwable) {
+            }
+            try {
+                fresh.release()
+            } catch (_: Throwable) {
+            }
+            if (record === fresh) record = null
+            try {
+                onSessionIdChanged(null)
+            } catch (_: Throwable) {
+            }
             return null
         }
         installWatchers(fresh)

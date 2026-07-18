@@ -1063,32 +1063,44 @@ class TxController(
             }
         }
 
-    // Bounded fallback: "nothing heard" is AMBIGUOUS — a still-closed
-    // DSP, a converged platform AEC cancelling our own tick from
-    // capture (it is downlink echo by definition; the probe only works
-    // because the unconverged window leaks it), an OS-silenced mic
-    // (#87), or a route where speaker and mic don't couple (wired
-    // headset). A verified probe is proof; a ceiling is a shrug — so
-    // the ceiling path does NOT fire the tone immediately. It enters
-    // TPT state and defers the audible tone by
-    // PROBE_CEILING_FALLBACK_HOLD_MS, giving an unverifiable-but-
-    // actually-converging DSP its remaining settle time before the
-    // operator is invited to talk. Net worst case vs the pre-probe
-    // world: the fallback hold, only when verification failed.
+    // Ceiling: the probe never heard its own tick within the bound.
+    // "Nothing heard" is AMBIGUOUS — and the 2026-07-17 forensics
+    // showed the previous 1.5 s fallback hold here was net-NEGATIVE,
+    // because on a HEALTHY device the most likely cause of a ceiling is
+    // a converged platform AEC cancelling our own USAGE_VOICE_COMMUNICATION
+    // tick from capture (it is downlink echo by definition). A converged
+    // AEC means the DSP is ALREADY open — so beeping immediately is
+    // correct, and adding a hold just punished the common case (every
+    // 2nd+ cold-call burst on a good device paid ~4 s). The other
+    // ceiling causes — OS-silenced mic (#87), non-coupling wired
+    // headset — are equally not helped by waiting. So the ceiling now
+    // beeps immediately on non-SCO routes.
+    //
+    // Cold-SCO is the one exception: there the BT AOC modem has a real,
+    // separate post-warmup underrun window (the field-tuned
+    // COLD_SCO_TPT_HOLD_MS screech fix), so a cold-SCO ceiling still
+    // applies that hold as a floor before the tone.
     private val probeCeilingRunnable =
         Runnable {
             synchronized(this@TxController) {
                 if (state != State.PROBING) return@synchronized
                 val elapsed = System.currentTimeMillis() - probeStartMs
+                cooldownHandler.removeCallbacks(probeTickRunnable)
+                val holdMs =
+                    computePrimingHoldMs(
+                        route = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD,
+                        cold = currentBurstColdSco,
+                        baseMs = 0L,
+                    )
                 Log.w(
                     TAG,
                     "PROBING: ceiling after ${elapsed}ms ($probeTicksPlayed ticks, nothing heard) — " +
-                        "unverifiable path (AEC-cancelled tick / silenced mic / non-coupling route); " +
-                        "holding ${PROBE_CEILING_FALLBACK_HOLD_MS}ms before TPT",
+                        "path likely already open (AEC-cancelled tick) or unverifiable " +
+                        "(silenced mic / non-coupling route); " +
+                        (if (holdMs > 0L) "cold-SCO AOC hold ${holdMs}ms then TPT" else "TPT now"),
                 )
-                txDiag("probe ceiling ${elapsed}ms ticks=$probeTicksPlayed — fallback hold then TPT", 'W')
-                cooldownHandler.removeCallbacks(probeTickRunnable)
-                scheduleColdScoTptHold(PROBE_CEILING_FALLBACK_HOLD_MS)
+                txDiag("probe ceiling ${elapsed}ms ticks=$probeTicksPlayed holdMs=$holdMs", 'W')
+                if (holdMs > 0L) scheduleColdScoTptHold(holdMs) else startTpt()
             }
         }
 
@@ -1131,14 +1143,14 @@ class TxController(
     }
 
     /**
-     * Post a delayed [startTpt] to give a cold burst's settling layer
-     * its remaining time — the AOC modem on the cold-SCO priming path
-     * (see [computePrimingHoldMs]) and the unverifiable-DSP case on the
-     * probe-ceiling path ([PROBE_CEILING_FALLBACK_HOLD_MS]). State is
-     * flipped to [State.TPT] BEFORE the delay so incoming PCM frames
-     * get dropped by the existing state==TPT branch — no risk of
-     * re-entering the PRIMING-completion branch and scheduling
-     * multiple TPT plays.
+     * Post a delayed [startTpt] to give a cold-SCO burst's AOC modem
+     * its remaining post-warmup settle time before the permit tone (see
+     * [computePrimingHoldMs] and [COLD_SCO_TPT_HOLD_MS]). Used from the
+     * cold-SCO priming-completion path and from a cold-SCO probe
+     * ceiling. State is flipped to [State.TPT] BEFORE the delay so
+     * incoming PCM frames get dropped by the existing state==TPT branch
+     * — no risk of re-entering the PRIMING-completion branch and
+     * scheduling multiple TPT plays.
      *
      * INVARIANT: caller holds the this@TxController monitor and state
      * is currently PRIMING or PROBING.
@@ -1146,17 +1158,32 @@ class TxController(
     private fun scheduleColdScoTptHold(holdMs: Long) {
         state = State.TPT
         tptStateEnteredAtMs = System.currentTimeMillis()
-        cooldownHandler.postDelayed({
+        // Cancellable NAMED runnable — never an anonymous lambda. A
+        // burst that schedules this hold and is then abandoned (PTT
+        // release) MUST be able to cancel it in stopInternal/shutdown;
+        // an un-cancellable lambda whose only guard is state==TPT
+        // cannot distinguish the burst that scheduled it from a later
+        // burst that happens to be in TPT when it fires, so it could
+        // play a second overlapping permit tone into the NEXT burst
+        // (2026-07-17 forensics — the fallback-hold at 1.5 s widened
+        // this window 5x). removeCallbacks(tptHoldRunnable) in
+        // stopInternal + shutdown closes it.
+        cooldownHandler.removeCallbacks(tptHoldRunnable)
+        cooldownHandler.postDelayed(tptHoldRunnable, holdMs)
+    }
+
+    private val tptHoldRunnable =
+        Runnable {
             synchronized(this@TxController) {
                 // If the operator released PTT during the hold window,
-                // stopInternal already flipped state to IDLE. Bail
-                // without playing TPT — matches the existing behavior
-                // for late-firing timeout runnables.
+                // stopInternal already flipped state to IDLE and
+                // cancelled this runnable. The state guard is a
+                // belt-and-suspenders backstop for a fire that races
+                // the cancel.
                 if (state != State.TPT) return@synchronized
                 startTpt(alreadyInTptState = true)
             }
-        }, holdMs)
-    }
+        }
 
     private fun startTpt(alreadyInTptState: Boolean = false) {
         if (!alreadyInTptState) {
@@ -1300,14 +1327,18 @@ class TxController(
     }
 
     /** Pin the PRIMING gate selection for a test-driven burst without
-     *  walking the full start() path. Mirrors what startPriming() does
-     *  from currentBurstColdSco / currentBurstColdCall. */
+     *  walking the full start() path. Mirrors what start()/startPriming()
+     *  do: currentBurstColdSco and primingUseColdScoGates are pinned
+     *  together (startPriming: `primingUseColdScoGates = currentBurstColdSco`),
+     *  so the [coldSco] flag drives both — which lets the probe-ceiling
+     *  AOC-hold path (keyed off currentBurstColdSco) be exercised. */
     @VisibleForTesting
     internal fun setPrimingGatesForTest(
         coldSco: Boolean,
         coldCall: Boolean = false,
     ) {
         primingUseColdScoGates = coldSco
+        currentBurstColdSco = coldSco
         primingColdCall = coldCall
     }
 
@@ -1589,6 +1620,10 @@ class TxController(
         // cleanly with no stray ticks or a late ceiling TPT.
         cooldownHandler.removeCallbacks(probeTickRunnable)
         cooldownHandler.removeCallbacks(probeCeilingRunnable)
+        // And any pending TPT hold — otherwise a burst abandoned during
+        // its cold-SCO / probe-ceiling hold could fire a stray permit
+        // tone into the next burst.
+        cooldownHandler.removeCallbacks(tptHoldRunnable)
         // Session-arm: keep the capture alive between bursts so the
         // next PTT-down doesn't pay AudioRecord/mic-chipset cold-start
         // latency. Released only on disarmSessionMic (Mumble disconnect)
@@ -1797,6 +1832,7 @@ class TxController(
         cooldownHandler.removeCallbacks(callSettleTimeoutRunnable)
         cooldownHandler.removeCallbacks(probeTickRunnable)
         cooldownHandler.removeCallbacks(probeCeilingRunnable)
+        cooldownHandler.removeCallbacks(tptHoldRunnable)
         capture?.let {
             it.stop()
             capture = null
@@ -2144,24 +2180,18 @@ class TxController(
         // keeping the "getting ready" ticking unobtrusive.
         internal const val PROBE_TICK_INTERVAL_MS = 350L
 
-        // Bounded ceiling on the probe wait. Covers routes where the
-        // speaker output can't reach the mic (wired headset in a quiet
-        // room) and a genuinely wedged path. Field-observed DSP-open
-        // times were 1.5-2.6 s from record creation; 2.5 s of probing
-        // (after ~0.7 s of settle+priming) bounds the worst honest
-        // case.
-        internal const val PROBE_CEILING_MS = 2_500L
-
-        // Tone hold applied ONLY when the probe hits its ceiling. A
-        // heard probe is proof the chain is open — beep immediately.
-        // An unheard probe is ambiguous (a converged platform AEC
-        // cancels our own tick from capture — it is downlink echo by
-        // definition; or the mic is OS-silenced per #87; or the route
-        // doesn't couple), so the ceiling grants a converging-but-
-        // unverifiable DSP its remaining settle time before the beep.
-        // Sized to the residual convergence window observed after a
-        // full ceiling wait (~0.5-1.5 s on Pixel 9 Pro).
-        internal const val PROBE_CEILING_FALLBACK_HOLD_MS = 1_500L
+        // Bounded ceiling on the probe wait. A genuinely cold DSP that
+        // is going to leak the tick does so within one or two ticks —
+        // field-observed verify times were 96-417 ms. If nothing has
+        // been heard by this bound, the tick is not going to arrive
+        // (converged AEC cancelling it, OS-silenced mic, or a
+        // non-coupling route), and on a working mic that most likely
+        // means the DSP is ALREADY open — so continuing to wait only
+        // adds dead air. Cut from 2500 ms (2026-07-17 forensics: the
+        // long ceiling + a fallback hold was the dominant driver of the
+        // "every patch makes it worse" latency stack on healthy
+        // devices whose good AEC always cancels the probe).
+        internal const val PROBE_CEILING_MS = 1_200L
 
         // ---------- PRIMING gate selection (cold-SCO vs everything else) ----------
         //
