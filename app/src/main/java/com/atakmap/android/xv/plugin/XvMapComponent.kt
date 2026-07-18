@@ -2351,7 +2351,20 @@ class XvMapComponent : AbstractMapComponent() {
                 setSecondaryChannelInternal(name)
             }
 
-            override fun availableAinaDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> = listBondedAinaDevices()
+            override fun availableAinaDevices(): List<com.atakmap.android.xv.aina.AinaDeviceInfo> {
+                // Speaker-mic slot = audio-carrying PTT hardware only
+                // (AINA V1 SPP + V2 BLE, and — as they land — wired
+                // headsets and other audio inputs). Button-only BLE_HID
+                // pucks are deliberately excluded: they have no speaker,
+                // so they belong exclusively in the Button-input slot
+                // (availableExternalButtonDevices). Filtering here makes
+                // the two picker lists disjoint by protocol, which is
+                // what prevents the same puck being bound to both slots
+                // and spawning two readers that race for its GATT link.
+                return listBondedAinaDevices().filter {
+                    it.buttonProtocol != com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
+                }
+            }
 
             override fun selectedAinaMac(): String? = settings.persistedAinaMac()
 

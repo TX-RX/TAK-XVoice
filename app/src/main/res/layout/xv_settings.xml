@@ -377,11 +377,11 @@
                     android:focusable="true"
                     android:visibility="gone"/>
 
-                <!-- Section header: PTT input -->
+                <!-- Section header: Speaker mic input -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="PTT INPUT"
+                    android:text="SPEAKER MIC INPUT"
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:letterSpacing="0.15"/>
@@ -389,7 +389,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Where the PTT button lives. Picked separately from audio so an AINA speakermic + car Bluetooth (or headphones) is one operator-tap apart."
+                    android:text="An audio-carrying PTT device — an AINA V1/V2 speakermic — that both keys the channel and carries your voice. Picked separately from audio output so a speakermic + car Bluetooth (or headphones) is one operator-tap apart."
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
@@ -415,11 +415,11 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="4dp"/>
 
-                <!-- Section header: External button input -->
+                <!-- Section header: Button input -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="EXTERNAL BUTTON"
+                    android:text="BUTTON INPUT"
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:letterSpacing="0.15"
@@ -428,7 +428,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Optional BLE PTT puck (e.g. Pryme BT-PTT). Provides an extra push-to-talk button; must be button-only — speakermics belong in the Primary slot. Either button can key the primary channel without one cutting off the other."
+                    android:text="A button-only BLE PTT puck (e.g. Pryme BT-PTT). Keys the channel with no audio of its own — pair it here rather than in Android Bluetooth Settings. Works alongside a speaker mic without one cutting off the other."
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
