@@ -93,6 +93,10 @@ class AudioCapture(
     // fires on every in-place restart (the fresh record gets a fresh
     // session id) so the playback side never binds to a dead session.
     private val onSessionIdChanged: (Int?) -> Unit = {},
+    // Fires after a successful in-place restart (fresh record built,
+    // started, watchers re-armed). TxController uses this to re-arm
+    // start-of-stream mitigations when a stream swap lands mid-burst.
+    private val onInPlaceRestart: () -> Unit = {},
 ) {
     private val channelMask =
         if (channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
@@ -136,10 +140,21 @@ class AudioCapture(
     @Volatile
     private var lastRoutedDeviceId: Int = -1
 
+    // true once this record has observed at least one non-null routed
+    // device id. Used to suppress the common startup race where
+    // routedDevice is initially null (-1) and then settles to the real
+    // device id a few ms later — that first settle is not a mid-stream
+    // route change and should not trigger restart.
+    @Volatile
+    private var hasResolvedInitialRoute: Boolean = false
+
     // Total frames delivered across the capture's lifetime (survives
     // in-place restarts). Read by the stall watchdog.
     @Volatile
     private var totalFrames: Long = 0
+
+    @Volatile
+    private var inPlaceRestartListener: (() -> Unit)? = onInPlaceRestart
 
     private var stallCheckLastFrames: Long = -1
     private var stallStrikes: Int = 0
@@ -147,6 +162,10 @@ class AudioCapture(
     // Handler for the routing listener + stall watchdog. Main looper —
     // both callbacks are tiny (flag flip + record.stop()).
     private val callbackHandler = Handler(Looper.getMainLooper())
+
+    fun setOnInPlaceRestartListener(listener: (() -> Unit)?) {
+        inPlaceRestartListener = listener
+    }
 
     private val routingListener =
         AudioRouting.OnRoutingChangedListener { router ->
@@ -159,6 +178,21 @@ class AudioCapture(
                 }
             val id = dev?.id ?: -1
             if (id == lastRoutedDeviceId) return@OnRoutingChangedListener
+                if (!hasResolvedInitialRoute && lastRoutedDeviceId == -1 && id != -1) {
+                    hasResolvedInitialRoute = true
+                    lastRoutedDeviceId = id
+                    Log.i(
+                        TAG,
+                        "input route settled after start (device id=$id) — suppressing initial-settle restart",
+                    )
+                    capDiag("route settled after start (id=$id) — no restart")
+                    return@OnRoutingChangedListener
+                }
+                if (id == -1) {
+                    lastRoutedDeviceId = id
+                    Log.i(TAG, "input route unresolved (id=-1) — waiting for stable route before restart")
+                    return@OnRoutingChangedListener
+                }
             Log.w(
                 TAG,
                 "input routing changed mid-capture → ${dev?.productName}/${dev?.let { typeName(it.type) }} " +
@@ -318,6 +352,7 @@ class AudioCapture(
             } catch (t: Throwable) {
                 -1
             }
+        hasResolvedInitialRoute = lastRoutedDeviceId != -1
         try {
             r.addOnRoutingChangedListener(routingListener, callbackHandler)
         } catch (t: Throwable) {
@@ -542,6 +577,11 @@ class AudioCapture(
         installWatchers(fresh)
         publishSessionId(fresh)
         logStarted(fresh, restart = true)
+        try {
+            inPlaceRestartListener?.invoke()
+        } catch (t: Throwable) {
+            Log.w(TAG, "onInPlaceRestart callback threw", t)
+        }
         return fresh
     }
 

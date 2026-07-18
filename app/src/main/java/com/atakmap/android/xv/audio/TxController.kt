@@ -29,6 +29,33 @@ enum class TxRoute {
     OFFLOAD,
 }
 
+data class ColdStartMitigationPolicy(
+    val coldScoTptHoldMs: Long,
+    val coldScoStartDropFrames: Int,
+) {
+    fun computePrimingHoldMs(
+        route: TxRoute,
+        cold: Boolean,
+        baseMs: Long,
+    ): Long {
+        if (!cold) return baseMs
+        if (route != TxRoute.SCO) return baseMs
+        if (coldScoTptHoldMs <= 0L) return baseMs
+        return baseMs + coldScoTptHoldMs
+    }
+
+    fun shouldDropStartFrame(
+        frameNumber: Int,
+        route: TxRoute,
+        cold: Boolean,
+    ): Boolean {
+        if (!cold) return false
+        if (route != TxRoute.SCO) return false
+        if (coldScoStartDropFrames <= 0) return false
+        return frameNumber in 1..coldScoStartDropFrames
+    }
+}
+
 // Orchestrates the TX side. "Open channel" lifecycle:
 //   - On first start() (or explicit channelOpened()): allocate
 //     AudioCapture once and hold it for the channel session, with the
@@ -144,6 +171,8 @@ class TxController(
     // bursts. Read on every cool-down decision so a runtime toggle
     // takes effect on the next burst without restarting anything.
     private val hotMicMode: () -> Boolean = { false },
+    // Single source of truth for cold-start TX mitigation knobs.
+    private val coldStartPolicy: ColdStartMitigationPolicy = DEFAULT_COLD_START_POLICY,
 ) {
     // Lifecycle phases of one TX cycle. Visibility relaxed from `private`
     // to `internal` so TxControllerStateMachineTest can drive transitions
@@ -366,6 +395,12 @@ class TxController(
     @Volatile
     private var txFrameNumber: Int = 0
 
+    @Volatile
+    private var postRestartHoldUntilMs: Long = 0
+
+    @Volatile
+    private var postRestartDropFramesRemaining: Int = 0
+
     // Wall-clock when state transitioned to TPT. The TPT-overlap ring
     // buffer's "skip the loud first N ms" filter uses this to decide
     // whether to drop or retain each incoming PCM frame. Reset on every
@@ -451,7 +486,7 @@ class TxController(
                         return@synchronized
                     }
                     val txRoute = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD
-                    val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
+                    val holdMs = coldStartPolicy.computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
                     if (holdMs > 0L) {
                         Log.w(
                             TAG,
@@ -759,10 +794,7 @@ class TxController(
                 else -> "sco-warm"
             }
         if (capture == null) {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
             Log.i(
@@ -919,10 +951,7 @@ class TxController(
             return
         }
         try {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
             sessionArmed = true
@@ -999,15 +1028,7 @@ class TxController(
                 return
             }
             try {
-                val cap =
-                    audioCaptureFactory { pcm ->
-                        // Frames during pre-warm flow through onPcmFrame
-                        // → state==IDLE → drop. Just keeping the chipset
-                        // pumping. As soon as start() flips state to
-                        // PRIMING, the same lambda routes them to RMS
-                        // checks.
-                        onPcmFrame(pcm)
-                    }
+                val cap = createCapture()
                 capture = cap
                 cap.start()
                 Log.i(TAG, "preWarmMic: AudioCapture allocated for SCO_HOT settling")
@@ -1087,7 +1108,7 @@ class TxController(
                 val elapsed = System.currentTimeMillis() - probeStartMs
                 cooldownHandler.removeCallbacks(probeTickRunnable)
                 val holdMs =
-                    computePrimingHoldMs(
+                    coldStartPolicy.computePrimingHoldMs(
                         route = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD,
                         cold = currentBurstColdSco,
                         baseMs = 0L,
@@ -1216,10 +1237,7 @@ class TxController(
         // path PRIMING is skipped entirely and we may still need to
         // allocate here.
         if (capture == null) {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
             Log.i(TAG, "TPT: mic capture started (non-SCO route, no PRIMING)")
@@ -1250,6 +1268,8 @@ class TxController(
         // log "encoder is null!" and drop on each cold-SCO burst.)
         framesSent = 0
         txFrameNumber = 0
+        postRestartHoldUntilMs = 0
+        postRestartDropFramesRemaining = 0
         encoder = opusEncoderFactory()
         state = State.TRANSMITTING
         // Per-PTT focus management is SKIPPED when Telecom owns the
@@ -1272,10 +1292,7 @@ class TxController(
         // Defensive — capture should already be alive from startTpt.
         // Allocate now if a non-SCO route somehow skipped startTpt.
         if (capture == null) {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
         }
@@ -1356,6 +1373,45 @@ class TxController(
     @VisibleForTesting
     internal fun onPcmFrameForTest(pcm: ShortArray) {
         onPcmFrame(pcm)
+    }
+
+    private fun createCapture(): AudioCapture {
+        val cap =
+            audioCaptureFactory { pcm ->
+                onPcmFrame(pcm)
+            }
+        cap.setOnInPlaceRestartListener {
+            notifyCaptureRestartedInPlace()
+        }
+        return cap
+    }
+
+    @Synchronized
+    internal fun notifyCaptureRestartedInPlace() {
+        if (state != State.TRANSMITTING) return
+        txFrameNumber = 0
+        postRestartDropFramesRemaining = coldStartPolicy.coldScoStartDropFrames
+        val holdMs =
+            if (currentBurstColdSco) {
+                coldStartPolicy.coldScoTptHoldMs
+            } else {
+                RESTART_DSP_SETTLE_HOLD_MS_OFFLOAD
+            }
+        postRestartHoldUntilMs =
+            if (holdMs > 0L) {
+                System.currentTimeMillis() + holdMs
+            } else {
+                0L
+            }
+        Log.w(
+            TAG,
+            "capture restarted mid-burst — applying mitigation " +
+                "(holdMs=$holdMs dropFrames=${postRestartDropFramesRemaining})",
+        )
+        txDiag(
+            "capture restart mid-burst: holdMs=$holdMs dropFrames=${postRestartDropFramesRemaining}",
+            'W',
+        )
     }
 
     private fun onPcmFrame(pcm: ShortArray) {
@@ -1439,7 +1495,7 @@ class TxController(
                         }
                         txDiag("priming ready ${elapsed}ms $reason rms=$rms route=$route")
                         val txRoute = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD
-                        val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
+                        val holdMs = coldStartPolicy.computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
                         if (holdMs > 0L) {
                             Log.i(
                                 TAG,
@@ -1521,6 +1577,17 @@ class TxController(
                 Log.e(TAG, "onPcmFrame: encoder is null!")
                 return
             }
+        val now = System.currentTimeMillis()
+        if (postRestartHoldUntilMs > now) {
+            return
+        }
+        if (postRestartHoldUntilMs != 0L) {
+            postRestartHoldUntilMs = 0L
+        }
+        if (postRestartDropFramesRemaining > 0) {
+            postRestartDropFramesRemaining--
+            return
+        }
         // Cold-SCO start-of-burst frame drop. On Pixel with BT SCO the
         // AOC modem underruns for ~30 ms after the SCO uplink stabilizes;
         // the first N live frames land in that window and encode to
@@ -1537,14 +1604,14 @@ class TxController(
                 frameNumber = txFrameNumber,
                 route = if (currentBurstColdSco) TxRoute.SCO else TxRoute.OFFLOAD,
                 cold = currentBurstColdSco,
-                dropCount = COLD_SCO_START_DROP_FRAMES,
+                dropCount = coldStartPolicy.coldScoStartDropFrames,
             )
         ) {
-            if (txFrameNumber == 1 || txFrameNumber == COLD_SCO_START_DROP_FRAMES) {
+            if (txFrameNumber == 1 || txFrameNumber == coldStartPolicy.coldScoStartDropFrames) {
                 Log.i(
                     TAG,
                     "TX: dropping start frame #$txFrameNumber (cold-SCO AOC underrun window, " +
-                        "N=$COLD_SCO_START_DROP_FRAMES)",
+                        "N=${coldStartPolicy.coldScoStartDropFrames})",
                 )
             }
             return
@@ -1684,6 +1751,8 @@ class TxController(
             cooldownHandler.postDelayed(coolDownReleaseRunnable, SCO_COOL_DOWN_MS)
         }
         activeSlot = 0
+        postRestartHoldUntilMs = 0
+        postRestartDropFramesRemaining = 0
         state = State.IDLE
         lastStopMs = System.currentTimeMillis()
         // Drop TX focus + restore mode. exitTx (not returnToIdle)
@@ -2020,6 +2089,10 @@ class TxController(
         // re-keys. Effect: warm-path rapid-tap PTT is ~150ms faster.
         private const val STOP_TO_START_WARM_MIN_MS = 50L
 
+        // Mid-burst capture restarts can reset the platform voice DSP
+        // even on non-SCO routes; hold briefly before re-encoding.
+        private const val RESTART_DSP_SETTLE_HOLD_MS_OFFLOAD = 150L
+
         // ---------- Cold-SCO start-of-burst polish (2026-07-10) ----------
         //
         // Field observation on Pixel 9 Pro + AINA V2: the first TX after
@@ -2103,6 +2176,12 @@ class TxController(
         // comparison or for platforms without the AOC modem behavior).
         internal const val COLD_SCO_START_DROP_FRAMES: Int = 6
 
+        internal val DEFAULT_COLD_START_POLICY: ColdStartMitigationPolicy =
+            ColdStartMitigationPolicy(
+                coldScoTptHoldMs = COLD_SCO_TPT_HOLD_MS,
+                coldScoStartDropFrames = COLD_SCO_START_DROP_FRAMES,
+            )
+
         /**
          * Extra time to hold PRIMING → TPT so the SCO uplink modem
          * stabilizes past its cold-start underrun window. Returns
@@ -2128,12 +2207,7 @@ class TxController(
             route: TxRoute,
             cold: Boolean,
             baseMs: Long,
-        ): Long {
-            if (!cold) return baseMs
-            if (route != TxRoute.SCO) return baseMs
-            if (COLD_SCO_TPT_HOLD_MS <= 0L) return baseMs
-            return baseMs + COLD_SCO_TPT_HOLD_MS
-        }
+        ): Long = DEFAULT_COLD_START_POLICY.computePrimingHoldMs(route, cold, baseMs)
 
         // ---------- DSP-readiness probe (2026-07-17) ----------
         //
@@ -2255,11 +2329,9 @@ class TxController(
             route: TxRoute,
             cold: Boolean,
             dropCount: Int,
-        ): Boolean {
-            if (!cold) return false
-            if (route != TxRoute.SCO) return false
-            if (dropCount <= 0) return false
-            return frameNumber in 1..dropCount
-        }
+        ): Boolean =
+            DEFAULT_COLD_START_POLICY
+                .copy(coldScoStartDropFrames = dropCount)
+                .shouldDropStartFrame(frameNumber, route, cold)
     }
 }

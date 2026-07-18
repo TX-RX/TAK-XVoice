@@ -319,4 +319,36 @@ class TxControllerColdScoWarmupTest {
                 TxController.primingTimeoutMs(coldBurst = true),
         )
     }
+
+    // ============================================================
+    // Part 5 — ColdStartMitigationPolicy centralization
+    // ============================================================
+
+    @Test
+    fun `default cold-start policy mirrors companion tuning constants`() {
+        val policy = TxController.DEFAULT_COLD_START_POLICY
+        assertEquals(TxController.COLD_SCO_TPT_HOLD_MS, policy.coldScoTptHoldMs)
+        assertEquals(TxController.COLD_SCO_START_DROP_FRAMES, policy.coldScoStartDropFrames)
+    }
+
+    @Test
+    fun `policy-computed hold follows configured hold value`() {
+        val policy = ColdStartMitigationPolicy(coldScoTptHoldMs = 420L, coldScoStartDropFrames = 6)
+        assertEquals(
+            420L,
+            policy.computePrimingHoldMs(route = TxRoute.SCO, cold = true, baseMs = 0L),
+        )
+        assertEquals(
+            500L,
+            policy.computePrimingHoldMs(route = TxRoute.SCO, cold = true, baseMs = 80L),
+        )
+    }
+
+    @Test
+    fun `policy-configured drop window controls leading frame suppression`() {
+        val policy = ColdStartMitigationPolicy(coldScoTptHoldMs = 300L, coldScoStartDropFrames = 2)
+        assertTrue(policy.shouldDropStartFrame(frameNumber = 1, route = TxRoute.SCO, cold = true))
+        assertTrue(policy.shouldDropStartFrame(frameNumber = 2, route = TxRoute.SCO, cold = true))
+        assertFalse(policy.shouldDropStartFrame(frameNumber = 3, route = TxRoute.SCO, cold = true))
+    }
 }
