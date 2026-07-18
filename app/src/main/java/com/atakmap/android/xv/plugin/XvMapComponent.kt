@@ -3096,7 +3096,15 @@ class XvMapComponent : AbstractMapComponent() {
             // wasn't even available."
             val candidates = listBondedAinaDevices()
             val savedMac = settings.persistedAinaMac()
-            if (savedMac != null) {
+            if (savedMac != null && isOsBondedBleHid(savedMac)) {
+                Log.w(
+                    TAG,
+                    "autoConnectAina: saved MAC $savedMac is an OS-bonded BLE_HID device. " +
+                        "Clearing from preferences to prevent pairing loops.",
+                )
+                settings.persistAinaMac(null)
+                // Let it fall through to auto-pick (which excludes BLE_HID anyway)
+            } else if (savedMac != null) {
                 // Explicit operator pick wins IF that device is
                 // currently reachable. Falling through to auto-pick
                 // when the saved MAC is bonded-but-off lets the
@@ -3647,6 +3655,20 @@ class XvMapComponent : AbstractMapComponent() {
         }, 3000)
     }
 
+    @SuppressWarnings("MissingPermission")
+    private fun isOsBondedBleHid(mac: String): Boolean {
+        if (mac.isBlank()) return false
+        val adapter =
+            try {
+                android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            } catch (_: SecurityException) {
+                null
+            } ?: return false
+        val bonded = adapter.bondedDevices?.find { it.address.equals(mac, ignoreCase = true) } ?: return false
+        return com.atakmap.android.xv.aina.AinaDeviceClassifier.classifyButtonProtocol(bonded) ==
+            com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID
+    }
+
     // Actual auto-connect body. Guarded so only the first caller
     // (whenBound-triggered OR the 3 s fallback) runs it. Every branch
     // logs at INFO so a future field logcat shows exactly which path
@@ -3660,7 +3682,16 @@ class XvMapComponent : AbstractMapComponent() {
         externalButtonAutoConnectFired = true
         Log.i(TAG, "autoConnectExternalButton[$source]: entry")
         val savedMac = settings.persistedExternalButtonMac()
-        if (savedMac != null) {
+        if (savedMac != null && isOsBondedBleHid(savedMac)) {
+            Log.w(
+                TAG,
+                "autoConnectExternalButton[$source]: saved MAC $savedMac is an OS-bonded BLE_HID device. " +
+                    "Clearing from preferences to prevent pairing loops.",
+            )
+            settings.persistExternalButtonMac(null)
+            settings.persistExternalButtonKind(null)
+            // Let it fall through to auto-pick, which we'll also filter
+        } else if (savedMac != null) {
             Log.i(
                 TAG,
                 "autoConnectExternalButton[$source]: restoring saved MAC " +
@@ -3686,6 +3717,7 @@ class XvMapComponent : AbstractMapComponent() {
                 .filterNot {
                     primaryMac != null && it.mac.equals(primaryMac, ignoreCase = true)
                 }
+                .filterNot { isOsBondedBleHid(it.mac) }
         if (candidates.isEmpty()) {
             Log.i(TAG, "autoConnectExternalButton[$source]: no compatible external-button candidate — skipping")
             return
