@@ -538,6 +538,49 @@ class XvMapComponent : AbstractMapComponent() {
                 Log.w(TAG, "auto-reconnect on BT STATE_ON threw", t)
             }
         }
+
+    // ACL_CONNECTED receiver — react to the actual OS-level device
+    // reachability signal rather than a wall-clock guess. When the
+    // saved AINA MAC or External Button MAC establishes an ACL link
+    // (observed 4-5 s after BT STATE_ON on Pixel 9 Pro), the receiver
+    // below fires and re-runs the connect path for that slot with a
+    // short settle delay (ACL_RECONNECT_SETTLE_MS) to let HFP /
+    // GATT profile services bind. This closes the race where the
+    // STATE_ON → 3 s delay → autoConnectAina() path fires before the
+    // AINA's SDP cache is republished, marks available=false, and
+    // silently gives up — leaving the operator with a working BT
+    // audio link but silent PTT buttons until a manual picker tap.
+    private var aclReconnectReceiver: BroadcastReceiver? = null
+
+    // Pending ACL-triggered reconnect for each slot.  The runnables
+    // are cancellable so a rapid connect/disconnect/connect burst
+    // coalesces to a single connect rather than stacking up work.
+    private val aclAinaReconnectRunnable =
+        Runnable {
+            try {
+                val ctx = heldPluginContext ?: return@Runnable
+                val savedMac = settings.persistedAinaMac() ?: return@Runnable
+                Log.i(TAG, "ACL settle elapsed — connecting AINA to restore button subscription")
+                connectSavedAinaPrimary(ctx, savedMac)
+            } catch (t: Throwable) {
+                Log.w(TAG, "aclAinaReconnectRunnable threw", t)
+            }
+        }
+
+    private val aclExtButtonReconnectRunnable =
+        Runnable {
+            try {
+                val savedMac = settings.persistedExternalButtonMac() ?: return@Runnable
+                Log.i(
+                    TAG,
+                    "ACL settle elapsed — connecting external button to restore button subscription",
+                )
+                connectSavedExternalButton(savedMac)
+            } catch (t: Throwable) {
+                Log.w(TAG, "aclExtButtonReconnectRunnable threw", t)
+            }
+        }
+
     private var activeTransport: VoiceTransport? = null
 
     // Host string of the currently-running Mumble transport, or null when
@@ -547,6 +590,17 @@ class XvMapComponent : AbstractMapComponent() {
     private var ainaBle: AinaBleReader? = null
     private var ainaSpp: AinaSppReader? = null
     private var emergency: EmergencyController? = null
+
+    // True while the service-side AINA reader is in a connected,
+    // button-ready state. Updated from the IXvVoiceListener callback
+    // [onAinaConnectionChanged]. The dormant plugin-local ainaBle /
+    // ainaSpp fields above are always null after the reader migration
+    // to XvVoiceService, so [isAinaConnected] now reads this flag
+    // instead of the stale local references. This lets the
+    // "already connected" guard in [setSelectedAinaInternal] — and
+    // the ACL reconnect debounce — see real service state.
+    @Volatile
+    private var serviceAinaConnected: Boolean = false
 
     // Foreground-KeyEvent fallback for the Samsung Active Key. Attached
     // to the MapView's OnKeyListener only on Samsung ruggedized
@@ -745,6 +799,7 @@ class XvMapComponent : AbstractMapComponent() {
 
                 override fun onAinaConnectionChanged(connected: Boolean) {
                     Log.i(TAG, "service: AINA connection changed connected=$connected")
+                    serviceAinaConnected = connected
                 }
 
                 override fun onRxActivity() {
@@ -1199,6 +1254,68 @@ class XvMapComponent : AbstractMapComponent() {
             Log.w(TAG, "registerReceiver(btAdapterStateReceiver) threw", t)
         }
 
+        // ACL_CONNECTED receiver — react to the actual OS-level device
+        // reachability signal rather than a fixed wall-clock delay. See
+        // [aclReconnectReceiver] field comment for the field-bug history.
+        aclReconnectReceiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    ctx: Context,
+                    intent: Intent,
+                ) {
+                    if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED) return
+                    @Suppress("DEPRECATION")
+                    val device =
+                        intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                            ?: return
+                    val mac = device.address ?: return
+                    val savedAinaMac = settings.persistedAinaMac()
+                    val savedExtMac = settings.persistedExternalButtonMac()
+                    if (shouldReconnectOnAcl(mac, savedAinaMac)) {
+                        Log.i(
+                            TAG,
+                            "ACL_CONNECTED for primary AINA MAC — " +
+                                "scheduling reconnect to restore button subscription",
+                        )
+                        // Debounce so a rapid connect/disconnect/connect
+                        // burst coalesces. Short delay (ACL_RECONNECT_SETTLE_MS)
+                        // gives HFP / GATT profile services a moment to bind
+                        // before we attempt connectGatt.
+                        autoReconnectHandler.removeCallbacks(aclAinaReconnectRunnable)
+                        autoReconnectHandler.postDelayed(
+                            aclAinaReconnectRunnable,
+                            ACL_RECONNECT_SETTLE_MS,
+                        )
+                    }
+                    if (shouldReconnectOnAcl(mac, savedExtMac)) {
+                        Log.i(
+                            TAG,
+                            "ACL_CONNECTED for external button MAC — " +
+                                "scheduling reconnect to restore button subscription",
+                        )
+                        autoReconnectHandler.removeCallbacks(aclExtButtonReconnectRunnable)
+                        autoReconnectHandler.postDelayed(
+                            aclExtButtonReconnectRunnable,
+                            ACL_RECONNECT_SETTLE_MS,
+                        )
+                    }
+                }
+            }
+        try {
+            androidx.core.content.ContextCompat.registerReceiver(
+                pluginContext,
+                aclReconnectReceiver!!,
+                IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            Log.i(
+                TAG,
+                "aclReconnectReceiver registered — will reconnect saved AINA / external button on ACL_CONNECTED",
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "registerReceiver(aclReconnectReceiver) threw", t)
+        }
+
         // XV-native peer discovery via CoT detail. Publishes a `<__xv>`
         // element on our self-CoT and listens for the same element on
         // others' CoT to build a registry of XV-callable peers.
@@ -1406,8 +1523,17 @@ class XvMapComponent : AbstractMapComponent() {
                 // Not registered — attach-fail path or double-detach; ignore.
             }
         }
+        aclReconnectReceiver?.let {
+            try {
+                context.unregisterReceiver(it)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
         autoReconnectHandler.removeCallbacks(autoReconnectRunnable)
+        autoReconnectHandler.removeCallbacks(aclAinaReconnectRunnable)
+        autoReconnectHandler.removeCallbacks(aclExtButtonReconnectRunnable)
         btAdapterStateReceiver = null
+        aclReconnectReceiver = null
         showReceiver = null
         debugReceiver = null
         // End any active Telecom call + unregister our PhoneAccount
@@ -3877,7 +4003,13 @@ class XvMapComponent : AbstractMapComponent() {
         )
     }
 
-    private fun isAinaConnected(): Boolean = ainaBle != null || ainaSpp != null
+    // Returns true when the service-side AINA reader is connected and
+    // button-ready. This was previously keyed off the dormant plugin-
+    // local ainaBle / ainaSpp fields (always null after the reader
+    // migration to XvVoiceService) and therefore always returned false.
+    // [serviceAinaConnected] is now updated from the IXvVoiceListener
+    // callback so this reflects real service state.
+    private fun isAinaConnected(): Boolean = serviceAinaConnected
 
     // SharedPreferences MUST be backed by ATAK's own context, not the
     // plugin context. See the [XvSettings] class for the full extracted
@@ -4663,12 +4795,39 @@ class XvMapComponent : AbstractMapComponent() {
         // manual picker touch, which was the reported field
         // experience.
         //
-        // Post-freeze follow-up: replace the fixed delay with a
-        // BluetoothDevice.ACTION_ACL_CONNECTED receiver targeted at
-        // the saved AINA / External Button MACs so we react to the
-        // actual reachability signal instead of a worst-case wall
-        // clock guess.
+        // The [aclReconnectReceiver] (see its field comment) is now
+        // the primary recovery path: it reacts to
+        // BluetoothDevice.ACTION_ACL_CONNECTED for the saved AINA /
+        // External Button MACs, bypassing this fixed-delay ceiling.
+        // This fallback timer still fires as belt-and-suspenders for
+        // devices whose BT stack does not deliver ACL_CONNECTED to our
+        // process (some OEM builds restrict the broadcast).
         private const val BT_STATE_ON_RECONNECT_DELAY_MS = 3000L
+
+        // Settle delay between ACTION_ACL_CONNECTED and the actual
+        // connectGatt call. Gives the HFP / RFCOMM profile service
+        // bindings a moment to complete before we poke the reader.
+        // 300 ms is conservative; the ACL link itself is established
+        // before the broadcast fires so even 0 ms would usually work,
+        // but short delays have been observed to race SDP-cache
+        // population on some OEM stacks.
+        internal const val ACL_RECONNECT_SETTLE_MS = 300L
+
+        /**
+         * Pure decision: should an ACTION_ACL_CONNECTED broadcast for
+         * [connectedMac] trigger a reconnect for the slot whose saved
+         * selection is [savedMac]?
+         *
+         * Extracted so unit tests can pin the predicate without
+         * standing up an Android [Context] or a live Bluetooth stack.
+         * Comparison is case-insensitive to match BT MAC conventions
+         * (Android upper-cases MACs in broadcasts; some persist paths
+         * may have lower-cased them).
+         */
+        fun shouldReconnectOnAcl(
+            connectedMac: String,
+            savedMac: String?,
+        ): Boolean = savedMac != null && connectedMac.equals(savedMac, ignoreCase = true)
 
         // Persistent default for VX-compat handshake. HYBRID is the current
         // operational default: it makes XV "callable" from VX clients via

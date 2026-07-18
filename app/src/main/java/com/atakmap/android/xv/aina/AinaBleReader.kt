@@ -315,6 +315,12 @@ class AinaBleReader(
                     "CCCD write OK — pendingConfigReadModifyWrite: true -> false, chaining to CONFIG read",
                 )
                 pendingConfigReadModifyWrite = false
+                // Subscription is now active — button notifications will
+                // flow from this point. This is the diagnostic anchor
+                // requested by issue #88: the log line below confirms
+                // button-subscription readiness post-reconnect. Any button
+                // presses from here on will arrive as onCharacteristicChanged.
+                Log.i(TAG, "button subscription ACTIVE — speakermic PTT ready")
                 val service = g.getService(SERVICE_UUID) ?: return
                 val configCh = service.getCharacteristic(CONFIG_CHAR_UUID)
                 if (configCh == null) {
