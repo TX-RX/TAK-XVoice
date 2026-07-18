@@ -2167,13 +2167,16 @@ class TxController(
         // Field observation 2026-07-11: with the widened 300 ms
         // cold-SCO hold above, the first-frame-post-transition
         // window is quieter but the SILK encoder still catches a
-        // few frames of "not-yet-clean" mic before it locks in. N=6
-        // = 60 ms of dropped leading edge, still well inside the
-        // typical 250-400 ms human reaction time from TPT-audible
-        // to first phoneme, so operator speech is not eaten.
+        // few frames of "not-yet-clean" mic before it locks in.
+        // N=6 (60 ms) was the tuning at that point.
         //
-        // Set to 0 to disable the drop entirely (useful for A/B
-        // comparison or for platforms without the AOC modem behavior).
+        // Superseded 2026-07-18 (this PR): the PROBING readiness
+        // barrier added in PR #86 already waits for the voice DSP to
+        // converge before the TPT is granted, so the post-TPT frame
+        // drop is now redundant AND actively eats the operator's first
+        // syllables. Default is therefore N=0 (drop disabled). Bump it
+        // back above 0 only if a platform without the PROBING barrier
+        // resurfaces the AOC underrun clip.
         internal const val COLD_SCO_START_DROP_FRAMES: Int = 0
 
         internal val DEFAULT_COLD_START_POLICY: ColdStartMitigationPolicy =

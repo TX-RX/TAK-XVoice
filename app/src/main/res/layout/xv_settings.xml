@@ -476,7 +476,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="Note: Do not pair Bluetooth buttons in Android Bluetooth Settings. Doing so causes pairing loops. Pair them here using the Scan button above. If you experience loops, 'Forget' the button in Android Settings."
-                    android:textColor="#ffaa00"
+                    android:textColor="@color/xv_warn"
                     android:textSize="12sp"
                     android:layout_marginTop="6dp"
                     android:layout_marginBottom="6dp"

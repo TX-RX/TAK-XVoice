@@ -1855,6 +1855,7 @@ class VoicePlant(
      * sources.
      */
     fun disconnectAinaReaderOnly() {
+        val hadReader = ainaBle != null || ainaSpp != null || prymeBle != null
         // dispose() rather than disconnect() — see the analogous
         // block in [disconnectExternalButton] for the rationale.
         ainaBle?.dispose()
@@ -1874,6 +1875,21 @@ class VoicePlant(
             pttDispatcher.forgetSource(PttSource.PRYME_BLE)
         } catch (t: Throwable) {
             Log.w(TAG, "forgetSource on primary reader teardown threw", t)
+        }
+        // dispose() sets a sticky flag that short-circuits the reader's
+        // own onConnectionState(false) dispatch, so the plugin would
+        // otherwise never learn the button reader is gone — leaving
+        // serviceAinaConnected and the UI dot stale after a teardown-only
+        // protocol flip ("no buttons / on-screen only"). Notify explicitly.
+        // Guarded on hadReader so a no-op teardown emits no spurious
+        // disconnect. [disconnectAina] also notifies (harmless idempotent
+        // repeat); the respawn path does not route through here.
+        if (hadReader) {
+            try {
+                callbacks.onAinaConnectionChanged(false)
+            } catch (t: Throwable) {
+                Log.w(TAG, "onAinaConnectionChanged(false) on reader teardown threw", t)
+            }
         }
     }
 

@@ -1628,12 +1628,21 @@ class XvDropDownReceiver(
     // The custom adapter is ~20 lines of code but gives us both the
     // color + tap-guard properties the leading call-picker UIs use.
     private fun buildAinaPickerAdapter(devices: List<AinaDeviceInfo>): ArrayAdapter<CharSequence> {
+        // Resolve the BT adapter once and hand it to each row's OS-bonded
+        // check instead of letting the detector re-fetch it and re-scan
+        // bondedDevices per row.
+        val btAdapter =
+            try {
+                android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            } catch (_: SecurityException) {
+                null
+            }
         // Row 0 sentinel is always tappable/enabled.
         val entries =
             mutableListOf<PickerRow>().apply {
                 add(PickerRow(label = AINA_NONE_LABEL, available = true))
                 for (d in devices) {
-                    add(pickerRowFor(d))
+                    add(pickerRowFor(d, btAdapter))
                 }
             }
         return object : ArrayAdapter<CharSequence>(
@@ -1671,8 +1680,11 @@ class XvDropDownReceiver(
     // get a red "tap to fix" warning suffix; everything else gets the plain
     // label with an optional "unavailable" annotation. Extracted from
     // buildAinaPickerAdapter to keep that method's block nesting shallow.
-    private fun pickerRowFor(d: AinaDeviceInfo): PickerRow {
-        if (!com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac)) {
+    private fun pickerRowFor(
+        d: AinaDeviceInfo,
+        btAdapter: android.bluetooth.BluetoothAdapter?,
+    ): PickerRow {
+        if (!com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac, btAdapter)) {
             val suffix = if (d.available) "" else "  ·  unavailable"
             return PickerRow(label = d.displayLabel() + suffix, available = d.available)
         }
@@ -1680,7 +1692,9 @@ class XvDropDownReceiver(
         val warn = "\n[Tap to fix: Pair directly in app, not Android]"
         val s = android.text.SpannableString(base + warn)
         s.setSpan(
-            android.text.style.ForegroundColorSpan(android.graphics.Color.RED),
+            android.text.style.ForegroundColorSpan(
+                androidx.core.content.ContextCompat.getColor(pluginContext, R.color.xv_err),
+            ),
             base.length,
             s.length,
             android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
@@ -1820,7 +1834,12 @@ class XvDropDownReceiver(
                         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
                         adapter?.bondedDevices?.any { it.address.equals(autoPicked.mac, ignoreCase = true) } == true
                     } catch (_: SecurityException) {
-                        false
+                        // Fail closed: if we can't read bond state (no
+                        // BLUETOOTH_CONNECT), assume bonded and skip the
+                        // auto-assign. Auto-selecting an OS-bonded puck is
+                        // exactly the pairing-loop scenario this guard exists
+                        // to avoid, so "unknown" must not fail open.
+                        true
                     }
                 if (!isBonded) {
                     controller.setSelectedExternalButton(autoPicked.mac)
@@ -2058,7 +2077,13 @@ class XvDropDownReceiver(
                 val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
                 adapter?.bondedDevices?.any { it.address.equals(mac, ignoreCase = true) } == true
             } catch (_: SecurityException) {
-                false
+                // Fail closed: this guard exists to keep OS-bonded BLE_HID
+                // pucks out (they cause pairing loops). If we can't read
+                // bond state (no BLUETOOTH_CONNECT), treat the device as
+                // bonded and surface the unpair modal rather than letting
+                // it slip through. The modal's "Open Settings" / "Cancel"
+                // paths give the operator an escape hatch.
+                true
             }
         if (!isBonded) {
             onAllowed()
