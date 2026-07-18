@@ -1742,6 +1742,8 @@ class XvDropDownReceiver(
                     if (pickedMac != current) {
                         controller.setSelectedAina(pickedMac)
                         statusLabel.text = formatAinaStatus(devices, pickedMac, controller.ainaConnectionUp())
+                        val dev = if (pos == 0) null else devices.getOrNull(pos - 1)
+                        maybeWarnIfBleHidIsBonded(dev?.mac, dev?.name, dev?.buttonProtocol)
                     }
                 }
 
@@ -1796,6 +1798,8 @@ class XvDropDownReceiver(
                         controller.setSelectedExternalButton(pickedMac)
                         statusLabel?.text =
                             formatAinaStatus(devices, pickedMac, controller.externalButtonConnectionUp())
+                        val dev = if (pos == 0) null else devices.getOrNull(pos - 1)
+                        maybeWarnIfBleHidIsBonded(dev?.mac, dev?.name, dev?.buttonProtocol)
                     }
                 }
 
@@ -1937,10 +1941,30 @@ class XvDropDownReceiver(
                 if (err == null) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_LONG,
             ).show()
         if (err == null) {
+            maybeWarnIfBleHidIsBonded(picked.mac, picked.name, com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID)
             // Rebuild both pickers so the new device appears in the
             // dropdowns immediately without a settings re-open.
             wireAinaPicker(rootView)
             wireExternalButtonPicker(rootView)
+        }
+    }
+
+    private fun maybeWarnIfBleHidIsBonded(
+        mac: String?,
+        name: String?,
+        protocol: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?
+    ) {
+        if (mac == null || protocol != com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID) return
+        try {
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            val isBonded = adapter?.bondedDevices?.any { it.address.equals(mac, ignoreCase = true) } == true
+            if (isBonded) {
+                val disp = name?.takeIf { it.isNotBlank() } ?: mac
+                val warning = "WARNING: $disp is paired in Android Settings.\n\nFor Pryme buttons, you MUST unpair/forget it in Android Settings to avoid pairing loops!"
+                android.widget.Toast.makeText(pluginContext, warning, android.widget.Toast.LENGTH_LONG).show()
+            }
+        } catch (_: SecurityException) {
+            // Ignore missing BLUETOOTH permissions if any
         }
     }
 
