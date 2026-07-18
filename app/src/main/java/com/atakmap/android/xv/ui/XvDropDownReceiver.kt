@@ -1933,7 +1933,7 @@ class XvDropDownReceiver(
         val displayName = picked.name?.takeIf { it.isNotBlank() } ?: picked.mac
         val err = controller.addBlePttDevice(picked.mac, picked.name)
         val msg =
-            err ?: "Added $displayName — now pick it from the Primary PTT or External button dropdown."
+            err ?: "Added $displayName — assigned as External button."
         android.widget.Toast
             .makeText(
                 pluginContext,
@@ -1941,6 +1941,7 @@ class XvDropDownReceiver(
                 if (err == null) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_LONG,
             ).show()
         if (err == null) {
+            controller.setSelectedExternalButton(picked.mac)
             maybeWarnIfBleHidIsBonded(picked.mac, picked.name, com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID)
             // Rebuild both pickers so the new device appears in the
             // dropdowns immediately without a settings re-open.
