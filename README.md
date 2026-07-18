@@ -121,6 +121,13 @@ and feature polish.
    speaker while preserving the operator's preferred MAC so audio
    returns to BT as soon as the device reconnects.
 
+5. **TX startup hardening.** XV suppresses a known Android route-settle
+  race at capture start (initial unresolved route to first stable
+  route) so it does not trigger a false in-place restart. If a real
+  in-place capture restart occurs during an active burst, XV now
+  reapplies start-of-stream stabilization (short hold plus leading
+  frame drop) before encoding resumes.
+
 XV also adds:
 
 - **Per-device defaults with overrides** — each supported speakermic

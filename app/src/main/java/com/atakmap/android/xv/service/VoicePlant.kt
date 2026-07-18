@@ -343,8 +343,8 @@ class VoicePlant(
     // onSessionIdChanged callback wired below) and cleared by
     // AudioCapture.stop(). AudioPlayback consults it when building a
     // fresh AudioTrack so RX playback shares a session with the mic
-    // path — Android's AcousticEchoCanceler (attached to the capture
-    // session in AudioCapture.configureAudioEffects) then has a real
+    // path — the platform voice DSP that AudioSource.VOICE_COMMUNICATION
+    // pulls in on the capture session (its AEC) then has a real
     // downlink reference signal to subtract from the mic input, which
     // is what stops the operator's peer from hearing themselves
     // through the operator's own speakermic on a warm back-and-forth.
@@ -453,6 +453,20 @@ class VoicePlant(
             telecomActive = {
                 com.atakmap.android.xv.telecom.ActiveCallRegistry
                     .hasActiveCall()
+            },
+            // Telecom leg of the TX readiness barrier: settled means the
+            // self-managed call is registered AND Telecom has delivered
+            // its first CallAudioState (the connection's audio-state
+            // getter turns non-null exactly when onCallAudioStateChanged
+            // first fires — i.e. the platform has finished re-routing
+            // audio for the VoIP call). A warm re-key inside the 8 s
+            // end-debounce window sees both true and skips the wait.
+            telecomReady = {
+                val conn =
+                    com.atakmap.android.xv.telecom.ActiveCallRegistry
+                        .activeConnection()
+                @Suppress("DEPRECATION")
+                conn != null && conn.callAudioState != null
             },
             // H3: when TX returns to idle, fire any route change that
             // arrived while we were transmitting. The router queues
@@ -721,7 +735,28 @@ class VoicePlant(
     // The route-settle guard in TxController.startTpt() gives Telecom
     // ~150ms to converge after setAudioRoute before the tone plays.
     private val telecomRouteListener: (android.telecom.CallAudioState?) -> Unit = { state ->
-        Log.d(TAG, "telecom route changed (observe only; route owned by Telecom.setAudioRoute): state=$state")
+        Log.d(TAG, "telecom route changed (route owned by Telecom.setAudioRoute): state=$state")
+        // First route callback after the self-managed call activates =
+        // the Telecom leg of the TX readiness barrier is satisfied.
+        // Release any burst parked in ACQUIRING_CALL so PRIMING runs
+        // against the post-reroute input path (see TxController's
+        // maybeStartPriming). No-op when no burst is waiting.
+        if (state != null) {
+            txController.notifyTelecomReady()
+        }
+    }
+
+    // Telecom refused an outgoing placeCall (onCreateOutgoingConnectionFailed
+    // in the same process). If a burst is parked in ACQUIRING_CALL
+    // waiting for that call to settle, release it immediately on the
+    // legacy no-Telecom path instead of letting it eat the full settle
+    // timeout as dead air. Guarded on hasActiveCall: a placeCall
+    // rejected BECAUSE one of our calls is already live means the live
+    // call's route is the one to wait for.
+    private val telecomPlaceFailedListener: () -> Unit = {
+        if (!com.atakmap.android.xv.telecom.ActiveCallRegistry.hasActiveCall()) {
+            txController.notifyTelecomUnavailable()
+        }
     }
 
     init {
@@ -768,6 +803,8 @@ class VoicePlant(
         // which is when our setCommunicationDevice actually sticks.
         com.atakmap.android.xv.telecom.ActiveCallRegistry
             .addRouteListener(telecomRouteListener)
+        com.atakmap.android.xv.telecom.ActiveCallRegistry
+            .addPlaceFailedListener(telecomPlaceFailedListener)
         // Bond loss observation — operator unpairs the AINA via system
         // settings. Without this, the reader's reconnect loop keeps
         // trying to reach a device that's no longer in the bond table.
@@ -1980,6 +2017,11 @@ class VoicePlant(
         try {
             com.atakmap.android.xv.telecom.ActiveCallRegistry
                 .removeRouteListener(telecomRouteListener)
+        } catch (_: Throwable) {
+        }
+        try {
+            com.atakmap.android.xv.telecom.ActiveCallRegistry
+                .removePlaceFailedListener(telecomPlaceFailedListener)
         } catch (_: Throwable) {
         }
         try {
