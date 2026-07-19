@@ -1219,7 +1219,7 @@ class XvDropDownReceiver(
 
         val overrideText = android.widget.TextView(ctx).apply {
             text = "Mesh Failover"
-            setTextColor(ctx.getColor(R.color.xv_text_dim))
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
             textSize = 12f
             val density = ctx.resources.displayMetrics.density
             setPadding(0, (8 * density).toInt(), 0, (4 * density).toInt())
@@ -1240,7 +1240,7 @@ class XvDropDownReceiver(
 
         val patchText = android.widget.TextView(ctx).apply {
             text = "External Patch (OpenManet)"
-            setTextColor(ctx.getColor(R.color.xv_text_dim))
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
             textSize = 12f
             val density = ctx.resources.displayMetrics.density
             setPadding(0, (16 * density).toInt(), 0, (4 * density).toInt())
