@@ -254,7 +254,7 @@ class TxControllerColdScoWarmupTest {
         // settle before mic frames stop encoding to Opus screech.
         // If this constant moves, the block comment above it should
         // move with it.
-        assertEquals(0L, TxController.COLD_SCO_TPT_HOLD_MS)
+        assertEquals(700L, TxController.COLD_SCO_TPT_HOLD_MS)
     }
 
     // ============================================================
@@ -291,7 +291,7 @@ class TxControllerColdScoWarmupTest {
 
     @Test
     fun `cold burst uses the ramp-tolerant gates`() {
-        assertEquals(60, TxController.primingMinFramesToConfirmAlive(coldBurst = true))
+        assertEquals(30, TxController.primingMinFramesToConfirmAlive(coldBurst = true))
         assertEquals(200, TxController.primingRmsThreshold(coldBurst = true))
         assertEquals(1500L, TxController.primingTimeoutMs(coldBurst = true))
     }

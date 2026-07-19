@@ -1323,23 +1323,15 @@ class TxController(
             val aliveFrames =
                 if (primingUseColdScoGates) primingNonSilentFramesObserved else primingFramesObserved
             val micAlive =
-                if (primingUseColdScoGates) {
-                    // Data-driven SCO readiness: time doesn't guarantee the connection
-                    // is ready (the modem might still be initializing or dropping frames).
-                    // We disable the RMS short-circuit here because the initial modem
-                    // screech has high RMS. We strictly wait for `minFrames` of actual
-                    // non-silent audio data to flow through the pipeline.
+                rms >= rmsThreshold ||
                     aliveFrames >= minFrames
-                } else {
-                    rms >= rmsThreshold || aliveFrames >= minFrames
-                }
             if (micAlive) {
                 synchronized(this@TxController) {
                     if (state == State.PRIMING) {
                         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
                         val elapsed = System.currentTimeMillis() - primingStartMs
                         val reason =
-                            if (rms >= rmsThreshold && !primingUseColdScoGates) {
+                            if (rms >= rmsThreshold) {
                                 "speech-detected"
                             } else {
                                 "frames-confirm-alive"
@@ -1884,7 +1876,7 @@ class TxController(
         // settle time is 300-500 ms; below 300 ms the encoder is
         // still fed ramp-up noise, above 500 ms operators start
         // perceiving TPT latency.
-        private const val MIC_PRIMING_MIN_FRAMES_ALIVE_SCO = 60
+        private const val MIC_PRIMING_MIN_FRAMES_ALIVE_SCO = 30
 
         // Field-observed cold-SCO first-frame latency was 863 ms,
         // and the previous 500 ms timeout aborted TX with "mic
@@ -1975,7 +1967,7 @@ class TxController(
         // Tunable — smaller values leave residual underrun in the
         // TPT-to-TX transition; larger values are perceived as PTT
         // sluggishness.
-        internal const val COLD_SCO_TPT_HOLD_MS: Long = 0L
+        internal const val COLD_SCO_TPT_HOLD_MS: Long = 700L
 
         // Number of leading TX frames to silently discard on the cold-
         // SCO path. Each frame is 10 ms of PCM (480 samples @ 48 kHz —
