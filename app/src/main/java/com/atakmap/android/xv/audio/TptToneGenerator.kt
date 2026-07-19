@@ -214,8 +214,6 @@ object TptToneGenerator {
 
     const val LEAVE_CHIRP_DURATION_MS: Long = 120L
 
-
-
     private fun twoBeepStatus(
         firstHz: Double,
         secondHz: Double,

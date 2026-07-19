@@ -296,7 +296,6 @@ class TxController(
     @Volatile
     private var primingNonSilentFramesObserved: Int = 0
 
-
     // Whether this burst faces a COLD BT SCO chipset ramp — i.e. we had
     // to acquire SCO from scratch this burst (currentBurstColdSco).
     // Captured at startPriming() so the gate values are stable through
@@ -1327,8 +1326,8 @@ class TxController(
                 if (primingUseColdScoGates) {
                     // Data-driven SCO readiness: time doesn't guarantee the connection
                     // is ready (the modem might still be initializing or dropping frames).
-                    // We disable the RMS short-circuit here because the initial modem 
-                    // screech has high RMS. We strictly wait for `minFrames` of actual 
+                    // We disable the RMS short-circuit here because the initial modem
+                    // screech has high RMS. We strictly wait for `minFrames` of actual
                     // non-silent audio data to flow through the pipeline.
                     aliveFrames >= minFrames
                 } else {
@@ -2033,8 +2032,6 @@ class TxController(
             cold: Boolean,
             baseMs: Long,
         ): Long = DEFAULT_COLD_START_POLICY.computePrimingHoldMs(route, cold, baseMs)
-
-
 
         // ---------- PRIMING gate selection (cold-SCO vs everything else) ----------
         //

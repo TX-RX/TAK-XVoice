@@ -2469,6 +2469,7 @@ class XvDropDownReceiver(
         // Surface Duo idle (constant wakeups for nothing changing);
         // 2 s is fine for slow-moving fields like reconnect countdown.
         private const val REFRESH_MS = 2_000L
+
         // Debounce for connectivity-driven Settings-picker rebuilds. Long
         // enough to swallow the connect/disconnect churn of a BT power-
         // cycle reconnect (~0.8s observed) so the picker rebuilds once,

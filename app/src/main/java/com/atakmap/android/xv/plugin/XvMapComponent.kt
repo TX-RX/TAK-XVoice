@@ -4894,7 +4894,6 @@ class XvMapComponent : AbstractMapComponent() {
         // population on some OEM stacks.
         internal const val ACL_RECONNECT_SETTLE_MS = 300L
 
-
         /**
          * Pure decision: should an ACTION_ACL_CONNECTED broadcast for
          * [connectedMac] trigger a reconnect for the slot whose saved
