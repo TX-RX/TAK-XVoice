@@ -567,9 +567,13 @@ class VoicePlant(
     // longer exists in the bond table.
     @Volatile private var connectedAinaMac: String? = null
 
-    // MAC of the currently-connected external button (or null when none).
-    // Used by the BOND_STATE_CHANGED receiver to tear down the reader
-    // if the operator unpairs the puck mid-flight.
+    // MAC of the external button this slot is currently bound to (or null
+    // when none). Set at connect-attempt time in [connectExternalButton]
+    // — BEFORE the reader reports its first connection edge — and cleared
+    // in [disconnectExternalButton]; it tracks "which puck are we driving",
+    // not a live up/down state. That's exactly what the BOND_STATE_CHANGED
+    // receiver needs: on a BOND_NONE for this MAC, tear the reader down if
+    // the operator unpairs the puck mid-flight.
     @Volatile private var connectedExternalButtonMac: String? = null
 
     // Same SharedPreferences file as the plugin-side XvSettings — this

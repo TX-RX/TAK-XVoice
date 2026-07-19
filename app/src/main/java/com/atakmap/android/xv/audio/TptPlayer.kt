@@ -413,15 +413,6 @@ class TptPlayer(
         mainHandler.postDelayed(r, TptToneGenerator.NO_PERMIT_DURATION_MS + COMPLETION_SLACK_MS)
     }
 
-    // DSP-readiness probe tick — see TptToneGenerator.probeTick and
-    // TxController.startProbing. Fire-and-forget: TxController owns the
-    // repeat cadence and the "heard it in capture" detection; this just
-    // puts ~80 ms of two-tone energy on the voice-comm path. Same
-    // routing/usage as the TPT so the probe exercises the exact
-    // speaker→air→mic→DSP loop the burst will use. Deliberately does
-    // NOT call stop() first — the probe repeats on a short cadence and
-    // must never cancel a TPT that a racing state change just started;
-    // callers guarantee no TPT is in flight while PROBING.
     // Stronger reject tone for "you're in the channel but the server
     // says you can't speak here" (OTS direction OUT, Mumble admin
     // mute). Uses the dedicated descending-double-tone generator —

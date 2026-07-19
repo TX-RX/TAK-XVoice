@@ -190,15 +190,15 @@ class TxController(
     // limping through the burst alternating ~300 ms blocks of real
     // audio and hard digital zeros. Waiting until the route settles
     // means the record we prime is the record that transmits.
-    // PROBING is the DSP-readiness verification for cold-call bursts:
-    // priming proved the read loop is alive, but on a fresh Telecom
-    // session the OEM voice DSP may still be converging and silently
-    // suppressing everything (including the operator's first words).
-    // PROBING plays short ticks on the shared voice session and holds
-    // the TPT until our own capture registers real acoustic energy —
-    // the tick, or any ambient sound — proving the path passes audio
-    // end-to-end. Measured readiness, not a guessed delay; bounded by
-    // PROBE_CEILING_MS. See [startProbing].
+    // Cold-start readiness note: an earlier acoustic PROBING phase
+    // (played a tick, waited to hear it) was removed — on good-AEC
+    // devices the platform cancelled the tick as downlink echo, so it
+    // always hit the ceiling and added ~1.2s to every cold burst for no
+    // benefit. The cold axes are now covered without it: ACQUIRING_CALL
+    // waits for the Telecom route to settle, PRIMING confirms the read
+    // loop is alive, and for cold BT SCO a fixed COLD_SCO_TPT_HOLD_MS
+    // hold before the TPT lets the AOC modem stabilize past its underrun
+    // window (see [scheduleColdScoTptHold] / [computePrimingHoldMs]).
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
     internal enum class State { IDLE, ACQUIRING_SCO, ACQUIRING_CALL, PRIMING, TPT, TRANSMITTING }
 
@@ -744,8 +744,8 @@ class TxController(
         primingUseColdScoGates = currentBurstColdSco
         primingColdCall = currentBurstColdCall
         // Timeout scoped to the SCO axis only: a cold-call burst
-        // completes priming on bare liveness (5 frames ≈ 50 ms) and
-        // hands verification to PROBING, so it keeps the fast bound.
+        // completes priming on bare liveness (5 frames ≈ 50 ms), so it
+        // keeps the fast bound.
         val timeoutMs = primingTimeoutMs(primingUseColdScoGates)
         val scoUp = scoLink.state == ScoLink.State.CONNECTED
         val routeLabel =
@@ -1039,14 +1039,14 @@ class TxController(
      * Post a delayed [startTpt] to give a cold-SCO burst's AOC modem
      * its remaining post-warmup settle time before the permit tone (see
      * [computePrimingHoldMs] and [COLD_SCO_TPT_HOLD_MS]). Used from the
-     * cold-SCO priming-completion path and from a cold-SCO probe
-     * ceiling. State is flipped to [State.TPT] BEFORE the delay so
+     * cold-SCO priming-completion path. State is flipped to [State.TPT]
+     * BEFORE the delay so
      * incoming PCM frames get dropped by the existing state==TPT branch
      * — no risk of re-entering the PRIMING-completion branch and
      * scheduling multiple TPT plays.
      *
      * INVARIANT: caller holds the this@TxController monitor and state
-     * is currently PRIMING or PROBING.
+     * is currently PRIMING.
      */
     private fun scheduleColdScoTptHold(holdMs: Long) {
         state = State.TPT
@@ -1313,11 +1313,9 @@ class TxController(
             // input path that's still dead delivers literal zeros, and
             // 30 zeros in a row is "not ready", not "mic is up". A
             // cold-CALL burst needs only read-loop LIVENESS here (any
-            // frames flowing) because real path verification is the
-            // PROBING phase's job — but it keeps the COLD speech
-            // threshold so only genuine speech, not the DSP's
-            // suppressed floor (rms 1-11 on Pixel), can skip the probe
-            // via the speech-detected shortcut.
+            // frames flowing); it keeps the COLD speech threshold so
+            // only genuine speech, not the DSP's suppressed floor (rms
+            // 1-11 on Pixel), trips the speech-detected shortcut.
             val rmsThreshold = primingRmsThreshold(primingUseColdScoGates || primingColdCall)
             val minFrames = primingMinFramesToConfirmAlive(primingUseColdScoGates)
             val aliveFrames =
@@ -1983,13 +1981,13 @@ class TxController(
         // few frames of "not-yet-clean" mic before it locks in.
         // N=6 (60 ms) was the tuning at that point.
         //
-        // Superseded 2026-07-18 (this PR): the PROBING readiness
-        // barrier added in PR #86 already waits for the voice DSP to
-        // converge before the TPT is granted, so the post-TPT frame
-        // drop is now redundant AND actively eats the operator's first
+        // Superseded 2026-07-18 (this PR): for cold BT SCO the fixed
+        // COLD_SCO_TPT_HOLD_MS hold before the TPT now clears the AOC
+        // modem's underrun window BEFORE the permit tone, so a post-TPT
+        // frame drop is redundant AND actively eats the operator's first
         // syllables. Default is therefore N=0 (drop disabled). Bump it
-        // back above 0 only if a platform without the PROBING barrier
-        // resurfaces the AOC underrun clip.
+        // back above 0 only if a platform resurfaces the AOC underrun
+        // clip despite the hold.
         internal const val COLD_SCO_START_DROP_FRAMES: Int = 0
 
         internal val DEFAULT_COLD_START_POLICY: ColdStartMitigationPolicy =
@@ -2006,9 +2004,11 @@ class TxController(
          * [COLD_SCO_TPT_HOLD_MS]).
          *
          * Deliberately SCO-only: the cold-CALL axis (OEM voice-DSP
-         * convergence on a fresh AudioRecord) is handled by the
-         * PROBING phase, which measures readiness instead of guessing
-         * a duration — see [startProbing].
+         * convergence on a fresh AudioRecord) is covered by the
+         * ACQUIRING_CALL Telecom-route-settle barrier plus PRIMING
+         * liveness — the earlier acoustic PROBING phase that measured
+         * this was removed (it added ~1.2s on good-AEC devices for no
+         * benefit).
          *
          * Pure function — no dependency on TxController state; tests
          * exercise it directly.

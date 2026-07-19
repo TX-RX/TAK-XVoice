@@ -169,9 +169,11 @@ class TxControllerColdScoWarmupTest {
         //
         // History: N=3 was the original tuning (2026-07-08 field
         // capture). Widened to N=6 on 2026-07-11. Reduced to N=0 on
-        // 2026-07-18 because the PROBING phase waits for DSP convergence
-        // prior to TPT, making post-TPT frame drops redundant (and
-        // harmful to the start of speech).
+        // 2026-07-18: the cold-SCO TPT hold (COLD_SCO_TPT_HOLD_MS) now
+        // clears the modem underrun window before the permit tone plays,
+        // so a post-TPT frame drop is redundant (and harmful to the start
+        // of speech). The acoustic PROBING phase that originally justified
+        // N=0 was removed in the same PR.
         assertEquals(0, TxController.COLD_SCO_START_DROP_FRAMES)
     }
 
