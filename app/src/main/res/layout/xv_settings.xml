@@ -955,11 +955,11 @@
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
 
-                <LinearLayout
+                <GridLayout
                     android:id="@+id/xv_mesh_channel_list"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
+                    android:columnCount="2"
                     android:layout_marginTop="4dp"/>
 
                 <!-- Fast mass-clear. Long-press a single row to forget one;
