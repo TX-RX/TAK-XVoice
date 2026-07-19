@@ -181,9 +181,9 @@ object SonimHardwareButtons {
     // -- "Assigned to ATAK" broadcast actions ---------------------------
     //
     // On the XP9900 (AT&T carrier firmware, Android 12) the operator
-    // configures which app receives PTT / SOS / Yellow-key presses via
-    // Settings → System → Buttons → Programmable Keys. When set to ATAK,
-    // Sonim's WindowManager fires the following broadcasts with
+    // configures which app receives SOS-key presses via Settings →
+    // System → Buttons → Programmable Keys. When set to ATAK, Sonim's
+    // WindowManager fires the following broadcasts with
     // `Intent.setPackage("com.atakmap.app.civ")` — pkg-scoped, so only
     // receivers running in ATAK's process see them. XV registers a
     // matching receiver from XvMapComponent (which runs inside ATAK's
@@ -191,15 +191,16 @@ object SonimHardwareButtons {
     // SonimEmergencyButtonReader / SonimPttButtonReader do NOT receive
     // these because they live in the plugin's own process.
     //
-    // Field-verified 2026-07-14 on the operator's XP9900 with keys
-    // assigned to ATAK; Yellow key is what the operator uses as their
-    // effective PTT trigger on this chassis.
-
-    /** Yellow-key press when the Yellow key is assigned to the receiving app. */
-    const val ACTION_YELLOW_KEY_DOWN: String = "com.sonim.intent.action.YELLOW_KEY_DOWN"
-
-    /** Yellow-key release when the Yellow key is assigned to the receiving app. */
-    const val ACTION_YELLOW_KEY_UP: String = "com.sonim.intent.action.YELLOW_KEY_UP"
+    // NOTE on the Yellow key: the XP10's third programmable key emits
+    // `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP` when assigned to
+    // ATAK. It is an application-launcher / convenience key, NOT a PTT
+    // trigger — operators assign it to "Launch ATAK" so a press
+    // foregrounds the app. XV deliberately does NOT define or register
+    // for the Yellow-key actions: routing them to PTT (an earlier
+    // revision did, on the mistaken belief that Sonim's assigned-app API
+    // named the physical PTT button "Yellow") made the launcher key TX.
+    // The physical side PTT button is served by the classic /
+    // MCX broadcast actions above and the keyCode paths below.
 
     /** SOS-key press when the SOS key is assigned to the receiving app. */
     const val ACTION_SOS_KEY_DOWN: String = "com.sonim.intent.action.SOS_KEY_DOWN"

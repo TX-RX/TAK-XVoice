@@ -2,8 +2,10 @@
 
 The Sonim XP10 (commercial model **XP9900**) is a ruggedized handset with
 a dedicated side **PTT** key, a **Yellow** convenience key, and a red
-**SOS / Emergency** key. TAK-XVoice can drive PTT and the emergency alert
-from these physical keys, foreground and background.
+**SOS / Emergency** key. TAK-XVoice drives PTT from the side PTT key and
+the emergency alert from the SOS key, foreground and background. The
+Yellow key is treated as an **application-launcher** convenience key —
+XV does **not** key PTT from it (see the note below).
 
 Sonim firmware exposes the keys in more than one way depending on carrier
 build and how the operator configures **Settings → System → Buttons
@@ -41,13 +43,20 @@ mapping on the XP9900 (2026-07-14):
 
 | Key    | keyCode | Assigned-to-ATAK action                     | XV routes to |
 | ------ | ------- | ------------------------------------------- | ------------ |
-| Yellow | 291     | `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP` | **PTT** |
+| Yellow | 291     | `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP` | **nothing** (app-launcher key — not handled) |
 | SOS    | 294     | `com.sonim.intent.action.SOS_KEY_DOWN` / `_UP` (+ `com.kodiak.intent.action.KEYCODE_SOS`) | **Emergency** |
 
-> On the XP9900 chassis operators generally use the **Yellow** key as
-> their PTT trigger — the key physically labelled "PTT" (keyCode 228) is
-> not the one they press. The SOS press emits two down events in the same
-> millisecond (Sonim + Kodiak); XV drops the duplicate.
+> **The Yellow key is an application-launcher key, not a PTT trigger.**
+> Operators assign it to "Launch ATAK" in Programmable Keys so a press
+> foregrounds the app. An earlier XV revision routed the `YELLOW_KEY`
+> broadcast to PTT — on the mistaken belief that Sonim's assigned-app API
+> named the physical PTT button "Yellow" — which made the launcher key
+> transmit. XV no longer registers for the Yellow-key actions. PTT comes
+> from the dedicated side **PTT** key (keyCode 228) via the classic / MCX
+> broadcasts and the KeyEvent / accessibility paths.
+>
+> The SOS press emits two down events in the same millisecond (Sonim +
+> Kodiak); XV drops the duplicate.
 
 ## Background & screen-off PTT
 
@@ -70,7 +79,9 @@ voice.
 
 1. **Settings → System → Buttons (Programmable Keys):** either set the
    PTT key to **No Action** (to use the broadcast path) or **assign** the
-   keys to ATAK (to use the package-scoped path). Both work.
+   PTT / SOS keys to ATAK (to use the package-scoped path). Both work.
+   The Yellow key can be assigned to "Launch ATAK" (or anything else) —
+   XV ignores it, so it will not key PTT.
 2. Enable the **Sonim hardware buttons** row in XV settings (visible only
    on Sonim hardware). XV deep-links you straight to the Programmable
    Keys and Accessibility pages.
@@ -81,8 +92,9 @@ voice.
 
 - **XP9900 (AT&T carrier, Android 12)** — `Build.MODEL = XP9900`,
   `Build.BRAND = Sonim`, `Build.MANUFACTURER = Sonimtech`. PTT via the
-  MCX action and the assigned-to-ATAK Yellow/SOS mappings are
-  field-verified (2026-07-11 / 2026-07-14).
+  MCX action and the assigned-to-ATAK SOS mapping are field-verified
+  (2026-07-11 / 2026-07-14). The Yellow key is an app-launcher key and
+  is intentionally not routed to PTT.
 
 Non-carrier XP10 variants and the classic broadcast path are covered in
 code but not yet validated end-to-end — see the curated-hardware policy

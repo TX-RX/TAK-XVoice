@@ -17,12 +17,13 @@ import org.robolectric.shadows.ShadowLooper
  * handsets when programmable keys are assigned to ATAK in Settings.
  *
  * The reader routes:
- *   - `YELLOW_KEY_DOWN` / `_UP` → PTT (`onPttKeyEdge`). Sonim's
- *     assigned-app API naming is backwards relative to the physical
- *     buttons: the operator's physical PTT button is delivered as the
- *     `YELLOW_KEY` action (verified on-device 2026-07-14).
  *   - `SOS_KEY_DOWN` / `_UP` (+ the paired Kodiak SOS emission) →
  *     emergency (`onSosKeyEdge`), collapsed to a single edge.
+ *
+ * The Yellow key is intentionally NOT handled — it is an
+ * application-launcher convenience key, not a PTT trigger. These tests
+ * assert that a stray YELLOW_KEY broadcast produces no emergency edge
+ * (the reader never registers for it, so it is simply ignored).
  *
  * Robolectric dispatches synthetic broadcasts against the registered
  * receiver and asserts the callbacks see the correct, de-duplicated
@@ -31,18 +32,15 @@ import org.robolectric.shadows.ShadowLooper
  */
 @RunWith(RobolectricTestRunner::class)
 class SonimAssignedAppReaderTest {
-    private val pttEdges = mutableListOf<Boolean>()
     private val sosEdges = mutableListOf<Boolean>()
     private lateinit var reader: SonimAssignedAppReader
 
     @Before
     fun setup() {
-        pttEdges.clear()
         sosEdges.clear()
         reader =
             SonimAssignedAppReader(
                 context = RuntimeEnvironment.getApplication(),
-                onPttKeyEdge = { isDown -> pttEdges.add(isDown) },
                 onSosKeyEdge = { isDown -> sosEdges.add(isDown) },
             )
         assertTrue("reader.start() should register the receiver in a Robolectric context", reader.start())
@@ -54,31 +52,6 @@ class SonimAssignedAppReaderTest {
     }
 
     // ------------------------------------------------------------------
-    // PTT (YELLOW_KEY — backwards API: this is the physical PTT button)
-    // ------------------------------------------------------------------
-
-    @Test
-    fun `YELLOW_KEY down then up routes to PTT edges`() {
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN)
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_UP)
-        assertEquals(listOf(true, false), pttEdges)
-        assertTrue("SOS path must not fire on PTT keys", sosEdges.isEmpty())
-    }
-
-    @Test
-    fun `duplicate YELLOW_KEY down without an intervening up fires a single PTT down`() {
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN)
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN)
-        assertEquals(listOf(true), pttEdges)
-    }
-
-    @Test
-    fun `YELLOW_KEY up with no prior down is dropped`() {
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_UP)
-        assertTrue("an unmatched up must not fire a PTT edge", pttEdges.isEmpty())
-    }
-
-    // ------------------------------------------------------------------
     // SOS (SOS_KEY + paired Kodiak emission → emergency)
     // ------------------------------------------------------------------
 
@@ -87,7 +60,12 @@ class SonimAssignedAppReaderTest {
         send(SonimHardwareButtons.ACTION_SOS_KEY_DOWN)
         send(SonimHardwareButtons.ACTION_SOS_KEY_UP)
         assertEquals(listOf(true, false), sosEdges)
-        assertTrue("PTT path must not fire on SOS keys", pttEdges.isEmpty())
+    }
+
+    @Test
+    fun `SOS_KEY up with no prior down is dropped`() {
+        send(SonimHardwareButtons.ACTION_SOS_KEY_UP)
+        assertTrue("an unmatched up must not fire an emergency edge", sosEdges.isEmpty())
     }
 
     @Test
@@ -102,22 +80,35 @@ class SonimAssignedAppReaderTest {
     }
 
     // ------------------------------------------------------------------
+    // Yellow key (app-launcher convenience key) — must NOT be handled
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `YELLOW_KEY broadcast fires no emergency edge — launcher key is not handled`() {
+        // The Yellow key is an application-launcher key, not a PTT or
+        // emergency trigger. The reader never registers for its actions,
+        // so a stray YELLOW_KEY broadcast (whatever its origin) must be
+        // inert. Regression guard for the launcher-keys-PTT bug.
+        send("com.sonim.intent.action.YELLOW_KEY_DOWN")
+        send("com.sonim.intent.action.YELLOW_KEY_UP")
+        assertTrue("Yellow key must not drive the emergency path", sosEdges.isEmpty())
+    }
+
+    // ------------------------------------------------------------------
     // Lifecycle
     // ------------------------------------------------------------------
 
     @Test
     fun `stop unregisters the receiver — later broadcasts are dropped`() {
         reader.stop()
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN)
         send(SonimHardwareButtons.ACTION_SOS_KEY_DOWN)
-        assertTrue("no PTT edge after stop", pttEdges.isEmpty())
         assertTrue("no SOS edge after stop", sosEdges.isEmpty())
     }
 
     @Test
     fun `double start is a safe no-op — receiver still delivers exactly one edge`() {
         assertTrue("second start() returns true (already-registered path)", reader.start())
-        send(SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN)
-        assertEquals(listOf(true), pttEdges)
+        send(SonimHardwareButtons.ACTION_SOS_KEY_DOWN)
+        assertEquals(listOf(true), sosEdges)
     }
 }
