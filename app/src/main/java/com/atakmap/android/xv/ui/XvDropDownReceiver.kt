@@ -449,6 +449,48 @@ class XvDropDownReceiver(
         mainHandler.post { refreshMain() }
     }
 
+    // The Settings → Devices panel root, tracked while it's attached so
+    // the plugin can ask us to repopulate the device pickers when a
+    // speakermic connection settles. Set/cleared in wireBtOffBanner's
+    // attach/detach listener.
+    private var settingsPanelView: View? = null
+
+    // Tracks the MAC we last auto-surfaced the OS-bonded-button fix dialog
+    // for, so a rebuild storm (bond-change → repopulate) doesn't re-pop
+    // the dialog on every refresh. Reset to null when the assigned button
+    // is no longer OS-bonded, or when the Settings panel detaches, so a
+    // fresh open (or a re-bond) prompts again.
+    private var lastAutoPromptedBondedButtonMac: String? = null
+
+    private val settingsPickerConnectivityRefresh =
+        Runnable {
+            val panel = settingsPanelView ?: return@Runnable
+            try {
+                wireAinaPicker(panel)
+            } catch (t: Throwable) {
+                android.util.Log.w("XvSettings", "connectivity picker refresh (aina) threw", t)
+            }
+            try {
+                wireExternalButtonPicker(panel)
+            } catch (t: Throwable) {
+                android.util.Log.w("XvSettings", "connectivity picker refresh (ext) threw", t)
+            }
+        }
+
+    // Called by the plugin when the AINA speakermic connection state
+    // settles. The device pickers are snapshot-in-time — availability +
+    // status are baked in at wire time — and the only other refresh
+    // triggers are BT adapter on/off + bond changes, both of which fire
+    // BEFORE a post-power-cycle reconnect completes and thus freeze the
+    // picker on a stale "disconnected / unavailable" snapshot. Debounced
+    // so the connect/disconnect churn of a BT power-cycle coalesces into
+    // a single rebuild reflecting the settled state. No-op when Settings
+    // isn't open (settingsPanelView is null).
+    fun onDeviceConnectivityChanged() {
+        mainHandler.removeCallbacks(settingsPickerConnectivityRefresh)
+        mainHandler.postDelayed(settingsPickerConnectivityRefresh, CONNECTIVITY_REFRESH_DEBOUNCE_MS)
+    }
+
     private val refreshTask =
         object : Runnable {
             override fun run() {
@@ -1371,6 +1413,9 @@ class XvDropDownReceiver(
         v.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) {
+                    // Track the panel root so onDeviceConnectivityChanged
+                    // can repopulate the pickers on a mic connect/settle.
+                    settingsPanelView = v
                     try {
                         pluginContext.registerReceiver(
                             stateReceiver,
@@ -1385,6 +1430,9 @@ class XvDropDownReceiver(
                 }
 
                 override fun onViewDetachedFromWindow(view: View) {
+                    if (settingsPanelView === v) settingsPanelView = null
+                    lastAutoPromptedBondedButtonMac = null
+                    mainHandler.removeCallbacks(settingsPickerConnectivityRefresh)
                     try {
                         pluginContext.unregisterReceiver(stateReceiver)
                     } catch (_: IllegalArgumentException) {
@@ -1848,6 +1896,15 @@ class XvDropDownReceiver(
             }
         }
 
+        // If the assigned button is paired in Android Settings (OS-bonded
+        // BLE_HID), surface the removal UI — an inline "Fix" button plus a
+        // one-shot auto-launched dialog. Reaching this via the dropdown row
+        // tap alone is impossible when the puck is already the current
+        // selection (a Spinner fires no event on re-selecting the current
+        // row), which is exactly the "re-added it in Android Settings"
+        // case, so we drive it here off the (re)build instead.
+        maybeSurfaceBondedButtonFix(v, selectedMac, devices)
+
         val selectedIdx =
             if (selectedMac == null) {
                 0
@@ -2061,6 +2118,53 @@ class XvDropDownReceiver(
         }
     }
 
+    // Shows/hides the inline "Fix this button" affordance and, on the
+    // transition into the OS-bonded state, auto-launches the unpair
+    // dialog once. [selectedMac] is the currently-assigned Button-input
+    // device; [devices] supplies its display name.
+    private fun maybeSurfaceBondedButtonFix(
+        v: View,
+        selectedMac: String?,
+        devices: List<AinaDeviceInfo>,
+    ) {
+        val fixBtn = v.findViewById<Button>(R.id.xv_btn_fix_bonded_button) ?: return
+        val bondedMac =
+            selectedMac?.takeIf {
+                com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(it)
+            }
+        if (bondedMac == null) {
+            fixBtn.visibility = View.GONE
+            lastAutoPromptedBondedButtonMac = null
+            return
+        }
+        val name = devices.firstOrNull { it.mac.equals(bondedMac, ignoreCase = true) }?.name
+        val openFixDialog = {
+            checkAndEnforceBleHidUnbonded(
+                bondedMac,
+                name,
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID,
+                onAllowed = {
+                    // Reached after a successful unpair. Just refresh the
+                    // picker — the puck's reader reconnects on its own once
+                    // the OS finishes clearing the bond, so no in-app
+                    // reconnect is needed (or reliable) here.
+                    wireExternalButtonPicker(v)
+                },
+                onCancel = { },
+            )
+        }
+        fixBtn.visibility = View.VISIBLE
+        fixBtn.setOnClickListener { openFixDialog() }
+        // Auto-launch once per transition into the bonded state (or per
+        // Settings open, since detach resets the tracker) so re-adding the
+        // puck in Android Settings pops the removal dialog without the
+        // operator having to find the inline button.
+        if (!bondedMac.equals(lastAutoPromptedBondedButtonMac, ignoreCase = true)) {
+            lastAutoPromptedBondedButtonMac = bondedMac
+            openFixDialog()
+        }
+    }
+
     private fun checkAndEnforceBleHidUnbonded(
         mac: String?,
         name: String?,
@@ -2094,13 +2198,15 @@ class XvDropDownReceiver(
         val msg =
             "This Bluetooth button ($disp) is paired in Android Settings. " +
                 "This causes severe pairing loops when the button is turned off and back on.\n\n" +
-                "To use this button reliably with TAK-XVoice, you MUST unpair it from Android Settings."
+                "Removing it will unpair the button from Android AND remove it from " +
+                "TAK-XVoice, leaving no half-paired state. Afterward, re-add it with " +
+                "\"Scan for BLE PTT device\" for a clean pairing."
 
         val builder = android.app.AlertDialog.Builder(mapView.context)
         builder.setTitle("Bluetooth Button Configuration Error")
         builder.setMessage(msg)
         builder.setCancelable(false)
-        builder.setPositiveButton("Unpair Automatically") { _, _ ->
+        builder.setPositiveButton("Unpair & Remove") { _, _ ->
             var success = false
             try {
                 val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
@@ -2120,16 +2226,23 @@ class XvDropDownReceiver(
                 )
             }
             if (success) {
+                // Also drop XV's own registration + slot assignment so no
+                // half-paired state remains for the reader to churn on. The
+                // operator re-adds it fresh via Scan, which pairs unbonded
+                // and reconnects cleanly.
+                controller.removeBlePttDevice(mac)
                 android.widget.Toast.makeText(
                     pluginContext,
-                    "Successfully unpaired $disp from Android Settings.",
+                    "Unpaired and removed $disp. Re-add it with \"Scan for BLE PTT device\" " +
+                        "once it's gone from Android Bluetooth Settings.",
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
                 onAllowed()
             } else {
                 android.widget.Toast.makeText(
                     pluginContext,
-                    "Could not unpair automatically. Please tap 'Open Settings' and select 'Forget'.",
+                    "Could not unpair automatically. Tap 'Open Settings', select 'Forget', " +
+                        "then remove the button here.",
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
                 onCancel()
@@ -2356,6 +2469,11 @@ class XvDropDownReceiver(
         // Surface Duo idle (constant wakeups for nothing changing);
         // 2 s is fine for slow-moving fields like reconnect countdown.
         private const val REFRESH_MS = 2_000L
+        // Debounce for connectivity-driven Settings-picker rebuilds. Long
+        // enough to swallow the connect/disconnect churn of a BT power-
+        // cycle reconnect (~0.8s observed) so the picker rebuilds once,
+        // on the settled state, not per-transition.
+        private const val CONNECTIVITY_REFRESH_DEBOUNCE_MS = 900L
         private const val SECONDARY_NONE_LABEL = "(none)"
         private const val AINA_NONE_LABEL = "Screen-only PTT (no external button)"
 

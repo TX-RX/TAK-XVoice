@@ -1089,6 +1089,10 @@ class XvVoiceService : Service() {
                 fanOut { it.onAinaConnectionChanged(connected) }
             }
 
+            override fun onExternalButtonConnectionChanged(connected: Boolean) {
+                fanOut { it.onExternalButtonConnectionChanged(connected) }
+            }
+
             override fun onRxActivity() {
                 fanOut { it.onRxActivity() }
                 // RX frame arrived — call is being used to listen.

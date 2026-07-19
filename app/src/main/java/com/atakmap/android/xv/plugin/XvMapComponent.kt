@@ -800,6 +800,20 @@ class XvMapComponent : AbstractMapComponent() {
                 override fun onAinaConnectionChanged(connected: Boolean) {
                     Log.i(TAG, "service: AINA connection changed connected=$connected")
                     serviceAinaConnected = connected
+                    // Repopulate the Settings device pickers so a
+                    // speakermic that finishes reconnecting (e.g. after a
+                    // BT power-cycle) stops rendering "unavailable /
+                    // disconnected" — the pickers snapshot availability at
+                    // wire time and otherwise only refresh on BT adapter /
+                    // bond edges, which fire before the reconnect settles.
+                    // Debounced + no-op when Settings is closed.
+                    dropDown?.onDeviceConnectivityChanged()
+                }
+
+                override fun onExternalButtonConnectionChanged(connected: Boolean) {
+                    Log.i(TAG, "service: External Button connection changed connected=$connected")
+                    lastExternalButtonConnected = connected
+                    dropDown?.onDeviceConnectivityChanged()
                 }
 
                 override fun onRxActivity() {
@@ -3263,6 +3277,18 @@ class XvMapComponent : AbstractMapComponent() {
     // pre-change behavior.
     //
     // MACs are upper-cased so the caller's lookup is case-insensitive.
+    // True when [mac] is the speakermic or external button XV is
+    // currently connected to. Used to keep an actively-used device from
+    // rendering "unavailable" when AudioManager's SCO-ready list lags the
+    // live profile/reader connection state.
+    private fun isActivelyConnectedAinaInput(mac: String): Boolean {
+        val m = mac.uppercase()
+        val primary = settings.persistedAinaMac()?.uppercase()
+        val ext = settings.persistedExternalButtonMac()?.uppercase()
+        return (primary == m && serviceAinaConnected) ||
+            (ext == m && lastExternalButtonConnected)
+    }
+
     private fun reachableCommunicationMacsSnapshot(): Set<String>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
         val ctx = heldMapView?.context ?: heldPluginContext ?: return null
@@ -3383,7 +3409,17 @@ class XvMapComponent : AbstractMapComponent() {
                         when {
                             reachableMacs == null -> true
                             proto == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID -> true
-                            else -> reachableMacs.contains(dev.address.uppercase())
+                            reachableMacs.contains(dev.address.uppercase()) -> true
+                            // A device XV is actively connected to is
+                            // reachable by definition, even when
+                            // availableCommunicationDevices hasn't listed
+                            // it yet. That list only surfaces SCO-ready
+                            // endpoints, so a working speakermic between TX
+                            // bursts (HFP up, SCO idle) would otherwise be
+                            // mislabeled "unavailable" — the exact case
+                            // operators hit while actively using the mic.
+                            isActivelyConnectedAinaInput(dev.address) -> true
+                            else -> false
                         }
                     com.atakmap.android.xv.aina.AinaDeviceInfo(
                         mac = dev.address,
@@ -4857,6 +4893,7 @@ class XvMapComponent : AbstractMapComponent() {
         // but short delays have been observed to race SDP-cache
         // population on some OEM stacks.
         internal const val ACL_RECONNECT_SETTLE_MS = 300L
+
 
         /**
          * Pure decision: should an ACTION_ACL_CONNECTED broadcast for

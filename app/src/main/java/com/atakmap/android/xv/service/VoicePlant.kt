@@ -213,6 +213,8 @@ class VoicePlant(
 
         fun onAinaConnectionChanged(connected: Boolean)
 
+        fun onExternalButtonConnectionChanged(connected: Boolean)
+
         fun onRxActivity()
 
         fun onAudioStateText(text: String)
@@ -565,6 +567,11 @@ class VoicePlant(
     // longer exists in the bond table.
     @Volatile private var connectedAinaMac: String? = null
 
+    // MAC of the currently-connected external button (or null when none).
+    // Used by the BOND_STATE_CHANGED receiver to tear down the reader
+    // if the operator unpairs the puck mid-flight.
+    @Volatile private var connectedExternalButtonMac: String? = null
+
     // Same SharedPreferences file as the plugin-side XvSettings — this
     // service runs in the same APK / UID, so it shares prefs storage.
     // Used to clear stale per-MAC AINA protocol overrides on BOND_NONE
@@ -615,6 +622,16 @@ class VoicePlant(
         if (current != null && current.equals(mac, ignoreCase = true)) {
             Log.w(TAG, "AINA $mac was unpaired — tearing down reader to stop reconnect storm")
             disconnectAina()
+        }
+        val extCurrent = connectedExternalButtonMac
+        if (extCurrent != null && extCurrent.equals(mac, ignoreCase = true)) {
+            Log.w(TAG, "External Button $mac was unpaired — tearing down reader to stop reconnect storm")
+            try {
+                settingsForOverride.persistExternalButtonKind(null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "clearExternalButtonKind threw", t)
+            }
+            disconnectExternalButton()
         }
     }
 
@@ -1578,7 +1595,13 @@ class VoicePlant(
             if (!up) {
                 releaseStuckPttOnTransportDrop(source)
             }
+            try {
+                callbacks.onExternalButtonConnectionChanged(up)
+            } catch (t: Throwable) {
+                Log.w(TAG, "onExternalButtonConnectionChanged threw", t)
+            }
         }
+        connectedExternalButtonMac = device.address
         when (resolvedKind) {
             "v1", "spp" -> {
                 val r =
@@ -1615,7 +1638,13 @@ class VoicePlant(
     }
 
     fun disconnectExternalButton() {
-        externalButtonBle?.disconnect()
+        connectedExternalButtonMac = null
+        try {
+            callbacks.onExternalButtonConnectionChanged(false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onExternalButtonConnectionChanged(false) threw", t)
+        }
+        externalButtonBle?.dispose()
         externalButtonBle = null
         externalButtonSpp?.disconnect()
         externalButtonSpp = null
