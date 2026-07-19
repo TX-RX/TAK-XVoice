@@ -29,6 +29,33 @@ enum class TxRoute {
     OFFLOAD,
 }
 
+data class ColdStartMitigationPolicy(
+    val coldScoTptHoldMs: Long,
+    val coldScoStartDropFrames: Int,
+) {
+    fun computePrimingHoldMs(
+        route: TxRoute,
+        cold: Boolean,
+        baseMs: Long,
+    ): Long {
+        if (!cold) return baseMs
+        if (route != TxRoute.SCO) return baseMs
+        if (coldScoTptHoldMs <= 0L) return baseMs
+        return baseMs + coldScoTptHoldMs
+    }
+
+    fun shouldDropStartFrame(
+        frameNumber: Int,
+        route: TxRoute,
+        cold: Boolean,
+    ): Boolean {
+        if (!cold) return false
+        if (route != TxRoute.SCO) return false
+        if (coldScoStartDropFrames <= 0) return false
+        return frameNumber in 1..coldScoStartDropFrames
+    }
+}
+
 // Orchestrates the TX side. "Open channel" lifecycle:
 //   - On first start() (or explicit channelOpened()): allocate
 //     AudioCapture once and hold it for the channel session, with the
@@ -48,6 +75,22 @@ enum class TxRoute {
 //     no continuous white noise on the speakermic.
 //   - On shutdown / channelClosed(): tear AudioCapture down, restore
 //     setMicrophoneMute(false).
+// File-backed diagnostic trail for the TX path. The Sonim XP9900's
+// logcat filtering swallows XV app-tag lines entirely (2026-07-17
+// bench: three TX rounds with zero XvTx lines in logcat while the
+// bursts demonstrably ran), so the burst-milestone events below are
+// mirrored into DiagnosticLogger's per-day files — retrievable on any
+// device via `adb pull .../files/xv-logs` regardless of logcat policy.
+// DiagnosticLogger.event is a same-process no-throw no-op before
+// init(), so unit tests and non-service embeddings are unaffected.
+// Messages must stay free of MACs / callsigns per its contract.
+private fun txDiag(
+    message: String,
+    severity: Char = 'I',
+) {
+    com.atakmap.android.xv.util.DiagnosticLogger.event(tag = "XvTx", severity = severity, message = message)
+}
+
 class TxController(
     private val scoLink: ScoLink,
     private val btPolicy: BtAudioPolicy,
@@ -102,6 +145,18 @@ class TxController(
     // Telecom registration isn't active (older devices, OEM-locked
     // ROMs), in which case the manual fallback path runs.
     private val telecomActive: () -> Boolean = { false },
+    // Readiness probe for the Telecom leg of the TX barrier: true when
+    // the self-managed Telecom call for this burst is ACTIVE **and**
+    // its audio route has been decided (first onCallAudioStateChanged
+    // received). While false at burst start, TxController parks in
+    // ACQUIRING_CALL instead of priming the mic — the OEM HAL
+    // re-provisions the input path when the VoIP call activates, and
+    // an AudioRecord opened before that reroute gets invalidated
+    // mid-stream (stall + alternating mute blocks; 2026-07-17 field
+    // capture). VoicePlant wires this to ActiveCallRegistry; the
+    // default `true` keeps tests and non-Telecom callsites on the
+    // legacy immediate path.
+    private val telecomReady: () -> Boolean = { true },
     // Fired when stopInternal completes its return-to-IDLE bookkeeping.
     // [AudioRouter] subscribes via this hook to flush any deferred
     // hot-attach route change that arrived while TX was in flight —
@@ -116,13 +171,36 @@ class TxController(
     // bursts. Read on every cool-down decision so a runtime toggle
     // takes effect on the next burst without restarting anything.
     private val hotMicMode: () -> Boolean = { false },
+    // Single source of truth for cold-start TX mitigation knobs.
+    private val coldStartPolicy: ColdStartMitigationPolicy = DEFAULT_COLD_START_POLICY,
 ) {
     // Lifecycle phases of one TX cycle. Visibility relaxed from `private`
     // to `internal` so TxControllerStateMachineTest can drive transitions
     // directly via `setStateForTest`; not consumed elsewhere in the
     // production module.
+    //
+    // ACQUIRING_CALL is the Telecom leg of the TX readiness barrier
+    // (see [maybeStartPriming]): a fresh self-managed Telecom call was
+    // requested for this burst and the platform hasn't finished
+    // activating it + settling the audio route yet. Starting mic
+    // capture before that point hands AudioRecord to a pipeline the
+    // OEM audio HAL is about to re-provision for the VoIP call — the
+    // 2026-07-17 cold-start capture (Galaxy Tab Active5) showed the
+    // in-flight record stalling 2.6 s at the route change and then
+    // limping through the burst alternating ~300 ms blocks of real
+    // audio and hard digital zeros. Waiting until the route settles
+    // means the record we prime is the record that transmits.
+    // PROBING is the DSP-readiness verification for cold-call bursts:
+    // priming proved the read loop is alive, but on a fresh Telecom
+    // session the OEM voice DSP may still be converging and silently
+    // suppressing everything (including the operator's first words).
+    // PROBING plays short ticks on the shared voice session and holds
+    // the TPT until our own capture registers real acoustic energy —
+    // the tick, or any ambient sound — proving the path passes audio
+    // end-to-end. Measured readiness, not a guessed delay; bounded by
+    // PROBE_CEILING_MS. See [startProbing].
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal enum class State { IDLE, ACQUIRING_SCO, PRIMING, TPT, TRANSMITTING }
+    internal enum class State { IDLE, ACQUIRING_SCO, ACQUIRING_CALL, PRIMING, PROBING, TPT, TRANSMITTING }
 
     @Volatile
     private var state: State = State.IDLE
@@ -174,7 +252,7 @@ class TxController(
                             tptPlayer.playDeny(useScoRoute = true)
                         }
                         synchronized(this@TxController) {
-                            if (state == State.ACQUIRING_SCO) startPriming()
+                            if (state == State.ACQUIRING_SCO) maybeStartPriming()
                         }
                     }
                     // SUSPENDED is treated identically to DISCONNECTED:
@@ -203,6 +281,46 @@ class TxController(
     @Volatile
     private var primingFramesObserved: Int = 0
 
+    // Subset of primingFramesObserved with rms > 0. A frame of literal
+    // all-zero samples is not "a quiet room" — a real mic's noise floor
+    // reads rms 1-15 even in silence; exact zeros mean the platform is
+    // handing us a not-yet-live (or muted) input path. Cold bursts
+    // gate mic-alive on THIS counter so the TPT can't fire while the
+    // path is still dead (the 2026-07-17 tab capture showed ~1 s of
+    // hard zeros after AudioRecord start on a cold burst — the old
+    // any-frame count declared "alive" on those zeros and the first
+    // word went out silent). Warm bursts keep the any-frame count:
+    // Samsung's platform DSP emits exact-zero frames in speech gaps on
+    // a healthy settled stream, and stalling warm PTT on those would
+    // regress TPT latency (the 2026-07-13 lesson in reverse).
+    @Volatile
+    private var primingNonSilentFramesObserved: Int = 0
+
+    // ---- PROBING bookkeeping ----
+
+    @Volatile
+    private var probeStartMs: Long = 0
+
+    @Volatile
+    private var probeTicksPlayed: Int = 0
+
+    // Consecutive capture frames at/above PROBE_HEARD_RMS_THRESHOLD.
+    // Samsung's converging DSP produced a single-frame false positive
+    // (tick leaked at rms 69, then the chain clamped back to rms 2 —
+    // 2026-07-17 17:27 tab burst): one frame of energy is a blip,
+    // sustained energy is an open path. Reset on every sub-threshold
+    // frame; each 80 ms tick spans ~8 frames, so a truly open chain
+    // passes the 3-frame requirement inside a single tick.
+    @Volatile
+    private var probeConsecutiveHeard: Int = 0
+
+    // Route the probe ticks over SCO when the burst is a cold-SCO one —
+    // the speakermic's speaker and mic are co-located in the puck, so
+    // coupling is excellent and the probe exercises the exact BT uplink
+    // the burst will transmit through.
+    @Volatile
+    private var probeUseSco: Boolean = false
+
     // Whether this burst faces a COLD BT SCO chipset ramp — i.e. we had
     // to acquire SCO from scratch this burst (currentBurstColdSco).
     // Captured at startPriming() so the gate values are stable through
@@ -227,6 +345,24 @@ class TxController(
     // and non-SCO bursts use the fast gates (5 frames / ~50 ms).
     @Volatile
     private var primingUseColdScoGates: Boolean = false
+
+    // Whether this burst had to wait for a fresh Telecom session
+    // (ACQUIRING_CALL) — i.e. the self-managed call was still being
+    // placed/routed when PTT went down. Captured at start() and pinned
+    // at startPriming() into [primingColdCall] the same way
+    // currentBurstColdSco pins into primingUseColdScoGates. A cold-call
+    // burst faces the same class of adaptive-path settling as a cold
+    // SCO chipset (the OEM voice DSP re-converges after the VoIP-call
+    // reroute), so it selects the same ramp-tolerant priming gates.
+    // Deliberately NOT folded into primingUseColdScoGates: that flag
+    // doubles as the TxRoute.SCO selector for the AOC-modem hold/drop
+    // mitigations, which are SCO-hardware-specific and must stay
+    // dormant on a cold-call built-in-mic burst.
+    @Volatile
+    private var currentBurstColdCall: Boolean = false
+
+    @Volatile
+    private var primingColdCall: Boolean = false
 
     // Was this burst started with SCO in a cold state (i.e. we had to
     // acquire SCO from scratch instead of reusing a warm cool-down or
@@ -259,6 +395,12 @@ class TxController(
     @Volatile
     private var txFrameNumber: Int = 0
 
+    @Volatile
+    private var postRestartHoldUntilMs: Long = 0
+
+    @Volatile
+    private var postRestartDropFramesRemaining: Int = 0
+
     // Wall-clock when state transitioned to TPT. The TPT-overlap ring
     // buffer's "skip the loud first N ms" filter uses this to decide
     // whether to drop or retain each incoming PCM frame. Reset on every
@@ -274,6 +416,27 @@ class TxController(
     // press.
     @Volatile
     private var lastStopMs: Long = 0
+
+    // Backstop for ACQUIRING_CALL: if the Telecom session never settles
+    // (placeCall silently failed, TelecomManager unavailable, OEM ROM
+    // with Telecom locked down), proceed to PRIMING anyway after the
+    // bound. The burst then runs exactly as it did before the barrier
+    // existed — mic may ramp against the late reroute, but the operator
+    // is never left with a dead PTT. Field-observed honest settle time
+    // on the slowest device (Galaxy Tab Active5, cold boot) was ~1.8 s,
+    // so the 3 s bound only fires on genuine failures.
+    private val callSettleTimeoutRunnable =
+        Runnable {
+            synchronized(this@TxController) {
+                if (state != State.ACQUIRING_CALL) return@synchronized
+                Log.w(
+                    TAG,
+                    "TX barrier: Telecom settle timeout after ${CALL_SETTLE_TIMEOUT_MS}ms — proceeding without settled call",
+                )
+                txDiag("barrier release: settle timeout ${CALL_SETTLE_TIMEOUT_MS}ms", 'W')
+                startPriming()
+            }
+        }
 
     private val primingTimeoutRunnable =
         Runnable {
@@ -291,6 +454,7 @@ class TxController(
                         TAG,
                         "PRIMING: timeout after ${elapsed}ms (0 frames seen) — bonking & abandoning (mic dead)",
                     )
+                    txDiag("priming timeout ${elapsed}ms 0 frames — mic dead, abandoned", 'E')
                     val useSco = btPolicy.classify() == BtAudioMode.HFP_ONLY
                     tptPlayer.playBonk(useScoRoute = useSco && scoLink.state == ScoLink.State.CONNECTED)
                     stopInternal()
@@ -307,8 +471,22 @@ class TxController(
                     // frames may be silent (peer hears nothing for
                     // 0.5-1 s) but then real audio flows. Better UX
                     // than bonking + retrying.
+                    if (primingColdCall || primingUseColdScoGates) {
+                        // Frames flow but carry nothing — on a cold
+                        // burst that's the signature of the OEM DSP (or
+                        // BT chipset) still converging. Don't guess how
+                        // much longer: probe.
+                        Log.w(
+                            TAG,
+                            "PRIMING: timeout after ${elapsed}ms ($primingFramesObserved frames seen, all silent) — " +
+                                "cold burst, probing input-path readiness before TPT",
+                        )
+                        txDiag("priming timeout ${elapsed}ms all-silent → probe", 'W')
+                        startProbing()
+                        return@synchronized
+                    }
                     val txRoute = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD
-                    val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
+                    val holdMs = coldStartPolicy.computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
                     if (holdMs > 0L) {
                         Log.w(
                             TAG,
@@ -363,6 +541,7 @@ class TxController(
         activeSlot = slot
         val canTx = canTransmit(slot)
         Log.i(TAG, "start(slot=$slot) called — canTransmit=$canTx state=$state")
+        txDiag("start slot=$slot canTx=$canTx")
         if (!canTx) {
             Log.w(TAG, "start(slot=$slot) refused — channel/permission denies TX; playing deny tone")
             // A denied press is still a strong intent signal — the
@@ -417,6 +596,14 @@ class TxController(
         // forth pushes don't pay SCO setup latency.
         cooldownHandler.removeCallbacks(coolDownReleaseRunnable)
 
+        // Latch the Telecom-cold flag NOW, at press time: VoicePlant
+        // requested the self-managed call just before dispatching this
+        // start(), so telecomReady()==false here means a FRESH Telecom
+        // session is in flight and the audio path is about to be
+        // re-provisioned. A warm re-key inside the 8 s end-debounce
+        // window sees the live routed call and stays on the fast path.
+        currentBurstColdCall = !telecomReady()
+
         val useSco = btPolicy.classify() == BtAudioMode.HFP_ONLY
         if (useSco) {
             // SCO already up — either we held it via TX cool-down OR
@@ -441,8 +628,8 @@ class TxController(
                 // window to work around. Clear the cold flag so the
                 // TPT hold and drop-first-N mitigations stay dormant.
                 currentBurstColdSco = false
-                Log.i(TAG, "SCO already CONNECTED (warm via cool-down or RX SCO_HOT) — direct to PRIMING")
-                startPriming()
+                Log.i(TAG, "SCO already CONNECTED (warm via cool-down or RX SCO_HOT) — direct to readiness barrier")
+                maybeStartPriming()
                 return
             }
             // Cold path — link genuinely down. Acquire and wait for
@@ -462,7 +649,7 @@ class TxController(
                 synchronized(this@TxController) {
                     if (state == State.ACQUIRING_SCO) {
                         Log.w(TAG, "SCO warmup timeout — proceeding without (will TX on whatever path is up)")
-                        startPriming()
+                        maybeStartPriming()
                     }
                 }
             }, SCO_WARMUP_MS)
@@ -479,8 +666,89 @@ class TxController(
             // verifiable mic output, so the operator hears the TPT
             // exactly when the mic is ready.
             currentBurstColdSco = false
-            startPriming()
+            maybeStartPriming()
         }
+    }
+
+    /**
+     * Junction of the TX readiness barrier. Every precondition that
+     * must hold before the operator hears the go-ahead tone funnels
+     * through here; PRIMING (which itself gates on the mic delivering
+     * real frames) only starts once ALL of them are satisfied:
+     *
+     *   1. BT SCO link up, when the route needs it — enforced upstream
+     *      by ACQUIRING_SCO (callers only reach this junction once SCO
+     *      is CONNECTED or its warmup timed out).
+     *   2. Telecom session settled — the self-managed call is ACTIVE
+     *      and its audio route decided ([telecomReady]). Until then we
+     *      park in ACQUIRING_CALL: the OEM HAL re-provisions the input
+     *      path when the VoIP call activates, and any AudioRecord
+     *      opened before that reroute is invalidated mid-stream
+     *      (2.6 s read stall + alternating mute blocks on the Galaxy
+     *      Tab Active5 cold-start capture, 2026-07-17).
+     *   3. Mic verifiably alive — PRIMING itself, next in the chain.
+     *
+     * Release paths out of ACQUIRING_CALL: [notifyTelecomReady] (the
+     * route-change fanout landed), [notifyTelecomUnavailable] (Telecom
+     * refused the placeCall), or [callSettleTimeoutRunnable] (bound on
+     * a silent failure). Adding a future readiness condition = add its
+     * check here and its release path alongside those.
+     *
+     * INVARIANT: caller holds the this@TxController monitor.
+     */
+    private fun maybeStartPriming() {
+        if (state == State.PRIMING || state == State.TPT || state == State.TRANSMITTING) {
+            // Barrier already released for this burst — a late signal
+            // (duplicate route fanout, SCO timeout racing the listener)
+            // must not restart priming mid-cycle.
+            return
+        }
+        if (!telecomReady()) {
+            if (state != State.ACQUIRING_CALL) {
+                state = State.ACQUIRING_CALL
+                Log.i(
+                    TAG,
+                    "TX barrier: Telecom session not settled — holding TPT (timeout=${CALL_SETTLE_TIMEOUT_MS}ms)",
+                )
+                txDiag("barrier hold: telecom not settled")
+                cooldownHandler.removeCallbacks(callSettleTimeoutRunnable)
+                cooldownHandler.postDelayed(callSettleTimeoutRunnable, CALL_SETTLE_TIMEOUT_MS)
+            }
+            return
+        }
+        cooldownHandler.removeCallbacks(callSettleTimeoutRunnable)
+        startPriming()
+    }
+
+    /**
+     * The Telecom session for the in-flight burst is ACTIVE with a
+     * decided audio route. VoicePlant calls this from the
+     * ActiveCallRegistry route fanout (i.e. XvConnection's
+     * onCallAudioStateChanged). No-op unless a burst is parked in
+     * ACQUIRING_CALL — late/duplicate fanouts are safe.
+     */
+    @Synchronized
+    fun notifyTelecomReady() {
+        if (state != State.ACQUIRING_CALL) return
+        Log.i(TAG, "TX barrier: Telecom session settled — proceeding to PRIMING")
+        txDiag("barrier release: telecom settled")
+        maybeStartPriming()
+    }
+
+    /**
+     * Telecom refused or failed the placeCall for this burst — no call
+     * is coming, so waiting out the settle timeout would just add dead
+     * air. Proceed on the legacy no-Telecom path (manual focus/mode via
+     * audioController, since [telecomActive] reads false too). No-op
+     * unless parked in ACQUIRING_CALL.
+     */
+    @Synchronized
+    fun notifyTelecomUnavailable() {
+        if (state != State.ACQUIRING_CALL) return
+        Log.w(TAG, "TX barrier: Telecom unavailable for this burst — proceeding without call")
+        txDiag("barrier release: telecom unavailable", 'W')
+        cooldownHandler.removeCallbacks(callSettleTimeoutRunnable)
+        startPriming()
     }
 
     // PRIMING gates TPT on the mic actually producing real samples. The
@@ -497,6 +765,7 @@ class TxController(
         state = State.PRIMING
         primingStartMs = System.currentTimeMillis()
         primingFramesObserved = 0
+        primingNonSilentFramesObserved = 0
         // Route-aware gate selection. On BT SCO the chipset takes
         // 300-1000 ms of cold-start warmup during which frames arrive
         // late and/or with only noise-floor amplitude. Non-SCO routes
@@ -505,20 +774,27 @@ class TxController(
         // chipset and must NOT pay the 30-frame cold gate. Capture the
         // decision once so the timeout callback and onPcmFrame use
         // consistent thresholds even if SCO state changes mid-priming.
+        //
+        // A cold Telecom session (this burst waited in ACQUIRING_CALL)
+        // pins primingColdCall the same way: the OEM voice DSP is still
+        // converging right after the VoIP-call reroute, so the burst
+        // uses the same ramp-tolerant gates even on the built-in mic.
         primingUseColdScoGates = currentBurstColdSco
+        primingColdCall = currentBurstColdCall
+        // Timeout scoped to the SCO axis only: a cold-call burst
+        // completes priming on bare liveness (5 frames ≈ 50 ms) and
+        // hands verification to PROBING, so it keeps the fast bound.
         val timeoutMs = primingTimeoutMs(primingUseColdScoGates)
         val scoUp = scoLink.state == ScoLink.State.CONNECTED
         val routeLabel =
             when {
+                !scoUp && primingColdCall -> "non-sco-cold-call"
                 !scoUp -> "non-sco"
                 primingUseColdScoGates -> "sco-cold"
                 else -> "sco-warm"
             }
         if (capture == null) {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
             Log.i(
@@ -675,10 +951,7 @@ class TxController(
             return
         }
         try {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
             sessionArmed = true
@@ -755,15 +1028,7 @@ class TxController(
                 return
             }
             try {
-                val cap =
-                    audioCaptureFactory { pcm ->
-                        // Frames during pre-warm flow through onPcmFrame
-                        // → state==IDLE → drop. Just keeping the chipset
-                        // pumping. As soon as start() flips state to
-                        // PRIMING, the same lambda routes them to RMS
-                        // checks.
-                        onPcmFrame(pcm)
-                    }
+                val cap = createCapture()
                 capture = cap
                 cap.start()
                 Log.i(TAG, "preWarmMic: AudioCapture allocated for SCO_HOT settling")
@@ -803,30 +1068,143 @@ class TxController(
         stopInternal()
     }
 
+    // Repeating probe tick. Each firing plays a short tick on the
+    // shared voice session; the read loop's PROBING branch in
+    // [onPcmFrame] is what actually detects the tick (or any ambient
+    // energy) arriving through the capture path.
+    private val probeTickRunnable =
+        object : Runnable {
+            override fun run() {
+                synchronized(this@TxController) {
+                    if (state != State.PROBING) return
+                    probeTicksPlayed++
+                    tptPlayer.playProbeTick(useScoRoute = probeUseSco)
+                    cooldownHandler.postDelayed(this, PROBE_TICK_INTERVAL_MS)
+                }
+            }
+        }
+
+    // Ceiling: the probe never heard its own tick within the bound.
+    // "Nothing heard" is AMBIGUOUS — and the 2026-07-17 forensics
+    // showed the previous 1.5 s fallback hold here was net-NEGATIVE,
+    // because on a HEALTHY device the most likely cause of a ceiling is
+    // a converged platform AEC cancelling our own USAGE_VOICE_COMMUNICATION
+    // tick from capture (it is downlink echo by definition). A converged
+    // AEC means the DSP is ALREADY open — so beeping immediately is
+    // correct, and adding a hold just punished the common case (every
+    // 2nd+ cold-call burst on a good device paid ~4 s). The other
+    // ceiling causes — OS-silenced mic (#87), non-coupling wired
+    // headset — are equally not helped by waiting. So the ceiling now
+    // beeps immediately on non-SCO routes.
+    //
+    // Cold-SCO is the one exception: there the BT AOC modem has a real,
+    // separate post-warmup underrun window (the field-tuned
+    // COLD_SCO_TPT_HOLD_MS screech fix), so a cold-SCO ceiling still
+    // applies that hold as a floor before the tone.
+    private val probeCeilingRunnable =
+        Runnable {
+            synchronized(this@TxController) {
+                if (state != State.PROBING) return@synchronized
+                val elapsed = System.currentTimeMillis() - probeStartMs
+                cooldownHandler.removeCallbacks(probeTickRunnable)
+                val holdMs =
+                    coldStartPolicy.computePrimingHoldMs(
+                        route = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD,
+                        cold = currentBurstColdSco,
+                        baseMs = 0L,
+                    )
+                Log.w(
+                    TAG,
+                    "PROBING: ceiling after ${elapsed}ms ($probeTicksPlayed ticks, nothing heard) — " +
+                        "path likely already open (AEC-cancelled tick) or unverifiable " +
+                        "(silenced mic / non-coupling route); " +
+                        (if (holdMs > 0L) "cold-SCO AOC hold ${holdMs}ms then TPT" else "TPT now"),
+                )
+                txDiag("probe ceiling ${elapsed}ms ticks=$probeTicksPlayed holdMs=$holdMs", 'W')
+                if (holdMs > 0L) scheduleColdScoTptHold(holdMs) else startTpt()
+            }
+        }
+
     /**
-     * Post a delayed [startTpt] to give the cold-SCO Pixel AOC modem
-     * time to stabilize. State is flipped to [State.TPT] BEFORE the
-     * delay so incoming PCM frames get dropped by the existing
-     * state==TPT branch — no risk of re-entering the PRIMING-completion
-     * branch and scheduling multiple TPT plays.
+     * Begin the DSP-readiness probe. Entered from PRIMING on a
+     * cold-call, non-SCO burst whose completion did NOT already prove
+     * the path via detected speech. Plays a tick immediately and then
+     * every [PROBE_TICK_INTERVAL_MS]; [onPcmFrame]'s PROBING branch
+     * releases into TPT the moment capture registers energy at/above
+     * [PROBE_HEARD_RMS_THRESHOLD]; [probeCeilingRunnable] bounds the
+     * wait.
      *
      * INVARIANT: caller holds the this@TxController monitor and state
      * is currently PRIMING.
      */
+    private fun startProbing() {
+        state = State.PROBING
+        probeStartMs = System.currentTimeMillis()
+        probeTicksPlayed = 0
+        probeConsecutiveHeard = 0
+        // Tick route must follow the CAPTURE route, not the cold-SCO
+        // flag: a warm-SCO + cold-call burst captures from the BT puck
+        // while coldSco=false, and a tick played out the phone path can
+        // never reach the puck's mic (2026-07-17 17:48 field capture —
+        // structural ceiling false-negative). If the SCO link is live,
+        // the mic is the puck; probe through it.
+        probeUseSco = scoLink.state == ScoLink.State.CONNECTED
+        Log.i(
+            TAG,
+            "PROBING: verifying input-path readiness via acoustic probe " +
+                "(useSco=$probeUseSco, tick every ${PROBE_TICK_INTERVAL_MS}ms, " +
+                "heard-threshold rms=$PROBE_HEARD_RMS_THRESHOLD x$PROBE_HEARD_CONSECUTIVE_FRAMES frames, " +
+                "ceiling=${PROBE_CEILING_MS}ms)",
+        )
+        txDiag("probe start (coldCall=$primingColdCall coldSco=$primingUseColdScoGates useSco=$probeUseSco)")
+        cooldownHandler.removeCallbacks(probeTickRunnable)
+        cooldownHandler.removeCallbacks(probeCeilingRunnable)
+        cooldownHandler.post(probeTickRunnable)
+        cooldownHandler.postDelayed(probeCeilingRunnable, PROBE_CEILING_MS)
+    }
+
+    /**
+     * Post a delayed [startTpt] to give a cold-SCO burst's AOC modem
+     * its remaining post-warmup settle time before the permit tone (see
+     * [computePrimingHoldMs] and [COLD_SCO_TPT_HOLD_MS]). Used from the
+     * cold-SCO priming-completion path and from a cold-SCO probe
+     * ceiling. State is flipped to [State.TPT] BEFORE the delay so
+     * incoming PCM frames get dropped by the existing state==TPT branch
+     * — no risk of re-entering the PRIMING-completion branch and
+     * scheduling multiple TPT plays.
+     *
+     * INVARIANT: caller holds the this@TxController monitor and state
+     * is currently PRIMING or PROBING.
+     */
     private fun scheduleColdScoTptHold(holdMs: Long) {
         state = State.TPT
         tptStateEnteredAtMs = System.currentTimeMillis()
-        cooldownHandler.postDelayed({
+        // Cancellable NAMED runnable — never an anonymous lambda. A
+        // burst that schedules this hold and is then abandoned (PTT
+        // release) MUST be able to cancel it in stopInternal/shutdown;
+        // an un-cancellable lambda whose only guard is state==TPT
+        // cannot distinguish the burst that scheduled it from a later
+        // burst that happens to be in TPT when it fires, so it could
+        // play a second overlapping permit tone into the NEXT burst
+        // (2026-07-17 forensics — the fallback-hold at 1.5 s widened
+        // this window 5x). removeCallbacks(tptHoldRunnable) in
+        // stopInternal + shutdown closes it.
+        cooldownHandler.removeCallbacks(tptHoldRunnable)
+        cooldownHandler.postDelayed(tptHoldRunnable, holdMs)
+    }
+
+    private val tptHoldRunnable =
+        Runnable {
             synchronized(this@TxController) {
                 // If the operator released PTT during the hold window,
-                // stopInternal already flipped state to IDLE. Bail
-                // without playing TPT — matches the existing behavior
-                // for late-firing timeout runnables.
+                // stopInternal already flipped state to IDLE and
+                // cancelled this runnable. The state guard is a
+                // belt-and-suspenders backstop for a fire that races
+                // the cancel.
                 if (state != State.TPT) return@synchronized
                 startTpt(alreadyInTptState = true)
             }
-        }, holdMs)
-    }
+        }
 
     private fun startTpt(alreadyInTptState: Boolean = false) {
         if (!alreadyInTptState) {
@@ -859,10 +1237,7 @@ class TxController(
         // path PRIMING is skipped entirely and we may still need to
         // allocate here.
         if (capture == null) {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
             Log.i(TAG, "TPT: mic capture started (non-SCO route, no PRIMING)")
@@ -877,10 +1252,12 @@ class TxController(
         }
         if (isRxActive()) {
             Log.i(TAG, "interrupt chirp (peer talking, useSco=$useSco)")
+            txDiag("tpt interrupt-chirp useSco=$useSco")
             tptPlayer.playInterrupt(useSco, onTptComplete)
         } else {
             val tone = tonePreference()
             Log.i(TAG, "TPT $tone (useSco=$useSco)")
+            txDiag("tpt $tone useSco=$useSco")
             tptPlayer.play(tone, useSco, onTptComplete)
         }
     }
@@ -891,6 +1268,8 @@ class TxController(
         // log "encoder is null!" and drop on each cold-SCO burst.)
         framesSent = 0
         txFrameNumber = 0
+        postRestartHoldUntilMs = 0
+        postRestartDropFramesRemaining = 0
         encoder = opusEncoderFactory()
         state = State.TRANSMITTING
         // Per-PTT focus management is SKIPPED when Telecom owns the
@@ -913,10 +1292,7 @@ class TxController(
         // Defensive — capture should already be alive from startTpt.
         // Allocate now if a non-SCO route somehow skipped startTpt.
         if (capture == null) {
-            val cap =
-                audioCaptureFactory { pcm ->
-                    onPcmFrame(pcm)
-                }
+            val cap = createCapture()
             capture = cap
             cap.start()
         }
@@ -927,6 +1303,7 @@ class TxController(
             Log.w(TAG, "onPttStateChanged(true) threw", t)
         }
         Log.i(TAG, "TX transmitting started — frames will flow now")
+        txDiag("transmitting slot=$activeSlot")
     }
 
     private var framesSent: Long = 0
@@ -966,6 +1343,22 @@ class TxController(
         tptStateEnteredAtMs = tptEnteredAtMs
     }
 
+    /** Pin the PRIMING gate selection for a test-driven burst without
+     *  walking the full start() path. Mirrors what start()/startPriming()
+     *  do: currentBurstColdSco and primingUseColdScoGates are pinned
+     *  together (startPriming: `primingUseColdScoGates = currentBurstColdSco`),
+     *  so the [coldSco] flag drives both — which lets the probe-ceiling
+     *  AOC-hold path (keyed off currentBurstColdSco) be exercised. */
+    @VisibleForTesting
+    internal fun setPrimingGatesForTest(
+        coldSco: Boolean,
+        coldCall: Boolean = false,
+    ) {
+        primingUseColdScoGates = coldSco
+        currentBurstColdSco = coldSco
+        primingColdCall = coldCall
+    }
+
     @VisibleForTesting
     internal fun currentStateForTest(): State = state
 
@@ -982,6 +1375,45 @@ class TxController(
         onPcmFrame(pcm)
     }
 
+    private fun createCapture(): AudioCapture {
+        val cap =
+            audioCaptureFactory { pcm ->
+                onPcmFrame(pcm)
+            }
+        cap.setOnInPlaceRestartListener {
+            notifyCaptureRestartedInPlace()
+        }
+        return cap
+    }
+
+    @Synchronized
+    internal fun notifyCaptureRestartedInPlace() {
+        if (state != State.TRANSMITTING) return
+        txFrameNumber = 0
+        postRestartDropFramesRemaining = coldStartPolicy.coldScoStartDropFrames
+        val holdMs =
+            if (currentBurstColdSco) {
+                coldStartPolicy.coldScoTptHoldMs
+            } else {
+                RESTART_DSP_SETTLE_HOLD_MS_OFFLOAD
+            }
+        postRestartHoldUntilMs =
+            if (holdMs > 0L) {
+                System.currentTimeMillis() + holdMs
+            } else {
+                0L
+            }
+        Log.w(
+            TAG,
+            "capture restarted mid-burst — applying mitigation " +
+                "(holdMs=$holdMs dropFrames=$postRestartDropFramesRemaining)",
+        )
+        txDiag(
+            "capture restart mid-burst: holdMs=$holdMs dropFrames=$postRestartDropFramesRemaining",
+            'W',
+        )
+    }
+
     private fun onPcmFrame(pcm: ShortArray) {
         // PRIMING: gate TPT on the mic actually producing data. The
         // onPcmFrame thread is the AudioCapture read thread; we
@@ -990,6 +1422,7 @@ class TxController(
         if (state == State.PRIMING) {
             primingFramesObserved++
             val rms = rms(pcm)
+            if (rms > 0) primingNonSilentFramesObserved++
             // PRIMING completes as soon as we have evidence the mic is
             // alive — EITHER speech detected (rms >= threshold) OR a
             // small batch of frames has flowed through the capture
@@ -1003,11 +1436,23 @@ class TxController(
             // is delivering frames at all, the mic is up and TPT can
             // play; the worst that can happen is the first few ms of
             // speech encode as silence, which is unnoticeable.
-            val rmsThreshold = primingRmsThreshold(primingUseColdScoGates)
+            // Gate selection per cold axis. Cold-SCO keeps the full
+            // ramp-tolerant gates (30 NON-SILENT frames / 1.5 s) — an
+            // input path that's still dead delivers literal zeros, and
+            // 30 zeros in a row is "not ready", not "mic is up". A
+            // cold-CALL burst needs only read-loop LIVENESS here (any
+            // frames flowing) because real path verification is the
+            // PROBING phase's job — but it keeps the COLD speech
+            // threshold so only genuine speech, not the DSP's
+            // suppressed floor (rms 1-11 on Pixel), can skip the probe
+            // via the speech-detected shortcut.
+            val rmsThreshold = primingRmsThreshold(primingUseColdScoGates || primingColdCall)
             val minFrames = primingMinFramesToConfirmAlive(primingUseColdScoGates)
+            val aliveFrames =
+                if (primingUseColdScoGates) primingNonSilentFramesObserved else primingFramesObserved
             val micAlive =
                 rms >= rmsThreshold ||
-                    primingFramesObserved >= minFrames
+                    aliveFrames >= minFrames
             if (micAlive) {
                 synchronized(this@TxController) {
                     if (state == State.PRIMING) {
@@ -1021,30 +1466,89 @@ class TxController(
                             }
                         val route =
                             when {
+                                scoLink.state != ScoLink.State.CONNECTED && primingColdCall -> "non-sco-cold-call"
                                 scoLink.state != ScoLink.State.CONNECTED -> "non-sco"
                                 primingUseColdScoGates -> "sco-cold"
                                 else -> "sco-warm"
                             }
+                        // A speech-detected completion is its own proof
+                        // — but only off-SCO: the operator's voice made
+                        // it THROUGH the platform chain, so the DSP is
+                        // demonstrably open. On SCO the shortcut is NOT
+                        // trustworthy — the BT chipset can deliver a
+                        // loud ramp burst mid-warmup and then go quiet
+                        // again (2026-07-17 Pixel cold-SCO: priming saw
+                        // rms 586, the TX head still went out at rms 10)
+                        // — so cold-SCO bursts ALWAYS probe.
+                        val speechVerified = rms >= rmsThreshold && !primingUseColdScoGates
+                        val coldBurst = primingColdCall || primingUseColdScoGates
+                        if (coldBurst && !speechVerified) {
+                            Log.i(
+                                TAG,
+                                "PRIMING: mic alive after ${elapsed}ms ($reason: rms=$rms, " +
+                                    "$primingFramesObserved frames observed / $primingNonSilentFramesObserved non-silent, " +
+                                    "route=$route) — cold burst, probing input-path readiness before TPT",
+                            )
+                            txDiag("priming alive ${elapsed}ms rms=$rms route=$route → probe")
+                            startProbing()
+                            return@synchronized
+                        }
+                        txDiag("priming ready ${elapsed}ms $reason rms=$rms route=$route")
                         val txRoute = if (primingUseColdScoGates) TxRoute.SCO else TxRoute.OFFLOAD
-                        val holdMs = computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
+                        val holdMs = coldStartPolicy.computePrimingHoldMs(txRoute, currentBurstColdSco, 0L)
                         if (holdMs > 0L) {
                             Log.i(
                                 TAG,
                                 "PRIMING: mic ready after ${elapsed}ms ($reason: rms=$rms, " +
-                                    "$primingFramesObserved frames observed, route=$route) — " +
-                                    "holding ${holdMs}ms for cold-SCO modem stabilization before TPT",
+                                    "$primingFramesObserved frames observed / $primingNonSilentFramesObserved non-silent, " +
+                                    "route=$route) — holding ${holdMs}ms for cold-SCO modem stabilization before TPT",
                             )
                             scheduleColdScoTptHold(holdMs)
                         } else {
                             Log.i(
                                 TAG,
                                 "PRIMING: mic ready after ${elapsed}ms ($reason: rms=$rms, " +
-                                    "$primingFramesObserved frames observed, route=$route) — playing TPT",
+                                    "$primingFramesObserved frames observed / $primingNonSilentFramesObserved non-silent, " +
+                                    "route=$route) — playing TPT",
                             )
                             startTpt()
                         }
                     }
                 }
+            }
+            return
+        }
+        if (state == State.PROBING) {
+            // Input-path readiness watch: sustained acoustic energy —
+            // our probe tick or ambient sound — proves the platform
+            // chain is passing audio and the burst can proceed to the
+            // true TPT. SUSTAINED matters: a partially-converged
+            // Samsung DSP leaked a single tick frame at rms 69 and then
+            // clamped shut again (2026-07-17), so one hot frame is a
+            // blip, [PROBE_HEARD_CONSECUTIVE_FRAMES] in a row is an
+            // open path. Frames are observed, never encoded (nothing
+            // here is burst speech).
+            val rms = rms(pcm)
+            if (rms >= PROBE_HEARD_RMS_THRESHOLD) {
+                probeConsecutiveHeard++
+                if (probeConsecutiveHeard >= PROBE_HEARD_CONSECUTIVE_FRAMES) {
+                    synchronized(this@TxController) {
+                        if (state == State.PROBING) {
+                            val elapsed = System.currentTimeMillis() - probeStartMs
+                            cooldownHandler.removeCallbacks(probeTickRunnable)
+                            cooldownHandler.removeCallbacks(probeCeilingRunnable)
+                            Log.i(
+                                TAG,
+                                "PROBING: path verified after ${elapsed}ms (heard rms=$rms sustained " +
+                                    "x$probeConsecutiveHeard, $probeTicksPlayed ticks) — playing TPT",
+                            )
+                            txDiag("probe verified ${elapsed}ms rms=$rms ticks=$probeTicksPlayed")
+                            startTpt()
+                        }
+                    }
+                }
+            } else {
+                probeConsecutiveHeard = 0
             }
             return
         }
@@ -1073,6 +1577,17 @@ class TxController(
                 Log.e(TAG, "onPcmFrame: encoder is null!")
                 return
             }
+        val now = System.currentTimeMillis()
+        if (postRestartHoldUntilMs > now) {
+            return
+        }
+        if (postRestartHoldUntilMs != 0L) {
+            postRestartHoldUntilMs = 0L
+        }
+        if (postRestartDropFramesRemaining > 0) {
+            postRestartDropFramesRemaining--
+            return
+        }
         // Cold-SCO start-of-burst frame drop. On Pixel with BT SCO the
         // AOC modem underruns for ~30 ms after the SCO uplink stabilizes;
         // the first N live frames land in that window and encode to
@@ -1089,14 +1604,14 @@ class TxController(
                 frameNumber = txFrameNumber,
                 route = if (currentBurstColdSco) TxRoute.SCO else TxRoute.OFFLOAD,
                 cold = currentBurstColdSco,
-                dropCount = COLD_SCO_START_DROP_FRAMES,
+                dropCount = coldStartPolicy.coldScoStartDropFrames,
             )
         ) {
-            if (txFrameNumber == 1 || txFrameNumber == COLD_SCO_START_DROP_FRAMES) {
+            if (txFrameNumber == 1 || txFrameNumber == coldStartPolicy.coldScoStartDropFrames) {
                 Log.i(
                     TAG,
                     "TX: dropping start frame #$txFrameNumber (cold-SCO AOC underrun window, " +
-                        "N=$COLD_SCO_START_DROP_FRAMES)",
+                        "N=${coldStartPolicy.coldScoStartDropFrames})",
                 )
             }
             return
@@ -1165,6 +1680,17 @@ class TxController(
         // while we're still waiting for the mic to produce real samples,
         // we abandon cleanly without playing TPT or transmitting.
         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
+        // Same for the Telecom settle backstop — a release while parked
+        // in ACQUIRING_CALL abandons the burst without TPT.
+        cooldownHandler.removeCallbacks(callSettleTimeoutRunnable)
+        // And the probe machinery — a release mid-PROBING abandons
+        // cleanly with no stray ticks or a late ceiling TPT.
+        cooldownHandler.removeCallbacks(probeTickRunnable)
+        cooldownHandler.removeCallbacks(probeCeilingRunnable)
+        // And any pending TPT hold — otherwise a burst abandoned during
+        // its cold-SCO / probe-ceiling hold could fire a stray permit
+        // tone into the next burst.
+        cooldownHandler.removeCallbacks(tptHoldRunnable)
         // Session-arm: keep the capture alive between bursts so the
         // next PTT-down doesn't pay AudioRecord/mic-chipset cold-start
         // latency. Released only on disarmSessionMic (Mumble disconnect)
@@ -1212,6 +1738,7 @@ class TxController(
                 Log.w(TAG, "onPttStateChanged(false) threw", t)
             }
             Log.i(TAG, "TX stopped after $framesSent frames (slot=$burstSlot)")
+            txDiag("stopped after $framesSent frames slot=$burstSlot")
         }
         // 5-second cool-down: keep SCO warm so a re-press lands instantly.
         // RX's SCO_HOT timer in AudioPlayback handles its own side; this
@@ -1224,6 +1751,8 @@ class TxController(
             cooldownHandler.postDelayed(coolDownReleaseRunnable, SCO_COOL_DOWN_MS)
         }
         activeSlot = 0
+        postRestartHoldUntilMs = 0
+        postRestartDropFramesRemaining = 0
         state = State.IDLE
         lastStopMs = System.currentTimeMillis()
         // Drop TX focus + restore mode. exitTx (not returnToIdle)
@@ -1369,6 +1898,10 @@ class TxController(
         }
         cooldownHandler.removeCallbacks(coolDownReleaseRunnable)
         cooldownHandler.removeCallbacks(primingTimeoutRunnable)
+        cooldownHandler.removeCallbacks(callSettleTimeoutRunnable)
+        cooldownHandler.removeCallbacks(probeTickRunnable)
+        cooldownHandler.removeCallbacks(probeCeilingRunnable)
+        cooldownHandler.removeCallbacks(tptHoldRunnable)
         capture?.let {
             it.stop()
             capture = null
@@ -1556,6 +2089,10 @@ class TxController(
         // re-keys. Effect: warm-path rapid-tap PTT is ~150ms faster.
         private const val STOP_TO_START_WARM_MIN_MS = 50L
 
+        // Mid-burst capture restarts can reset the platform voice DSP
+        // even on non-SCO routes; hold briefly before re-encoding.
+        private const val RESTART_DSP_SETTLE_HOLD_MS_OFFLOAD = 150L
+
         // ---------- Cold-SCO start-of-burst polish (2026-07-10) ----------
         //
         // Field observation on Pixel 9 Pro + AINA V2: the first TX after
@@ -1639,12 +2176,23 @@ class TxController(
         // comparison or for platforms without the AOC modem behavior).
         internal const val COLD_SCO_START_DROP_FRAMES: Int = 6
 
+        internal val DEFAULT_COLD_START_POLICY: ColdStartMitigationPolicy =
+            ColdStartMitigationPolicy(
+                coldScoTptHoldMs = COLD_SCO_TPT_HOLD_MS,
+                coldScoStartDropFrames = COLD_SCO_START_DROP_FRAMES,
+            )
+
         /**
          * Extra time to hold PRIMING → TPT so the SCO uplink modem
          * stabilizes past its cold-start underrun window. Returns
          * [baseMs] for every non-cold-SCO case (warm SCO, non-SCO
          * route entirely, feature disabled via a zero
          * [COLD_SCO_TPT_HOLD_MS]).
+         *
+         * Deliberately SCO-only: the cold-CALL axis (OEM voice-DSP
+         * convergence on a fresh AudioRecord) is handled by the
+         * PROBING phase, which measures readiness instead of guessing
+         * a duration — see [startProbing].
          *
          * Pure function — no dependency on TxController state; tests
          * exercise it directly.
@@ -1659,12 +2207,65 @@ class TxController(
             route: TxRoute,
             cold: Boolean,
             baseMs: Long,
-        ): Long {
-            if (!cold) return baseMs
-            if (route != TxRoute.SCO) return baseMs
-            if (COLD_SCO_TPT_HOLD_MS <= 0L) return baseMs
-            return baseMs + COLD_SCO_TPT_HOLD_MS
-        }
+        ): Long = DEFAULT_COLD_START_POLICY.computePrimingHoldMs(route, cold, baseMs)
+
+        // ---------- DSP-readiness probe (2026-07-17) ----------
+        //
+        // Cold-CALL bursts (fresh Telecom session) face OEM voice-DSP
+        // convergence on the freshly-created AudioRecord: for ~1.5-2.5 s
+        // the platform chain outputs a suppressed floor (rms≈1 on
+        // Pixel 9 Pro, hard zeros on Galaxy Tab Active5) and anything
+        // the operator says is attenuated INSIDE the platform before we
+        // ever see it. A fixed tone delay would be a guess — too short
+        // clips the first word, too long feels broken. Instead, PROBING
+        // measures readiness: play a short tick on the shared voice
+        // session and watch our own capture. A closed DSP suppresses
+        // the tick (bench: capture rms 1 straight through a -3 dBFS
+        // TPT); an open one passes it (bench: rms 620 during the same
+        // tone). The moment ANY real acoustic energy shows up in
+        // capture — our tick or ambient sound — the path is verifiably
+        // passing audio end-to-end and the true TPT fires.
+        //
+        // Scoped to cold-call bursts on non-SCO routes: warm re-keys
+        // are bench-proven clean (<20 ms) and skip probing entirely;
+        // cold-SCO bursts keep their own tuned pipeline (ramp gates +
+        // AOC hold + start-frame drop). A burst whose PRIMING already
+        // detected genuine speech (rms ≥ the cold threshold) skips the
+        // probe too — the operator's own voice just proved the path.
+
+        // Capture rms at/above which the probe declares the input path
+        // open. The open-DSP capture of our own tone measured rms 620
+        // (-3 dBFS TPT) and ambient speech reads 200+; the closed-DSP
+        // floor is 0-2. 50 sits an order of magnitude above the floor
+        // and comfortably below any real acoustic pickup.
+        internal const val PROBE_HEARD_RMS_THRESHOLD = 50
+
+        // Sustained-energy requirement: consecutive frames at/above the
+        // threshold before the probe declares the path open. One frame
+        // is a blip (Samsung's partially-converged DSP leaked a single
+        // tick frame at rms 69 and then clamped shut, 2026-07-17);
+        // three in a row (30 ms) is an open chain. Each ~80 ms tick
+        // spans ~8 frames, so a genuinely open path verifies within a
+        // single tick.
+        internal const val PROBE_HEARD_CONSECUTIVE_FRAMES = 3
+
+        // Cadence of probe ticks. Each tick is ~80 ms of audio; ~350 ms
+        // spacing gives the DSP continuous input to converge on while
+        // keeping the "getting ready" ticking unobtrusive.
+        internal const val PROBE_TICK_INTERVAL_MS = 350L
+
+        // Bounded ceiling on the probe wait. A genuinely cold DSP that
+        // is going to leak the tick does so within one or two ticks —
+        // field-observed verify times were 96-417 ms. If nothing has
+        // been heard by this bound, the tick is not going to arrive
+        // (converged AEC cancelling it, OS-silenced mic, or a
+        // non-coupling route), and on a working mic that most likely
+        // means the DSP is ALREADY open — so continuing to wait only
+        // adds dead air. Cut from 2500 ms (2026-07-17 forensics: the
+        // long ceiling + a fallback hold was the dominant driver of the
+        // "every patch makes it worse" latency stack on healthy
+        // devices whose good AEC always cancels the probe).
+        internal const val PROBE_CEILING_MS = 1_200L
 
         // ---------- PRIMING gate selection (cold-SCO vs everything else) ----------
         //
@@ -1678,17 +2279,35 @@ class TxController(
         // the operator released before TX started and zero frames went
         // out. Pure functions so the selection is unit-tested directly.
 
+        // The "cold burst" parameter below covers BOTH cold axes: a
+        // cold SCO acquire (chipset ramp) and a cold Telecom session
+        // (OEM voice-DSP re-convergence after the VoIP-call reroute,
+        // 2026-07-17). Same physical shape — an adaptive input path
+        // settling after (re)provisioning — so the same ramp-tolerant
+        // gate values apply. Warm bursts on either axis keep the fast
+        // gates; the 2026-07-13 warm-SCO regression guard still holds.
+
         /** Min frames delivered before PRIMING declares the mic alive. */
-        internal fun primingMinFramesToConfirmAlive(coldSco: Boolean): Int =
-            if (coldSco) MIC_PRIMING_MIN_FRAMES_ALIVE_SCO else MIC_PRIMING_MIN_FRAMES_ALIVE
+        internal fun primingMinFramesToConfirmAlive(coldBurst: Boolean): Int =
+            if (coldBurst) MIC_PRIMING_MIN_FRAMES_ALIVE_SCO else MIC_PRIMING_MIN_FRAMES_ALIVE
 
         /** RMS above which PRIMING treats a frame as real speech. */
-        internal fun primingRmsThreshold(coldSco: Boolean): Int =
-            if (coldSco) MIC_PRIMING_RMS_THRESHOLD_SCO else MIC_PRIMING_RMS_THRESHOLD
+        internal fun primingRmsThreshold(coldBurst: Boolean): Int =
+            if (coldBurst) MIC_PRIMING_RMS_THRESHOLD_SCO else MIC_PRIMING_RMS_THRESHOLD
 
         /** Upper bound on the PRIMING wait before bonking/proceeding. */
-        internal fun primingTimeoutMs(coldSco: Boolean): Long =
-            if (coldSco) MIC_PRIMING_TIMEOUT_MS_SCO else MIC_PRIMING_TIMEOUT_MS
+        internal fun primingTimeoutMs(coldBurst: Boolean): Long =
+            if (coldBurst) MIC_PRIMING_TIMEOUT_MS_SCO else MIC_PRIMING_TIMEOUT_MS
+
+        // Upper bound on the ACQUIRING_CALL wait for the Telecom
+        // session to activate + settle its audio route. Honest settle
+        // on the slowest fleet device (Galaxy Tab Active5, cold boot)
+        // measured ~1.8 s from placeCall to the first
+        // onCallAudioStateChanged; 3 s mirrors SCO_WARMUP_MS and only
+        // fires when the call is genuinely not coming (placeCall
+        // failure that never reached onCreateOutgoingConnectionFailed,
+        // TelecomManager unavailable, OEM-locked ROM).
+        internal const val CALL_SETTLE_TIMEOUT_MS = 3_000L
 
         /**
          * Should this leading TX frame be silently discarded to skip
@@ -1710,11 +2329,9 @@ class TxController(
             route: TxRoute,
             cold: Boolean,
             dropCount: Int,
-        ): Boolean {
-            if (!cold) return false
-            if (route != TxRoute.SCO) return false
-            if (dropCount <= 0) return false
-            return frameNumber in 1..dropCount
-        }
+        ): Boolean =
+            DEFAULT_COLD_START_POLICY
+                .copy(coldScoStartDropFrames = dropCount)
+                .shouldDropStartFrame(frameNumber, route, cold)
     }
 }

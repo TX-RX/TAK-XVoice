@@ -1604,6 +1604,15 @@ class XvVoiceService : Service() {
             // No call will be placed — release the voice focus we grabbed
             // above so media doesn't stay paused/ducked indefinitely.
             releaseVoiceFocus()
+            // Release any TX burst parked in TxController's ACQUIRING_CALL
+            // barrier: no call is coming, so it must fall back to the
+            // no-Telecom path NOW instead of eating the full 3 s settle
+            // timeout (and then the probe stack) as dead air. firePlaceFailed
+            // drives VoicePlant.telecomPlaceFailedListener → notifyTelecomUnavailable.
+            // Only the async onCreateOutgoingConnectionFailed path was wired
+            // before; these two synchronous failures were not (2026-07-17
+            // forensics, confirmed regression).
+            com.atakmap.android.xv.telecom.ActiveCallRegistry.firePlaceFailed()
             return
         }
         val uri =
@@ -1625,6 +1634,11 @@ class XvVoiceService : Service() {
             // placeCall failed — nothing will land, so release the voice
             // focus grabbed above rather than leaving media paused.
             releaseVoiceFocus()
+            // Same as the tm==null path: release the barrier so a parked
+            // TX burst doesn't dead-air on the settle timeout. Covers the
+            // SecurityException-when-CALL_PHONE-revoked case (documented at
+            // XvMapComponent placeCall guard) and any OEM-locked Telecom.
+            com.atakmap.android.xv.telecom.ActiveCallRegistry.firePlaceFailed()
         }
     }
 
