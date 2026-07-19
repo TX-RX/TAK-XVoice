@@ -2918,6 +2918,8 @@ class XvMapComponent : AbstractMapComponent() {
                     ?.keys
                     ?.firstOrNull()
 
+            override fun serverForChannel(name: String): String? = settings.channelServer(name)
+
             override fun selectMeshChannel(name: String) {
                 Log.i(TAG, "Controller.selectMeshChannel($name)")
                 // A channel known only from peer beacons (fully

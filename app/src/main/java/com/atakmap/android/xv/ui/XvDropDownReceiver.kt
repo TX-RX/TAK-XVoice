@@ -373,8 +373,9 @@ class XvDropDownReceiver(
         fun meshChannelCandidates(): List<String> = emptyList()
 
         // Canonical name of the channel the mesh leg is currently
-        // bound to, or null when no leg is up.
         fun meshActiveChannelCanonical(): String? = null
+
+        fun serverForChannel(name: String): String? = null
 
         fun selectMeshChannel(name: String) {}
 
@@ -2033,14 +2034,29 @@ class XvDropDownReceiver(
             promptPickTeammatesThenShare(names)
             return
         }
-        val checked = BooleanArray(names.size) { true }
+        
+        val serverGroups = names.groupBy { controller.serverForChannel(it) ?: "Offline / ad-hoc" }
+        // Sort groups: servers first (alphabetical), then Offline/ad-hoc at the end
+        val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
+        
+        val displayLabels = mutableListOf<String>()
+        val orderedNames = mutableListOf<String>()
+        for ((groupName, groupChannels) in sortedGroups) {
+            val prefix = if (groupName == "Offline / ad-hoc") "" else "$groupName / "
+            for (ch in groupChannels.sorted()) {
+                displayLabels.add("$prefix$ch")
+                orderedNames.add(ch)
+            }
+        }
+        
+        val checked = BooleanArray(orderedNames.size) { true }
         android.app.AlertDialog
             .Builder(mapView.context)
             .setTitle("Share which channels?")
-            .setMultiChoiceItems(names.toTypedArray(), checked) { _, which, isChecked ->
+            .setMultiChoiceItems(displayLabels.toTypedArray(), checked) { _, which, isChecked ->
                 checked[which] = isChecked
             }.setPositiveButton("Next") { _, _ ->
-                val selected = names.filterIndexed { i, _ -> checked[i] }
+                val selected = orderedNames.filterIndexed { i, _ -> checked[i] }
                 if (selected.isEmpty()) {
                     meshToast("Pick at least one channel to share.")
                 } else {
@@ -2059,7 +2075,7 @@ class XvDropDownReceiver(
         val targets = controller.shareTargets() // uid → callsign
         // Row 0 is "Everyone"; the rest are individual teammates.
         val labels = (listOf("Everyone") + targets.map { it.second }).toTypedArray()
-        val checked = BooleanArray(labels.size) { it == 0 } // default: Everyone
+        val checked = BooleanArray(labels.size) { false } // default: None checked
         android.app.AlertDialog
             .Builder(mapView.context)
             .setTitle("Share to whom?")

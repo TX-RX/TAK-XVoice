@@ -43,7 +43,7 @@ object XvChannelShare {
     const val DETAIL_NAME = "__xvshare"
 
     private const val TAG = "XvChannelShare"
-    private const val CHANNEL_DELIM = "\n"
+    private const val CHANNEL_DELIM = "|"
     private val rng = SecureRandom()
 
     data class ShareSignal(
