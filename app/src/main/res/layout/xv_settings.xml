@@ -339,6 +339,55 @@
                         android:background="@drawable/xv_button_bg"/>
                 </LinearLayout>
 
+                <!-- Auto-reconnect toggle. ON (default): XV retries the
+                     Mumble link after an unexpected drop, with a backoff
+                     that slows to a 5-minute heartbeat and eventually
+                     auto-pauses. OFF: XV stops the background retry
+                     ladder for limited-connectivity ops (no server in
+                     reach) so it doesn't drain battery or beep on a
+                     device that can't connect. A PTT press still forces
+                     a connect attempt either way. -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Reconnect"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="4dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Auto-reconnect on drop"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_auto_reconnect"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Automatically retry the Mumble link after an unexpected disconnect. Turn OFF for limited-connectivity operations where there's no server in reach — XV stops retrying in the background (saving battery and silencing the periodic 'voice lost' alert). Pressing PTT still forces a reconnect attempt."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="6dp"/>
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="40dp"/>

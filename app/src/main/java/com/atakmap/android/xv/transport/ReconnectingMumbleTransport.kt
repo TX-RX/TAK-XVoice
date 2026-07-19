@@ -66,6 +66,16 @@ class ReconnectingMumbleTransport(
     // Optional per-state hooks for the UI. Defaults to no-op so call
     // sites that don't care about reconnect state don't grow.
     private val onReconnectStateChanged: (attempt: Int, scheduledDelayMs: Long) -> Unit = { _, _ -> },
+    // Operator gate for AUTOMATIC reconnect attempts. Read on every
+    // scheduleRetry so a live settings toggle takes effect without a
+    // reconnect. When it returns false the wrapper stops scheduling
+    // background retries entirely — for limited-connectivity ops where
+    // the operator knows the server is unreachable and doesn't want the
+    // battery drain or the periodic "voice lost" alert. This gates only
+    // the automatic ladder: an explicit connect() or retryNow() (PTT
+    // press) still attempts regardless, because those are direct "connect
+    // me now" requests. Default always-on preserves prior behavior.
+    private val reconnectEnabled: () -> Boolean = { true },
     // Single-threaded executor for ALL connect/disconnect/network-swap
     // work. Daemon thread so it doesn't block process exit. Naming is
     // intentional — grep-able in logcat for thread-attribution. Exposed
@@ -117,6 +127,15 @@ class ReconnectingMumbleTransport(
     @Volatile
     private var lastScheduledDelayMs: Long = 0L
 
+    // Set when the operator switches auto-reconnect off: the ladder has
+    // stopped scheduling and is waiting for an explicit re-arm. Read by
+    // [isReconnecting] so the UI drops from amber "reconnecting…" back to
+    // a plain "disconnected" state — honest signalling that XV is no
+    // longer actively trying on its own. Only the operator toggle sets
+    // this; the ladder itself never suspends on attempt count.
+    @Volatile
+    private var reconnectSuspended: Boolean = false
+
     // VS2 ghost-cleanup attempt counter. Resets on a successful VS2
     // connect (in onSecondaryFailed when we get a clean connect, we
     // see the upstream onConnected from the primary, but secondary
@@ -132,8 +151,10 @@ class ReconnectingMumbleTransport(
 
     /** True when the wrapper is between attempts — the upstream
      *  saw an `onDisconnected` and a retry is queued. UI uses this
-     *  to render "reconnecting…" instead of "disconnected". */
-    fun isReconnecting(): Boolean = reconnecting.get() && !teardownRequested
+     *  to render "reconnecting…" instead of "disconnected". False once
+     *  the operator has switched auto-reconnect off, so the UI stops
+     *  implying an attempt is imminent. */
+    fun isReconnecting(): Boolean = reconnecting.get() && !teardownRequested && !reconnectSuspended
 
     /** Number of consecutive retry attempts without a successful
      *  connect. Resets to 0 on a clean (re)connect. */
@@ -244,7 +265,40 @@ class ReconnectingMumbleTransport(
         policy.reset()
         secondaryUsernameInUseAttempts.set(0)
         fatalRejected.set(false)
+        reconnectSuspended = false
         executor.submit { runAttempt() }
+    }
+
+    /**
+     * Operator-initiated "reconnect now." Collapses any pending backoff
+     * and drives a fresh attempt immediately. Wired to the PTT-down path
+     * so keying a dead channel tries to bring voice back without waiting
+     * out the ladder — which, on the dormant tail, can be up to 5 minutes
+     * away — and re-arms a ladder the operator had switched off.
+     * Deliberately ignores
+     * [reconnectEnabled]: an explicit PTT press is a direct "connect me"
+     * request, distinct from the automatic background retries that toggle
+     * governs. No-op if already connected or torn down.
+     *
+     * Runs on the wrapper's single executor so it serializes with any
+     * in-flight connect / disconnect / retry work.
+     */
+    fun retryNow() {
+        executor.submit {
+            if (teardownRequested) return@submit
+            if (inner?.isConnected == true) return@submit
+            Log.i(TAG, "retryNow() — operator-initiated; collapsing backoff/pause")
+            pendingRetry?.cancel(false)
+            pendingRetry = null
+            policy.reset()
+            reconnectSuspended = false
+            // An explicit reconnect request clears the fatal latch for a
+            // single fresh shot — same rationale as connect(). If the
+            // fatal cause persists the next attempt re-latches it; this
+            // fires once per press, so it can't tight-loop.
+            fatalRejected.set(false)
+            runAttempt()
+        }
     }
 
     override fun sendFrame(frame: VoiceFrame) {
@@ -393,6 +447,22 @@ class ReconnectingMumbleTransport(
             reconnecting.set(false)
             return
         }
+        // Operator switched automatic reconnect off (limited-connectivity
+        // ops). Stop the background ladder — a manual reconnect / PTT
+        // press via retryNow() still works and re-arms. Suspend so the UI
+        // reads "disconnected" rather than a "reconnecting…" that will
+        // never fire.
+        if (!reconnectEnabled()) {
+            Log.i(TAG, "auto-reconnect disabled by setting — suspending ladder (PTT/manual re-arms)")
+            reconnectSuspended = true
+            reconnecting.set(false)
+            return
+        }
+        // NOTE: there is deliberately no "give up after N attempts" branch
+        // here. The ladder retries forever (ReconnectPolicy.DEFAULT_SCHEDULE
+        // settles at a 5-minute dormant heartbeat) until the operator
+        // disconnects, a Fatal outcome latches, or the auto-reconnect
+        // toggle above turns it off. See DEFAULT_SCHEDULE's doc for why.
         val delay = policy.nextDelayMs()
         lastScheduledDelayMs = delay
         Log.i(
@@ -406,8 +476,42 @@ class ReconnectingMumbleTransport(
         }
         pendingRetry =
             executor.schedule({
-                if (!teardownRequested) runAttempt()
+                if (teardownRequested) return@schedule
+                // Re-check the gate at FIRE time, not just at schedule
+                // time: the operator may have switched auto-reconnect off
+                // during the backoff window. Without this, an already-
+                // queued task would still wake the radio for one more
+                // background attempt after the operator disabled it.
+                if (!reconnectEnabled()) {
+                    Log.i(TAG, "pending retry fired but auto-reconnect now disabled — suspending")
+                    reconnectSuspended = true
+                    reconnecting.set(false)
+                    return@schedule
+                }
+                runAttempt()
             }, delay, TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * Immediately suspend the automatic reconnect ladder: cancel any
+     * pending backoff and drop out of the "reconnecting…" state at once,
+     * rather than waiting for the queued retry to fire (which could be
+     * minutes out on the dormant tail). Called when the operator switches
+     * auto-reconnect off so the change takes visible effect immediately.
+     * A later retryNow() / connect() re-arms. No-op if already connected
+     * or torn down. Runs on the wrapper's executor so it serializes with
+     * any in-flight connect / retry work.
+     */
+    fun suspendAutoReconnect() {
+        executor.submit {
+            if (teardownRequested) return@submit
+            if (inner?.isConnected == true) return@submit
+            Log.i(TAG, "suspendAutoReconnect() — cancelling pending backoff, dropping to disconnected")
+            pendingRetry?.cancel(false)
+            pendingRetry = null
+            reconnectSuspended = true
+            reconnecting.set(false)
+        }
     }
 
     /**
@@ -493,6 +597,7 @@ class ReconnectingMumbleTransport(
                 Log.i(TAG, "inner connected — resetting backoff")
                 policy.reset()
                 reconnecting.set(false)
+                reconnectSuspended = false
                 secondaryUsernameInUseAttempts.set(0)
                 fatalRejected.set(false)
                 upstream?.onConnected()

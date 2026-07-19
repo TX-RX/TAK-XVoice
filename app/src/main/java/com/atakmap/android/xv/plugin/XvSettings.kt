@@ -242,6 +242,22 @@ class XvSettings(
         prefs()?.edit()?.putBoolean(PREF_STATUS_TONES, enabled)?.apply()
     }
 
+    // Whether XV automatically retries the Mumble transport after an
+    // unexpected drop. Default ON — the common case is a transient blip
+    // the reconnect ladder heals silently. Operators running in a
+    // known limited-connectivity environment (no server in reach) can
+    // switch this OFF so XV stops the background retry ladder entirely,
+    // avoiding the battery drain and the periodic "voice lost" alert on
+    // a device that can't connect anyway. Read live on every
+    // scheduleRetry via the reconnectEnabled gate so the toggle takes
+    // effect without a reconnect. Independent of an explicit PTT press,
+    // which still forces a connect attempt regardless of this setting.
+    fun persistedAutoReconnectEnabled(): Boolean = prefs()?.getBoolean(PREF_AUTO_RECONNECT, true) ?: true
+
+    fun persistAutoReconnectEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_AUTO_RECONNECT, enabled)?.apply()
+    }
+
     // Whether the Samsung ruggedized-device Active Key is enabled as
     // a PTT source. The corresponding Settings row is only shown at
     // all when [com.atakmap.android.xv.util.SamsungActiveKey.isSupported]
@@ -336,6 +352,10 @@ class XvSettings(
         private const val PREF_TPT_TONE = "tpt_tone"
         private const val PREF_LATCHED_TIMEOUT = "latched_timeout_sec"
         private const val PREF_STATUS_TONES = "status_tones_enabled"
+
+        // Auto-reconnect toggle (default true). See
+        // persistedAutoReconnectEnabled.
+        private const val PREF_AUTO_RECONNECT = "auto_reconnect_enabled"
 
         // Whether the Samsung ruggedized-device Active Key is used as
         // a PTT source. Only meaningful on hardware that has the key.

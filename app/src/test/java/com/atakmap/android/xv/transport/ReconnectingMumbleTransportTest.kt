@@ -68,7 +68,9 @@ class ReconnectingMumbleTransportTest {
         tx
     }
 
-    private fun build(): ReconnectingMumbleTransport =
+    private fun build(): ReconnectingMumbleTransport = buildWith { true }
+
+    private fun buildWith(reconnectEnabled: () -> Boolean): ReconnectingMumbleTransport =
         ReconnectingMumbleTransport(
             config =
             TransportConfig.Mumble(
@@ -79,6 +81,7 @@ class ReconnectingMumbleTransportTest {
             primarySlotSuffix = "VS1",
             secondarySlotSuffix = "VS2",
             factory = factory,
+            reconnectEnabled = reconnectEnabled,
             executor = executor,
         )
 
@@ -472,6 +475,162 @@ class ReconnectingMumbleTransportTest {
         r.connect(upstream)
         capturedListeners[0].onPeerStoppedTalking("alice")
         verify { upstream.onPeerStoppedTalking("alice") }
+    }
+
+    // ============================================================
+    // Auto-reconnect toggle — OFF suspends the background ladder
+    // ============================================================
+
+    @Test
+    fun `auto-reconnect disabled suspends the ladder instead of scheduling`() {
+        val r = buildWith { false }
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        // Operator turned auto-reconnect off (limited-connectivity ops):
+        // a drop must NOT queue a background retry, and the UI reads
+        // "disconnected" rather than a "reconnecting…" that never fires.
+        assertFalse(
+            "auto-reconnect off must not schedule a background retry",
+            executor.hasPendingSchedule(),
+        )
+        assertFalse("suspended ladder is not 'reconnecting'", r.isReconnecting())
+        assertEquals("no fresh attempt while suspended", 1, factoryInvocations.size)
+    }
+
+    // ============================================================
+    // retryNow — operator PTT collapses backoff / re-arms a paused ladder
+    // ============================================================
+
+    @Test
+    fun `retryNow forces an attempt even when auto-reconnect is disabled`() {
+        primaryConnectedResult = false
+        val r = buildWith { false }
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        assertFalse(executor.hasPendingSchedule())
+        val before = factoryInvocations.size
+        // Operator keys PTT on the dead channel — an explicit "connect me"
+        // request that ignores the toggle and rebuilds immediately.
+        r.retryNow()
+        assertEquals("retryNow must rebuild a fresh inner", before + 1, factoryInvocations.size)
+    }
+
+    @Test
+    fun `retryNow collapses a pending backoff into an immediate attempt`() {
+        // The inner must report NOT connected, as it would in production
+        // after onDisconnected. retryNow() deliberately no-ops on a live
+        // link (see `retryNow is a no-op when already connected`), so
+        // without this the mock still claims isConnected=true, retryNow
+        // correctly declines to act, and the assertions below fail for a
+        // reason that has nothing to do with collapsing the backoff.
+        primaryConnectedResult = false
+        val r = build()
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        val pending = executor.lastScheduledFuture
+        r.retryNow()
+        assertTrue("pending backoff cancelled by retryNow", pending?.isCancelled == true)
+        assertEquals("immediate rebuild after collapse", 2, factoryInvocations.size)
+    }
+
+    @Test
+    fun `retryNow is a no-op when already connected`() {
+        val r = build()
+        r.connect(upstream)
+        capturedListeners[0].onConnected()
+        val before = factoryInvocations.size
+        r.retryNow()
+        assertEquals("no rebuild when the link is already up", before, factoryInvocations.size)
+    }
+
+    @Test
+    fun `suspendAutoReconnect cancels a pending backoff and drops the reconnecting state`() {
+        primaryConnectedResult = false
+        val r = build()
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        val pending = executor.lastScheduledFuture
+        assertTrue("backoff pending before suspend", r.isReconnecting())
+        // Operator switched auto-reconnect off — take effect at once.
+        r.suspendAutoReconnect()
+        assertTrue("pending backoff cancelled immediately", pending?.isCancelled == true)
+        assertFalse("suspended ladder is not 'reconnecting'", r.isReconnecting())
+    }
+
+    @Test
+    fun `pending retry is suppressed when auto-reconnect is toggled off during backoff`() {
+        var enabled = true
+        val r = buildWith { enabled }
+        r.connect(upstream)
+        capturedListeners[0].onDisconnected("blip")
+        assertTrue(executor.hasPendingSchedule())
+        val before = factoryInvocations.size
+        // Operator flips the toggle off while the backoff is still pending;
+        // the queued task must re-check the gate at fire time and suppress
+        // the attempt rather than waking the radio one more time.
+        enabled = false
+        executor.fireScheduled()
+        assertEquals(
+            "fired retry must not rebuild when disabled mid-backoff",
+            before,
+            factoryInvocations.size,
+        )
+        assertFalse(r.isReconnecting())
+    }
+
+    // ============================================================
+    // Never-give-up — the ladder only stops when the operator says so
+    // ============================================================
+
+    @Test
+    fun `ladder keeps scheduling through a long run of failures — never auto-pauses`() {
+        val r = build()
+        r.connect(upstream)
+        // Drive a long run of consecutive transient failures. Each
+        // disconnect schedules a retry (attemptCount++); each fire
+        // rebuilds a fresh inner whose freshly-captured listener we fail
+        // again next iteration.
+        //
+        // 40 attempts is far past the ~10 where the removed auto-pause
+        // used to kick in, and past the end of the backoff curve — on the
+        // real schedule this is hours of continuous failure. The radio is
+        // still trying, by explicit operator policy: silence because we
+        // quit is worse than silence because we can't get through.
+        var idx = 0
+        repeat(40) {
+            capturedListeners[idx].onDisconnected("blip #$it")
+            assertTrue(
+                "attempt #${it + 1} must still schedule a retry — the ladder never gives up",
+                executor.hasPendingSchedule(),
+            )
+            assertTrue("still reads as reconnecting at attempt #${it + 1}", r.isReconnecting())
+            executor.fireScheduled()
+            idx++
+        }
+    }
+
+    @Test
+    fun `only the operator toggle suspends the ladder — not the attempt count`() {
+        // Guards the boundary between the two: a long-running outage keeps
+        // trying forever, but the operator's off-switch still stops it at
+        // any point in that run. If a "give up after N" gate is ever
+        // reintroduced, the first half of this passes and the semantics
+        // silently diverge from the notification text ("XV keeps trying
+        // until it gets through"), so pin both here together.
+        var enabled = true
+        val r = buildWith { enabled }
+        r.connect(upstream)
+        var idx = 0
+        repeat(15) {
+            capturedListeners[idx].onDisconnected("blip #$it")
+            assertTrue("deep into the outage and still trying", executor.hasPendingSchedule())
+            executor.fireScheduled()
+            idx++
+        }
+        enabled = false
+        capturedListeners[idx].onDisconnected("blip after operator opts out")
+        assertFalse("operator opt-out is the one thing that stops it", executor.hasPendingSchedule())
+        assertFalse("suspended ladder reads as not-reconnecting", r.isReconnecting())
     }
 
     /**

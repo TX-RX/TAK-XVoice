@@ -266,6 +266,16 @@ class XvDropDownReceiver(
 
         fun setAutoConnectBtEnabled(enabled: Boolean) {}
 
+        // ---- Auto-reconnect toggle (Settings → Server) ----
+        // When ON (default), XV retries the Mumble transport after an
+        // unexpected drop with a backoff that slows to a heartbeat and
+        // eventually auto-pauses. When OFF, XV stops the background
+        // ladder for limited-connectivity ops; a PTT press still forces
+        // an attempt. Persists across launches.
+        fun autoReconnectEnabled(): Boolean = true
+
+        fun setAutoReconnectEnabled(enabled: Boolean) {}
+
         // ---- Samsung ruggedized-device Active Key ----
         // True only when the current device is a Samsung Tab Active5
         // / XCover6 Pro / XCover7 / Tab Active4 Pro / Tab Active3 that
@@ -1210,6 +1220,11 @@ class XvDropDownReceiver(
 
         v.findViewById<Button>(R.id.xv_btn_mumble_connect).setOnClickListener { controller.connectMumble() }
         v.findViewById<Button>(R.id.xv_btn_mumble_disconnect).setOnClickListener { controller.disconnectMumble() }
+
+        v.findViewById<Switch>(R.id.xv_switch_auto_reconnect)?.let { sw ->
+            sw.isChecked = controller.autoReconnectEnabled()
+            sw.setOnCheckedChangeListener { _, on -> controller.setAutoReconnectEnabled(on) }
+        }
     }
 
     private fun renderTakServerLabel(label: TextView) {

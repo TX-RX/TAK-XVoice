@@ -128,9 +128,18 @@ class TxController(
     //   2) Server has us suppressed on that slot's channel (OTS
     //      direction enforcement = OUT, or Mumble admin mute).
     // When false, TX is a no-op — no TPT, no SCO, no mic capture; we
-    // play the deny tone. Avoids the "tone played but no one heard
-    // you" experience.
+    // play a reject tone. Avoids the "tone played but no one heard
+    // you" experience. The specific reject cue depends on WHY (see
+    // [sessionLive]): no live session → bonk, listen-only → deny.
     private val canTransmit: (slot: Int) -> Boolean = { _ -> true },
+    // True when a Mumble session is live (connected + in a channel).
+    // Consulted only on a denied press to pick the reject cue: no live
+    // session → the "not in a channel" BONK; live-but-can't-speak (OTS
+    // direction OUT / admin mute) → the "listen-only" DENY tone. The two
+    // sound distinct so the operator can tell "I'm disconnected" from
+    // "I'm connected but muted here" without looking. Defaults to
+    // always-live so an unwired gate keeps the prior deny-only behavior.
+    private val sessionLive: () -> Boolean = { true },
     // Returns true if a peer's voice is currently being played out on
     // the local audio path. When true, TxController plays a short
     // interrupt chirp instead of the full TPT — audibly distinct cue
@@ -233,23 +242,24 @@ class TxController(
     private var activeSlot: Int = 0
 
     // Set true by the deny path when the operator presses on a
-    // listen-only channel from cold SCO. The deny tone is played in
+    // reject cue (bonk or deny) from cold SCO. The tone is played in
     // the scoListener's CONNECTED branch so it actually reaches the
     // AINA. Without this defer, the tone fires immediately while
     // SCO is still CONNECTING and gets routed to the phone speaker
-    // — operator hears nothing on the speakermic.
+    // — operator hears nothing on the speakermic. Null = nothing
+    // deferred; non-null carries WHICH reject cue to play on connect.
     @Volatile
-    private var pendingDenyTone: Boolean = false
+    private var pendingRejectTone: RejectTone? = null
 
     private val scoListener =
         object : ScoLink.StateListener {
             override fun onScoStateChanged(s: ScoLink.State) {
                 when (s) {
                     ScoLink.State.CONNECTED -> {
-                        if (pendingDenyTone) {
-                            pendingDenyTone = false
-                            Log.i(TAG, "SCO connected — playing deferred deny tone")
-                            tptPlayer.playDeny(useScoRoute = true)
+                        pendingRejectTone?.let { kind ->
+                            pendingRejectTone = null
+                            Log.i(TAG, "SCO connected — playing deferred $kind tone")
+                            playRejectTone(kind, useScoRoute = true)
                         }
                         synchronized(this@TxController) {
                             if (state == State.ACQUIRING_SCO) maybeStartPriming()
@@ -262,7 +272,7 @@ class TxController(
                         // SCO dropped before it ever connected — give
                         // up on the deferred tone so it doesn't fire
                         // on the next unrelated CONNECTED.
-                        pendingDenyTone = false
+                        pendingRejectTone = null
                         synchronized(this@TxController) {
                             if (state != State.IDLE && holdsSco) {
                                 Log.w(TAG, "SCO $s during TX — abandoning")
@@ -505,7 +515,13 @@ class TxController(
         Log.i(TAG, "start(slot=$slot) called — canTransmit=$canTx state=$state")
         txDiag("start slot=$slot canTx=$canTx")
         if (!canTx) {
-            Log.w(TAG, "start(slot=$slot) refused — channel/permission denies TX; playing deny tone")
+            // Pick the reject cue by WHY we can't transmit: no live
+            // session (disconnected / not in a channel) → the "not in a
+            // channel" bonk; live but suppressed on this slot (listen-
+            // only) → the descending deny tone. Distinct sounds so the
+            // operator can tell the two apart without looking.
+            val rejectTone = rejectToneFor(sessionLive())
+            Log.w(TAG, "start(slot=$slot) refused — canTransmit=false; playing $rejectTone tone")
             // A denied press is still a strong intent signal — the
             // operator meant to TX, just on the wrong slot. Treat it
             // like a real press for SCO purposes: pre-warm the link
@@ -518,13 +534,13 @@ class TxController(
                 holdsSco = true
             }
             if (isHfp && scoLink.state != ScoLink.State.CONNECTED) {
-                // Cold SCO — defer the deny tone until the link is
+                // Cold SCO — defer the reject tone until the link is
                 // actually up so it reaches the AINA speaker rather
                 // than the phone speaker.
-                pendingDenyTone = true
-                Log.i(TAG, "deny tone deferred — waiting for SCO CONNECTED")
+                pendingRejectTone = rejectTone
+                Log.i(TAG, "$rejectTone tone deferred — waiting for SCO CONNECTED")
             } else {
-                tptPlayer.playDeny(useScoRoute = isHfp)
+                playRejectTone(rejectTone, useScoRoute = isHfp)
             }
             // Universal cool-down. Re-arm the 5 s release runnable
             // on every press (real or denied) so OUR teardown is
@@ -1732,6 +1748,21 @@ class TxController(
         }
     }
 
+    // Which reject cue a denied PTT press should play. BONK = "you're
+    // not in a channel / no live session" (single low tone); DENY =
+    // "you're in the channel but listen-only" (descending double tone).
+    internal enum class RejectTone { BONK, DENY }
+
+    private fun playRejectTone(
+        kind: RejectTone,
+        useScoRoute: Boolean,
+    ) {
+        when (kind) {
+            RejectTone.BONK -> tptPlayer.playBonk(useScoRoute = useScoRoute)
+            RejectTone.DENY -> tptPlayer.playDeny(useScoRoute = useScoRoute)
+        }
+    }
+
     companion object {
         private const val TAG = "XvTx"
 
@@ -1798,6 +1829,14 @@ class TxController(
             for (v in s) sum += (v.toDouble() * v.toDouble())
             return kotlin.math.sqrt(sum / s.size).toInt()
         }
+
+        /**
+         * Pick the reject cue for a denied PTT press. Pure so the cue
+         * selection is unit-testable without standing up the controller:
+         * no live session (disconnected / not in a channel) → [RejectTone.BONK];
+         * live but suppressed on this slot (listen-only) → [RejectTone.DENY].
+         */
+        internal fun rejectToneFor(sessionLive: Boolean): RejectTone = if (sessionLive) RejectTone.DENY else RejectTone.BONK
 
         // Frame-count alternative for PRIMING completion: if the mic
         // capture loop has delivered this many frames (regardless of

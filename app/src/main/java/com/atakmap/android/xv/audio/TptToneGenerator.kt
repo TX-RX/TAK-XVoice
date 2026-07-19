@@ -95,35 +95,56 @@ object TptToneGenerator {
         return segments.sumOf { it.durationMs }.toLong()
     }
 
-    // Motorola-style "bonk" / no-permit tone — played when the user keys
-    // PTT but the system can't grant TX (no channel joined, transport not
-    // connected, etc.). Single low tone with a short downward slide.
-    // ~305 Hz dropping to ~245 Hz over 250ms; the descending pitch is the
-    // operator-recognizable "deny" cue.
+    // "Bonk" / no-permit tone — played when the operator keys PTT with no
+    // live session (disconnected, not in a channel). Low double-thud: two
+    // short FLAT low tones stepping down (320 Hz → 240 Hz) with a brief
+    // gap — a blunt "buh-BONK" that reads as a firm "denied." Replaces the
+    // old single descending pitch-slide, which sounded mushy/weak. Flat
+    // tones with a punchy attack read as deliberate; the downward step is
+    // the operator-recognizable "no" cue. Stays clearly distinct from the
+    // DENY tone (two descending *slides*, higher) so "not connected" and
+    // "listen-only here" don't sound alike.
     fun noPermitBonk(): ShortArray {
-        val durationMs = 250
-        val n = (SAMPLE_RATE_HZ * durationMs) / 1000
-        val out = ShortArray(n)
-        val startHz = 305.0
-        val endHz = 245.0
+        val firstMs = 70
+        val gapMs = 40
+        val secondMs = 130
+        val firstN = (SAMPLE_RATE_HZ * firstMs) / 1000
+        val gapN = (SAMPLE_RATE_HZ * gapMs) / 1000
+        val secondN = (SAMPLE_RATE_HZ * secondMs) / 1000
+        val out = ShortArray(firstN + gapN + secondN)
+        fillBonkTone(out, 0, firstN, 320.0)
+        // gap is already zero-initialized silence
+        fillBonkTone(out, firstN + gapN, secondN, 240.0)
+        return out
+    }
+
+    // One flat tone of the bonk with a punchy-but-click-free envelope.
+    // Low tones (240-320 Hz, ~3-4 ms period) need a slightly longer edge
+    // than fillSine's ≤2 ms cap or the onset/offset clicks; 4 ms attack /
+    // 12 ms release keeps it blunt without a pop. 0.85 peak matches the
+    // other voice-comm-stream tones (which need the headroom).
+    private fun fillBonkTone(
+        dest: ShortArray,
+        offset: Int,
+        n: Int,
+        freqHz: Double,
+    ) {
         val attack = (SAMPLE_RATE_HZ * 4) / 1000
-        val release = (SAMPLE_RATE_HZ * 30) / 1000
-        var phase = 0.0
+        val release = (SAMPLE_RATE_HZ * 12) / 1000
+        val angularStep = 2.0 * PI * freqHz / SAMPLE_RATE_HZ
         for (i in 0 until n) {
-            val frac = i.toDouble() / n
-            val freq = startHz + (endHz - startHz) * frac
-            phase += 2.0 * PI * freq / SAMPLE_RATE_HZ
             var amp = 0.85
             if (i < attack) amp *= i.toDouble() / attack
             val tailStart = n - release
             if (i > tailStart) amp *= (1.0 - (i - tailStart).toDouble() / release).coerceIn(0.0, 1.0)
-            val s = sin(phase) * amp
-            out[i] = (s * Short.MAX_VALUE).toInt().coerceIn(-32768, 32767).toShort()
+            val s = sin(angularStep * i) * amp
+            dest[offset + i] = (s * Short.MAX_VALUE).toInt().coerceIn(-32768, 32767).toShort()
         }
-        return out
     }
 
-    const val NO_PERMIT_DURATION_MS: Long = 250L
+    // 70 ms + 40 ms gap + 130 ms = 240 ms. Kept in sync with the segment
+    // lengths in [noPermitBonk]; TptToneGeneratorTest pins the two together.
+    const val NO_PERMIT_DURATION_MS: Long = 240L
 
     // "DENY" tone — played when the operator presses PTT on a channel
     // they're allowed to enter but suppressed from speaking on (OTS
@@ -217,8 +238,8 @@ object TptToneGenerator {
     private fun twoBeepStatus(
         firstHz: Double,
         secondHz: Double,
+        perBeepMs: Int = 60,
     ): ShortArray {
-        val perBeepMs = 60
         val n = (SAMPLE_RATE_HZ * perBeepMs * 2) / 1000
         val out = ShortArray(n)
         val half = n / 2
@@ -252,6 +273,50 @@ object TptToneGenerator {
     }
 
     const val WARNING_CHIRP_DURATION_MS: Long = 50L * 2 + 90L // 190 ms
+
+    // Reconnect retry chirp — ONE 150 ms beep at 700 Hz. The "still
+    // trying" cue: played per failed reconnect attempt for the first
+    // ReconnectNotificationTracker.DEFAULT_AUDIBLE_UNTIL_MS of an
+    // outage, so an operator working the problem can hear the radio
+    // working it too (the LMR habit — you know the set is still
+    // reaching for the repeater).
+    //
+    // A SINGLE pulse is what makes this distinct: every other cue in
+    // the system is two or more pulses (join/leave/interrupt are
+    // two-tone, warning is a double-tap, deny is a double-slide, TPT is
+    // multi-tone, ringback/busy are dual-tone pairs). One mid-frequency
+    // blip can't be confused with any of them.
+    //
+    // Deliberately quiet at -12 dBFS — roughly a third the amplitude of
+    // warningChirp. This fires repeatedly over minutes, so it has to sit
+    // under the conversation rather than interrupt it; WARNING_VOICE_LOST
+    // is the cue that's allowed to demand attention, and it fires once.
+    fun retryChirp(): ShortArray {
+        val beepMs = 150
+        val n = (SAMPLE_RATE_HZ * beepMs) / 1000
+        val out = ShortArray(n)
+        fillSine(out, 0, n, 700.0, peakAmp = 0.25)
+        return out
+    }
+
+    const val RETRY_CHIRP_DURATION_MS: Long = 150L
+
+    // Reconnect recovery chime — two ascending beeps (800 → 1200 Hz),
+    // 100 ms each. Plays once when a reconnect succeeds after a real
+    // outage. Ascending = "resolved," the same grammar as joinChirp.
+    //
+    // Intentionally close in shape to joinChirp (which is also two
+    // ascending beeps) but a fifth higher and wider (1.5 ratio vs 1.33):
+    // "you're back on the server" and "you're in the channel" are
+    // adjacent ideas, so a related-but-brighter cue is a feature. If
+    // field use says the two are confusable, move this one to a
+    // three-beep ascending run rather than flattening the pitch gap —
+    // pattern, not frequency, is what operators actually discriminate.
+    fun recoveredChime(): ShortArray = twoBeepStatus(800.0, 1200.0, perBeepMs = RECOVERED_CHIME_PER_BEEP_MS)
+
+    private const val RECOVERED_CHIME_PER_BEEP_MS: Int = 100
+
+    const val RECOVERED_CHIME_DURATION_MS: Long = RECOVERED_CHIME_PER_BEEP_MS * 2L
 
     // Phase E call-progress tones. Synthesized to match North American
     // PSTN conventions so operators recognize them instantly:

@@ -75,6 +75,10 @@ class XvMapComponent : AbstractMapComponent() {
     private var voiceClient: com.atakmap.android.xv.service.XvVoiceClient? = null
     private var tptPlayer: TptPlayer? = null
     private var statusTones: com.atakmap.android.xv.audio.StatusTones? = null
+
+    // Persistent shade surface while the reconnect ladder is grinding.
+    // Outlives the audio cues on purpose — see ReconnectStatusNotifier.
+    private var reconnectStatusNotifier: com.atakmap.android.xv.transport.ReconnectStatusNotifier? = null
     private var dropDown: XvDropDownReceiver? = null
 
     // Persistent settings (SharedPreferences accessors). Constructed
@@ -702,6 +706,11 @@ class XvMapComponent : AbstractMapComponent() {
                 tptPlayer = tpt,
                 enabled = { settings.persistedStatusTonesEnabled() },
             )
+        // atakContext for the same reason as the audio objects above: the
+        // plugin context isn't a working Android context for system
+        // services inside ATAK's process.
+        reconnectStatusNotifier =
+            com.atakmap.android.xv.transport.ReconnectStatusNotifier(context = atakContext)
 
         emergency = EmergencyController(AtakEmergencyDispatcher())
 
@@ -1585,6 +1594,12 @@ class XvMapComponent : AbstractMapComponent() {
         tptPlayer?.stop()
         tptPlayer = null
         statusTones = null
+        // Drop the reconnect surface on the way out. A notification is
+        // process-scoped state, not plugin-scoped: leaving it posted
+        // would strand a stale "no voice connection" in the shade with
+        // nothing left running to ever clear it.
+        reconnectStatusNotifier?.clear()
+        reconnectStatusNotifier = null
         audioRouter?.stop()
         audioRouter = null
     }
@@ -2100,6 +2115,14 @@ class XvMapComponent : AbstractMapComponent() {
             } finally {
                 deliberateDisconnectInProgress = false
             }
+            // Re-arm the outage tracker and drop the shade surface. If the
+            // operator hits Disconnect *during* an outage, the tracker is
+            // mid-count and the notification is up; without this, the next
+            // deliberate connect would look like a recovery (spurious
+            // chime) and a stale "no voice connection" would linger with
+            // no ladder behind it.
+            reconnectNotifier.reset()
+            reconnectStatusNotifier?.clear()
             activeTransport = null
             activeMumbleHost = null
             joinedChannelsBySlot.clear()
@@ -2497,6 +2520,33 @@ class XvMapComponent : AbstractMapComponent() {
             override fun setAutoConnectBtEnabled(enabled: Boolean) {
                 Log.i(TAG, "Controller.setAutoConnectBtEnabled($enabled)")
                 settings.persistAutoConnectBtEnabled(enabled)
+            }
+
+            override fun autoReconnectEnabled(): Boolean = settings.persistedAutoReconnectEnabled()
+
+            override fun setAutoReconnectEnabled(enabled: Boolean) {
+                Log.i(TAG, "Controller.setAutoReconnectEnabled($enabled)")
+                settings.persistAutoReconnectEnabled(enabled)
+                val t = activeTransport as? com.atakmap.android.xv.transport.ReconnectingMumbleTransport
+                if (enabled) {
+                    // Re-enabling should immediately re-arm a suspended
+                    // ladder rather than waiting for the next drop; nudge
+                    // the live transport to try now if it's currently down.
+                    t?.takeIf { !it.isConnected }?.retryNow()
+                } else {
+                    // Disabling should take visible effect at once —
+                    // cancel any pending backoff and drop the
+                    // "reconnecting…" state now instead of waking once
+                    // more when the queued retry fires.
+                    t?.suspendAutoReconnect()
+                    // The shade surface claims "XV keeps trying until it
+                    // gets through." With the ladder suspended that's no
+                    // longer true, and a notification that lies about the
+                    // radio still working is worse than none at all —
+                    // it's the exact misread the never-give-up policy
+                    // exists to prevent. Take it down.
+                    reconnectStatusNotifier?.clear()
+                }
             }
 
             override fun samsungActiveKeySupported(): Boolean {
@@ -4457,8 +4507,12 @@ class XvMapComponent : AbstractMapComponent() {
                 onReconnectStateChanged = { attempt, delayMs ->
                     Log.i(TAG, "reconnect attempt $attempt scheduled in ${delayMs}ms")
                 },
+                reconnectEnabled = { settings.persistedAutoReconnectEnabled() },
             )
         activeTransport = transport
+        // Fresh connect — re-arm the alert escalation so a prior outage's
+        // "already alerted" latch doesn't suppress a real future drop.
+        reconnectNotifier.reset()
         transport.connect(loggingListener)
         // Start the network watcher AFTER connect() so the wrapper is
         // ready to receive notifyNetworkSwap. The watcher itself is
@@ -4738,6 +4792,16 @@ class XvMapComponent : AbstractMapComponent() {
     // the moment to avoid a bigger refactor, but the only event paths
     // that reach it are dead.
     private fun dispatchPttDown(slot: Int) {
+        // Keying a dead channel is an explicit "get me back on" signal —
+        // collapse any reconnect backoff (or re-arm an auto-paused /
+        // switched-off ladder) so the operator doesn't have to wait it
+        // out. No-op when already connected. Fire-and-forget: the connect
+        // runs on the transport's own executor and the burst proceeds
+        // normally (it'll simply have no transport to send to until the
+        // link comes back).
+        (activeTransport as? com.atakmap.android.xv.transport.ReconnectingMumbleTransport)
+            ?.takeIf { !it.isConnected }
+            ?.retryNow()
         voiceClient?.ifBound { it.pttDown(slot) }
     }
 
@@ -4778,30 +4842,84 @@ class XvMapComponent : AbstractMapComponent() {
     @Volatile
     private var deliberateDisconnectInProgress: Boolean = false
 
+    // Decides what the operator HEARS during an outage: silence for a
+    // brief drop the ladder heals, a single "voice interface lost" beep
+    // once it's sustained, a quiet "still trying" chirp per attempt after
+    // that, and nothing at all once the outage passes the audible window.
+    // See ReconnectNotificationTracker — this is the fix for hotspot-fed
+    // devices that used to beep continuously while off-grid. The amber
+    // "reconnecting…" status indicator still shows the transient state
+    // visually the whole time, and the ladder keeps retrying forever
+    // regardless of whether it's making noise.
+    private val reconnectNotifier = com.atakmap.android.xv.transport.ReconnectNotificationTracker()
+
+    // Play the cue for one failed reconnect attempt. The tracker
+    // guarantees at most one of these is set, so this can't stack the
+    // loud alert and the quiet chirp on the same attempt.
+    private fun playReconnectCue(decision: com.atakmap.android.xv.transport.ReconnectNotificationTracker.Decision) {
+        if (decision.playAlert) {
+            statusTones?.play(com.atakmap.android.xv.audio.StatusToneKind.WARNING_VOICE_LOST)
+        } else if (decision.playChirp) {
+            statusTones?.play(com.atakmap.android.xv.audio.StatusToneKind.RECONNECT_RETRY)
+        }
+    }
+
     private val loggingListener =
         object : TransportListener {
             override fun onConnected() {
                 Log.i(TAG, "transport connected")
+                // Chime only if we're recovering from a real outage —
+                // onReconnected() returns false for a first-time connect,
+                // so a normal startup stays silent.
+                if (reconnectNotifier.onReconnected()) {
+                    Log.i(TAG, "transport recovered from outage — playing recovery chime")
+                    statusTones?.play(com.atakmap.android.xv.audio.StatusToneKind.RECONNECT_RECOVERED)
+                }
+                reconnectStatusNotifier?.clear()
             }
 
             override fun onDisconnected(reason: String?) {
                 Log.i(TAG, "transport disconnected: $reason")
+                // Clear the service-side session-live flag the moment the
+                // transport drops (deliberate OR unexpected). Without this
+                // it stayed true until the next channel-change event, so a
+                // PTT press on a dead link played the talk-permit tone —
+                // misleading the operator into talking into a pipe that
+                // goes nowhere. With the flag false, canTransmit() is
+                // false and TxController plays the deny tone instead. The
+                // post-ServerSync channel-rejoin re-drives this true on a
+                // successful reconnect, so recovery restores TPT.
+                voiceClient?.ifBound { it.setMumbleSessionState(false) }
                 if (!deliberateDisconnectInProgress) {
-                    statusTones?.play(com.atakmap.android.xv.audio.StatusToneKind.WARNING_VOICE_LOST)
                     // Tell the voice service so it can cut off any
                     // in-flight TX with the emphatic cutoff tone via
                     // the SCO route — operator stays oriented on the
                     // speakermic instead of discovering the silent
                     // drop on the next PTT release. No-op when not
-                    // mid-burst.
+                    // mid-burst; stays prompt because it's about the
+                    // CURRENT transmission, not the outage.
                     voiceClient?.ifBound { it.notifyTransportLost() }
+                    // The "voice lost" alert itself is deferred to the
+                    // notifier: silent until the outage has persisted
+                    // past the escalation threshold, then a single beep,
+                    // then a quiet per-attempt chirp while it continues.
+                    playReconnectCue(reconnectNotifier.onAttemptFailed())
+                    reconnectStatusNotifier?.onOutageContinuing()
                 }
             }
 
             override fun onConnectionFailed(error: Throwable) {
                 Log.e(TAG, "transport connect failed", error)
-                statusTones?.play(com.atakmap.android.xv.audio.StatusToneKind.WARNING_VOICE_LOST)
-                voiceClient?.ifBound { it.notifyTransportLost() }
+                // Still not connected — keep the session-live flag false
+                // so PTT keeps playing the deny tone (not the permit tone)
+                // for the whole outage, until a reconnect rejoins a channel.
+                voiceClient?.ifBound { it.setMumbleSessionState(false) }
+                // A failed reconnect attempt never coincides with an
+                // in-flight burst (the burst ended when the link first
+                // dropped), so no notifyTransportLost here — just feed
+                // the escalation counter and let it decide the cue.
+                playReconnectCue(reconnectNotifier.onAttemptFailed())
+                reconnectStatusNotifier?.onOutageContinuing()
             }
 
             override fun onVoiceFrame(frame: VoiceFrame) {
