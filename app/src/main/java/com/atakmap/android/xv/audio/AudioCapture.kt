@@ -124,6 +124,9 @@ class AudioCapture(
     @Volatile
     private var running: Boolean = false
 
+    val isRunning: Boolean
+        get() = running
+
     // ---- self-heal state --------------------------------------------
 
     // Set by the routing listener / stall watchdog; consumed by the read

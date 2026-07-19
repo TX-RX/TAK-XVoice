@@ -377,11 +377,11 @@
                     android:focusable="true"
                     android:visibility="gone"/>
 
-                <!-- Section header: PTT input -->
+                <!-- Section header: Speaker mic input -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="PTT INPUT"
+                    android:text="SPEAKER MIC INPUT"
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:letterSpacing="0.15"/>
@@ -389,7 +389,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Where the PTT button lives. Picked separately from audio so an AINA speakermic + car Bluetooth (or headphones) is one operator-tap apart."
+                    android:text="An audio-carrying PTT device — an AINA V1/V2 speakermic — that both keys the channel and carries your voice. Picked separately from audio output so a speakermic + car Bluetooth (or headphones) is one operator-tap apart."
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
@@ -415,11 +415,11 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="4dp"/>
 
-                <!-- Section header: External button input -->
+                <!-- Section header: Button input -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="EXTERNAL BUTTON"
+                    android:text="BUTTON INPUT"
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:letterSpacing="0.15"
@@ -428,7 +428,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Optional BLE PTT puck (e.g. Pryme BT-PTT). Provides an extra push-to-talk button; must be button-only — speakermics belong in the Primary slot. Either button can key the primary channel without one cutting off the other."
+                    android:text="A button-only BLE PTT puck (e.g. Pryme BT-PTT). Keys the channel with no audio of its own — pair it here rather than in Android Bluetooth Settings. Works alongside a speaker mic without one cutting off the other."
                     android:textColor="@color/xv_text_dim"
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
@@ -451,6 +451,23 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="4dp"/>
 
+                <!-- Shown only when the assigned Button-input device is
+                     paired in Android Bluetooth Settings (OS-bonded),
+                     which causes GATT pairing loops. Tapping opens the
+                     unpair dialog. Visibility is driven at runtime by
+                     wireExternalButtonPicker; default GONE. -->
+                <Button
+                    android:id="@+id/xv_btn_fix_bonded_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:minHeight="44dp"
+                    android:text="⚠ Fix this button — remove from Android Bluetooth"
+                    android:textColor="@color/xv_err"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"
+                    android:visibility="gone"/>
+
                 <!-- Scan for BLE PTT buttons that don't pair via the
                      phone's system Bluetooth settings (they advertise a
                      vendor service, not HID / HoGP). Opens a dialog that
@@ -471,6 +488,17 @@
                     android:textAllCaps="false"
                     android:background="@drawable/xv_button_bg"
                     android:minHeight="44dp"/>
+                    
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Note: Do not pair Bluetooth buttons in Android Bluetooth Settings. Doing so causes pairing loops. Pair them here using the Scan button above. If you experience loops, 'Forget' the button in Android Settings."
+                    android:textColor="@color/xv_warn"
+                    android:textSize="12sp"
+                    android:layout_marginTop="6dp"
+                    android:layout_marginBottom="6dp"
+                    android:paddingStart="4dp"
+                    android:paddingEnd="4dp" />
 
                 <!-- Remove a previously-added BLE PTT device. Shows a
                      dialog listing every MAC the operator has added via

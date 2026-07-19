@@ -21,3 +21,5 @@ The curated / validated Bluetooth speakermics (AINA APTT V1 / V2, Pryme
 BT-PTT-Z) are registered per-MAC and mapped to channels automatically;
 see the top-level README's "What's different" and "Hardware tested"
 sections.
+
+- [Pryme BT-PTT-Z Pairing Guide](pryme-bt-ptt-z.md) — instructions and troubleshooting for Pryme BLE PTT buttons.
