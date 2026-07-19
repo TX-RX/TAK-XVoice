@@ -14,10 +14,10 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  * app package (Settings → System → Buttons → Programmable Keys →
  * <key> → assign to app).
  *
- * When the operator assigns PTT / SOS / Yellow to ATAK on those
- * handsets, Sonim's WindowManager fires each press as a broadcast
- * with `Intent.setPackage("com.atakmap.app.civ")`. Because the intent
- * is pkg-scoped, only receivers running **in ATAK's process** see it —
+ * When the operator assigns the SOS key to ATAK on those handsets,
+ * Sonim's WindowManager fires the press as a broadcast with
+ * `Intent.setPackage("com.atakmap.app.civ")`. Because the intent is
+ * pkg-scoped, only receivers running **in ATAK's process** see it —
  * the XV service process ([SonimEmergencyButtonReader],
  * [SonimPttButtonReader]) is silent for this delivery mode. This
  * reader is instantiated from [com.atakmap.android.xv.plugin.XvMapComponent],
@@ -27,21 +27,28 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  *
  * ### Key → action mapping (field-verified 2026-07-14, XP9900)
  *
- *   - PTT button (assigned to ATAK in Programmable Keys):
- *     `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP`
- *     → routed to PTT (source [com.atakmap.android.xv.audio.PttSource.SONIM_PTT])
- *     Sonim's assigned-app API naming is backwards relative to the
- *     physical buttons: the operator's PTT button is delivered as the
- *     `YELLOW_KEY` action, not a `PTT_KEY` action. This was verified
- *     on-device (XP9900, 2026-07-14) — wiring these edges to the
- *     dispatcher keys TX exactly as intended.
- *
  *   - SOS key (red top button, keyCode 294):
  *     `com.sonim.intent.action.SOS_KEY_DOWN` / `_UP` +
  *     `com.kodiak.intent.action.KEYCODE_SOS` (fires alongside on the
  *     same press — Kodiak MCPTT-stack redundant emission)
  *     → routed to emergency (matches AINA PTTE behaviour: short-press
  *     fires ATAK Alert, long-hold cancels; NO voice keying)
+ *
+ * ### The Yellow key is deliberately NOT handled
+ *
+ * The Sonim XP10's third programmable key (the **Yellow** key,
+ * `com.sonim.intent.action.YELLOW_KEY_DOWN` / `_UP`) is an
+ * application-launcher / convenience key. Operators assign it to
+ * "Launch ATAK" in Programmable Keys so a press foregrounds ATAK — it
+ * is NOT a PTT trigger. An earlier revision wired YELLOW_KEY to the PTT
+ * dispatcher on the mistaken assumption that Sonim's assigned-app API
+ * named the physical PTT button "Yellow"; field use showed that keys
+ * the launcher press as PTT, which is wrong. The physical side PTT
+ * button (keyCode 228) is served by [SonimPttButtonReader] (classic +
+ * MCX broadcasts) and [SonimPttForegroundReader] (KeyEvent path) — none
+ * of which touch the Yellow key. This reader therefore does not register
+ * for or act on YELLOW_KEY at all; the launcher key is left to whatever
+ * the operator configured in Programmable Keys.
  *
  * ---
  *
@@ -65,20 +72,11 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  * firmware variants (XP10 non-carrier, etc.). Both readers coexist
  * so a single build covers both delivery modes without a variant
  * check at startup. If a firmware happens to emit both classic and
- * assigned-app forms for the same press, the downstream dispatchers
- * (PttDispatcher OR-gate for PTT, EmergencyController state machine
- * for SOS) suppress the duplicate.
+ * assigned-app forms for the same press, the downstream
+ * EmergencyController state machine suppresses the duplicate.
  */
 class SonimAssignedAppReader(
     private val context: Context,
-    // Called on any PTT-key edge (assigned-app PTT). isDown = true on
-    // press, false on release. On the XP9900 the physical PTT button,
-    // when assigned to ATAK in Programmable Keys, is delivered as the
-    // YELLOW_KEY broadcast — Sonim's assigned-app API naming is backwards
-    // relative to the physical buttons (verified on-device 2026-07-14).
-    // Wired from XvMapComponent to IXvVoice.notifySonimPttEdge → the PTT
-    // dispatcher, tagged SONIM_PTT.
-    private val onPttKeyEdge: (isDown: Boolean) -> Unit,
     // Called on any SOS-key edge (assigned-app emergency). isDown =
     // true on press, false on release. Wired from XvMapComponent to
     // IXvVoice.notifySonimEmergencyEdge → plant.onSonimEmergencyEdge
@@ -93,11 +91,6 @@ class SonimAssignedAppReader(
     // without an intervening UP.
     @Volatile private var sosHeld: Boolean = false
 
-    // Held-state guard for the assigned-app PTT (YELLOW_KEY) path — same
-    // dedup rationale as [sosHeld]: keeps a physically-held key from
-    // spamming duplicate down edges into the dispatcher's OR-gate.
-    @Volatile private var pttHeld: Boolean = false
-
     @Volatile private var registered: Boolean = false
 
     private val receiver: BroadcastReceiver =
@@ -107,16 +100,6 @@ class SonimAssignedAppReader(
                 intent: Intent,
             ) {
                 when (intent.action) {
-                    // The physical PTT button, when assigned to ATAK in
-                    // Programmable Keys, is delivered as the YELLOW_KEY
-                    // broadcast. Sonim's assigned-app API naming is
-                    // backwards relative to the physical buttons — the
-                    // "Yellow"-named action is the operator's PTT, not a
-                    // separate convenience key. Verified on-device
-                    // 2026-07-14 (XP9900): routing these edges to the PTT
-                    // dispatcher keys TX exactly as the operator expects.
-                    SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN -> handlePtt(isDown = true)
-                    SonimHardwareButtons.ACTION_YELLOW_KEY_UP -> handlePtt(isDown = false)
                     SonimHardwareButtons.ACTION_SOS_KEY_DOWN -> handleSos(isDown = true)
                     SonimHardwareButtons.ACTION_SOS_KEY_UP -> handleSos(isDown = false)
                     // ACTION_KODIAK_SOS is edge-ambiguous by name and
@@ -137,26 +120,6 @@ class SonimAssignedAppReader(
                 }
             }
         }
-
-    private fun handlePtt(isDown: Boolean) {
-        if (isDown) {
-            if (pttHeld) {
-                Log.d(TAG, "PTT DOWN (YELLOW_KEY) — already held; dropping duplicate")
-                return
-            }
-            pttHeld = true
-            Log.i(TAG, "PTT key DOWN (assigned-to-ATAK YELLOW_KEY broadcast) → PTT")
-            safeInvoke("onPttKeyEdge(down)") { onPttKeyEdge(true) }
-        } else {
-            if (!pttHeld) {
-                Log.d(TAG, "PTT UP (YELLOW_KEY) — not held; dropping")
-                return
-            }
-            pttHeld = false
-            Log.i(TAG, "PTT key UP (assigned-to-ATAK YELLOW_KEY broadcast) → PTT release")
-            safeInvoke("onPttKeyEdge(up)") { onPttKeyEdge(false) }
-        }
-    }
 
     private fun handleSos(isDown: Boolean) {
         if (isDown) {
@@ -204,8 +167,6 @@ class SonimAssignedAppReader(
             }
             val filter =
                 IntentFilter().apply {
-                    addAction(SonimHardwareButtons.ACTION_YELLOW_KEY_DOWN)
-                    addAction(SonimHardwareButtons.ACTION_YELLOW_KEY_UP)
                     addAction(SonimHardwareButtons.ACTION_SOS_KEY_DOWN)
                     addAction(SonimHardwareButtons.ACTION_SOS_KEY_UP)
                     addAction(SonimHardwareButtons.ACTION_KODIAK_SOS)
@@ -218,7 +179,7 @@ class SonimAssignedAppReader(
                     ContextCompat.RECEIVER_NOT_EXPORTED,
                 )
                 registered = true
-                Log.i(TAG, "SonimAssignedAppReader started (Yellow → PTT, SOS+Kodiak → emergency, pkg-scoped to ATAK)")
+                Log.i(TAG, "SonimAssignedAppReader started (SOS+Kodiak → emergency, pkg-scoped to ATAK)")
                 true
             } catch (t: Throwable) {
                 Log.w(TAG, "registerReceiver(SonimAssignedAppReader) threw", t)
@@ -239,11 +200,10 @@ class SonimAssignedAppReader(
                 Log.w(TAG, "unregisterReceiver threw", t)
             }
             registered = false
-            // Clear BOTH held flags so a stop while a key is held (or
+            // Clear the held flag so a stop while the SOS key is held (or
             // after a dropped UP) can't leave stale state that makes the
             // next DOWN after a restart look like a duplicate.
             sosHeld = false
-            pttHeld = false
         }
     }
 

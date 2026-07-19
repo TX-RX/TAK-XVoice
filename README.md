@@ -97,11 +97,12 @@ and feature polish.
    - **Samsung Active Key** (Galaxy Tab Active5, XCover6 Pro / 7, Tab
      Active4 Pro, Tab Active3) — the side Active Key becomes a PTT
      source. See [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
-   - **Sonim XP10 (XP9900)** — the dedicated side PTT / Yellow key drives
-     PTT and the SOS key fires the ATAK emergency alert. Works with the
-     classic Sonim key broadcasts, MCX / MCPTT carrier firmware, and the
-     handset's "assign key to ATAK" Programmable-Keys mode. See
-     [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
+   - **Sonim XP10 (XP9900)** — the dedicated side PTT key drives PTT and
+     the SOS key fires the ATAK emergency alert. Works with the classic
+     Sonim key broadcasts, MCX / MCPTT carrier firmware, and the
+     handset's "assign key to ATAK" Programmable-Keys mode. The Yellow
+     key is left as an app-launcher convenience key and does not key PTT.
+     See [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
 
    These toggles appear only on hardware that actually has the keys. An
    optional, tightly-scoped accessibility service — enabled once by the
@@ -220,8 +221,9 @@ Curated / validated ruggedized handsets (on-device hardware keys):
 - Samsung Galaxy Tab Active5 (SM-X308U) — Active Key PTT, foreground and
   background (accessibility). See
   [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
-- Sonim XP10 (XP9900, AT&T carrier / Android 12) — side PTT / Yellow key
-  and SOS key, via MCX / MCPTT firmware and the assign-to-ATAK mode. See
+- Sonim XP10 (XP9900, AT&T carrier / Android 12) — side PTT key and SOS
+  key, via MCX / MCPTT firmware and the assign-to-ATAK mode. The Yellow
+  key is an app-launcher convenience key and does not key PTT. See
   [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
 
 This list only includes devices that have been integrated end-to-end

@@ -586,9 +586,10 @@ class XvMapComponent : AbstractMapComponent() {
     // unconditional — there is no XV toggle for the assigned-app path;
     // the phone's Programmable Keys → app assignment is the
     // authoritative on/off (if a key isn't assigned to ATAK no broadcast
-    // arrives and the callback never fires). A single reader instance
-    // covers both PTT (Yellow) and Emergency (SOS+Kodiak) routing. See
-    // SonimAssignedAppReader kdoc for the full mapping.
+    // arrives and the callback never fires). Routes the SOS key
+    // (SOS+Kodiak) to the emergency path; the Yellow key is an
+    // app-launcher convenience key and is intentionally not handled.
+    // See SonimAssignedAppReader kdoc for the full mapping.
     @Volatile
     private var sonimAssignedApp: com.atakmap.android.xv.ptt.SonimAssignedAppReader? = null
 
@@ -2878,12 +2879,12 @@ class XvMapComponent : AbstractMapComponent() {
      * Keys → ATAK. Runs in ATAK's process because the intents carry
      * `pkg=com.atakmap.app.civ` and pkg-scoped delivery only reaches
      * receivers in that package's process. Field-verified on the AT&T
-     * XP9900 (2026-07-14): Yellow key emits YELLOW_KEY_DOWN/_UP and
-     * SOS key emits SOS_KEY_DOWN/_UP + KODIAK_SOS.
+     * XP9900 (2026-07-14): the SOS key emits SOS_KEY_DOWN/_UP +
+     * KODIAK_SOS. The Yellow key (an app-launcher convenience key) is
+     * intentionally not handled.
      *
-     * Kept live from plugin load through destroy; the callbacks gate
-     * on the individual Sonim toggle settings so a single reader
-     * covers both PTT and Emergency routing. Idempotent.
+     * Kept live from plugin load through destroy; the reader routes the
+     * SOS key to the emergency path. Idempotent.
      */
     @Suppress("ReturnCount")
     private fun startSonimAssignedApp() {
@@ -2898,14 +2899,6 @@ class XvMapComponent : AbstractMapComponent() {
         val reader =
             com.atakmap.android.xv.ptt.SonimAssignedAppReader(
                 context = ctx,
-                onPttKeyEdge = { isDown ->
-                    // Assigned-app PTT — delivered as the YELLOW_KEY
-                    // broadcast (Sonim's API naming is backwards; the
-                    // "Yellow" action is the physical PTT button).
-                    // Source-implicit across the AIDL — the service side
-                    // tags SONIM_PTT, same as SonimPttForegroundReader.
-                    voiceClient?.ifBound { it.notifySonimPttEdge(isDown) }
-                },
                 onSosKeyEdge = { isDown ->
                     // SOS key → emergency-alert path (matches
                     // AINA-PTTE parity from commit 4e12933). Not
@@ -2932,13 +2925,12 @@ class XvMapComponent : AbstractMapComponent() {
         } catch (t: Throwable) {
             Log.w(TAG, "stopSonimAssignedApp: reader.stop() threw", t)
         }
-        // Defensive release so a PTT held at teardown doesn't strand
-        // SONIM_PTT in the dispatcher's held-source set (mirrors
-        // stopSonimPttForeground).
+        // Defensive release so an emergency edge held at teardown doesn't
+        // strand the emergency controller in a pressed state.
         try {
-            voiceClient?.ifBound { it.notifySonimPttEdge(false) }
+            voiceClient?.ifBound { it.notifySonimEmergencyEdge(false) }
         } catch (t: Throwable) {
-            Log.w(TAG, "stopSonimAssignedApp: defensive notifySonimPttEdge(false) threw", t)
+            Log.w(TAG, "stopSonimAssignedApp: defensive notifySonimEmergencyEdge(false) threw", t)
         }
         sonimAssignedApp = null
     }
