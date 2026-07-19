@@ -42,8 +42,8 @@ import com.atakmap.android.xv.util.SonimHardwareButtons
  * "Launch ATAK" in Programmable Keys so a press foregrounds ATAK — it
  * is NOT a PTT trigger. An earlier revision wired YELLOW_KEY to the PTT
  * dispatcher on the mistaken assumption that Sonim's assigned-app API
- * named the physical PTT button "Yellow"; field use showed that keys
- * the launcher press as PTT, which is wrong. The physical side PTT
+ * named the physical PTT button "Yellow"; in the field that caused the
+ * launcher key to transmit, which is wrong. The physical side PTT
  * button (keyCode 228) is served by [SonimPttButtonReader] (classic +
  * MCX broadcasts) and [SonimPttForegroundReader] (KeyEvent path) — none
  * of which touch the Yellow key. This reader therefore does not register

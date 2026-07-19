@@ -2925,13 +2925,14 @@ class XvMapComponent : AbstractMapComponent() {
         } catch (t: Throwable) {
             Log.w(TAG, "stopSonimAssignedApp: reader.stop() threw", t)
         }
-        // Defensive release so an emergency edge held at teardown doesn't
-        // strand the emergency controller in a pressed state.
-        try {
-            voiceClient?.ifBound { it.notifySonimEmergencyEdge(false) }
-        } catch (t: Throwable) {
-            Log.w(TAG, "stopSonimAssignedApp: defensive notifySonimEmergencyEdge(false) threw", t)
-        }
+        // Deliberately NO synthetic emergency release here. Unlike a PTT
+        // release (harmless), a release on the emergency edge is
+        // interpreted by EmergencyController as fire-or-cancel based on
+        // press duration: a release within the long-press threshold FIRES
+        // a panic alert. Synthesizing one at teardown could broadcast a
+        // false emergency if the operator were mid-press. Abandoning a
+        // held press is safe — the controller's scheduled long-hold cancel
+        // fires harmlessly at threshold and firePanic is never reached.
         sonimAssignedApp = null
     }
 
