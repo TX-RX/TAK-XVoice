@@ -601,6 +601,48 @@ class XvDropDownReceiver(
         mainHandler.post { refreshMain() }
     }
 
+    // The Settings → Devices panel root, tracked while it's attached so
+    // the plugin can ask us to repopulate the device pickers when a
+    // speakermic connection settles. Set/cleared in wireBtOffBanner's
+    // attach/detach listener.
+    private var settingsPanelView: View? = null
+
+    // Tracks the MAC we last auto-surfaced the OS-bonded-button fix dialog
+    // for, so a rebuild storm (bond-change → repopulate) doesn't re-pop
+    // the dialog on every refresh. Reset to null when the assigned button
+    // is no longer OS-bonded, or when the Settings panel detaches, so a
+    // fresh open (or a re-bond) prompts again.
+    private var lastAutoPromptedBondedButtonMac: String? = null
+
+    private val settingsPickerConnectivityRefresh =
+        Runnable {
+            val panel = settingsPanelView ?: return@Runnable
+            try {
+                wireAinaPicker(panel)
+            } catch (t: Throwable) {
+                android.util.Log.w("XvSettings", "connectivity picker refresh (aina) threw", t)
+            }
+            try {
+                wireExternalButtonPicker(panel)
+            } catch (t: Throwable) {
+                android.util.Log.w("XvSettings", "connectivity picker refresh (ext) threw", t)
+            }
+        }
+
+    // Called by the plugin when the AINA speakermic connection state
+    // settles. The device pickers are snapshot-in-time — availability +
+    // status are baked in at wire time — and the only other refresh
+    // triggers are BT adapter on/off + bond changes, both of which fire
+    // BEFORE a post-power-cycle reconnect completes and thus freeze the
+    // picker on a stale "disconnected / unavailable" snapshot. Debounced
+    // so the connect/disconnect churn of a BT power-cycle coalesces into
+    // a single rebuild reflecting the settled state. No-op when Settings
+    // isn't open (settingsPanelView is null).
+    fun onDeviceConnectivityChanged() {
+        mainHandler.removeCallbacks(settingsPickerConnectivityRefresh)
+        mainHandler.postDelayed(settingsPickerConnectivityRefresh, CONNECTIVITY_REFRESH_DEBOUNCE_MS)
+    }
+
     private val refreshTask =
         object : Runnable {
             override fun run() {
@@ -1689,6 +1731,9 @@ class XvDropDownReceiver(
         v.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) {
+                    // Track the panel root so onDeviceConnectivityChanged
+                    // can repopulate the pickers on a mic connect/settle.
+                    settingsPanelView = v
                     try {
                         pluginContext.registerReceiver(
                             stateReceiver,
@@ -1703,6 +1748,9 @@ class XvDropDownReceiver(
                 }
 
                 override fun onViewDetachedFromWindow(view: View) {
+                    if (settingsPanelView === v) settingsPanelView = null
+                    lastAutoPromptedBondedButtonMac = null
+                    mainHandler.removeCallbacks(settingsPickerConnectivityRefresh)
                     try {
                         pluginContext.unregisterReceiver(stateReceiver)
                     } catch (_: IllegalArgumentException) {
@@ -2556,17 +2604,25 @@ class XvDropDownReceiver(
     // a connect to a device that we already know is unreachable).
     // The custom adapter is ~20 lines of code but gives us both the
     // color + tap-guard properties the leading call-picker UIs use.
-    private fun buildAinaPickerAdapter(devices: List<AinaDeviceInfo>): ArrayAdapter<String> {
+    private fun buildAinaPickerAdapter(devices: List<AinaDeviceInfo>): ArrayAdapter<CharSequence> {
+        // Resolve the BT adapter once and hand it to each row's OS-bonded
+        // check instead of letting the detector re-fetch it and re-scan
+        // bondedDevices per row.
+        val btAdapter =
+            try {
+                android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            } catch (_: SecurityException) {
+                null
+            }
         // Row 0 sentinel is always tappable/enabled.
         val entries =
             mutableListOf<PickerRow>().apply {
                 add(PickerRow(label = AINA_NONE_LABEL, available = true))
                 for (d in devices) {
-                    val suffix = if (d.available) "" else "  ·  unavailable"
-                    add(PickerRow(label = d.displayLabel() + suffix, available = d.available))
+                    add(pickerRowFor(d, btAdapter))
                 }
             }
-        return object : ArrayAdapter<String>(
+        return object : ArrayAdapter<CharSequence>(
             pluginContext,
             R.layout.xv_spinner_item,
             entries.map { it.label },
@@ -2597,9 +2653,42 @@ class XvDropDownReceiver(
         }
     }
 
+    // Builds the picker row for a single device. OS-bonded BLE_HID pucks
+    // get a red "tap to fix" warning suffix; everything else gets the plain
+    // label with an optional "unavailable" annotation. Extracted from
+    // buildAinaPickerAdapter to keep that method's block nesting shallow.
+    private fun pickerRowFor(
+        d: AinaDeviceInfo,
+        btAdapter: android.bluetooth.BluetoothAdapter?,
+    ): PickerRow {
+        if (!com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(d.mac, btAdapter)) {
+            val suffix = if (d.available) "" else "  ·  unavailable"
+            return PickerRow(label = d.displayLabel() + suffix, available = d.available)
+        }
+        val base = d.displayLabel()
+        val warn = "\n[Tap to fix: Pair directly in app, not Android]"
+        val s = android.text.SpannableString(base + warn)
+        s.setSpan(
+            android.text.style.ForegroundColorSpan(
+                androidx.core.content.ContextCompat.getColor(pluginContext, R.color.xv_err),
+            ),
+            base.length,
+            s.length,
+            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        s.setSpan(
+            android.text.style.RelativeSizeSpan(0.85f),
+            base.length,
+            s.length,
+            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        return PickerRow(label = s, available = true, incompatible = true)
+    }
+
     private data class PickerRow(
-        val label: String,
+        val label: CharSequence,
         val available: Boolean,
+        val incompatible: Boolean = false,
     )
 
     // Replaces the old Connect / Disconnect buttons. Lists every bonded
@@ -2669,8 +2758,26 @@ class XvDropDownReceiver(
                         }
                     val current = controller.selectedAinaMac()
                     if (pickedMac != current) {
-                        controller.setSelectedAina(pickedMac)
-                        statusLabel.text = formatAinaStatus(devices, pickedMac, controller.ainaConnectionUp())
+                        val dev = if (pos == 0) null else devices.getOrNull(pos - 1)
+                        checkAndEnforceBleHidUnbonded(
+                            dev?.mac,
+                            dev?.name,
+                            dev?.buttonProtocol,
+                            onAllowed = {
+                                controller.setSelectedAina(pickedMac)
+                                statusLabel.text = formatAinaStatus(devices, pickedMac, controller.ainaConnectionUp())
+                            },
+                            onCancel = {
+                                suppressFirstFire = true
+                                val currentIdx =
+                                    if (current == null) {
+                                        0
+                                    } else {
+                                        (devices.indexOfFirst { it.mac.equals(current, ignoreCase = true) } + 1).coerceAtLeast(0)
+                                    }
+                                p?.setSelection(currentIdx)
+                            },
+                        )
                     }
                 }
 
@@ -2687,7 +2794,46 @@ class XvDropDownReceiver(
         val statusLabel = v.findViewById<TextView>(R.id.xv_label_aina_secondary_status)
         val devices = controller.availableExternalButtonDevices()
         spinner.adapter = buildAinaPickerAdapter(devices)
-        val selectedMac = controller.selectedExternalButtonMac()
+
+        var selectedMac = controller.selectedExternalButtonMac()
+
+        // Mid-session auto-assign: if the operator paired a button in Android
+        // Settings while ATAK was running, autoConnectExternalButton (which only
+        // runs on plugin load) won't catch it. If the slot is empty and there's
+        // exactly one BLE_HID puck available, auto-assign it now so they don't
+        // have to manually pick it from the dropdown.
+        if (selectedMac == null) {
+            val bleHidDevices = devices.filter { it.buttonProtocol == com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID }
+            if (bleHidDevices.size == 1) {
+                val autoPicked = bleHidDevices.first()
+                val isBonded =
+                    try {
+                        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                        adapter?.bondedDevices?.any { it.address.equals(autoPicked.mac, ignoreCase = true) } == true
+                    } catch (_: SecurityException) {
+                        // Fail closed: if we can't read bond state (no
+                        // BLUETOOTH_CONNECT), assume bonded and skip the
+                        // auto-assign. Auto-selecting an OS-bonded puck is
+                        // exactly the pairing-loop scenario this guard exists
+                        // to avoid, so "unknown" must not fail open.
+                        true
+                    }
+                if (!isBonded) {
+                    controller.setSelectedExternalButton(autoPicked.mac)
+                    selectedMac = autoPicked.mac
+                }
+            }
+        }
+
+        // If the assigned button is paired in Android Settings (OS-bonded
+        // BLE_HID), surface the removal UI — an inline "Fix" button plus a
+        // one-shot auto-launched dialog. Reaching this via the dropdown row
+        // tap alone is impossible when the puck is already the current
+        // selection (a Spinner fires no event on re-selecting the current
+        // row), which is exactly the "re-added it in Android Settings"
+        // case, so we drive it here off the (re)build instead.
+        maybeSurfaceBondedButtonFix(v, selectedMac, devices)
+
         val selectedIdx =
             if (selectedMac == null) {
                 0
@@ -2722,9 +2868,27 @@ class XvDropDownReceiver(
                         }
                     val current = controller.selectedExternalButtonMac()
                     if (pickedMac != current) {
-                        controller.setSelectedExternalButton(pickedMac)
-                        statusLabel?.text =
-                            formatAinaStatus(devices, pickedMac, controller.externalButtonConnectionUp())
+                        val dev = if (pos == 0) null else devices.getOrNull(pos - 1)
+                        checkAndEnforceBleHidUnbonded(
+                            dev?.mac,
+                            dev?.name,
+                            dev?.buttonProtocol,
+                            onAllowed = {
+                                controller.setSelectedExternalButton(pickedMac)
+                                statusLabel?.text =
+                                    formatAinaStatus(devices, pickedMac, controller.externalButtonConnectionUp())
+                            },
+                            onCancel = {
+                                suppressFirstFire = true
+                                val currentIdx =
+                                    if (current == null) {
+                                        0
+                                    } else {
+                                        (devices.indexOfFirst { it.mac.equals(current, ignoreCase = true) } + 1).coerceAtLeast(0)
+                                    }
+                                p?.setSelection(currentIdx)
+                            },
+                        )
                     }
                 }
 
@@ -2858,7 +3022,7 @@ class XvDropDownReceiver(
         val displayName = picked.name?.takeIf { it.isNotBlank() } ?: picked.mac
         val err = controller.addBlePttDevice(picked.mac, picked.name)
         val msg =
-            err ?: "Added $displayName — now pick it from the Primary PTT or External button dropdown."
+            err ?: "Added $displayName — assigned as External button."
         android.widget.Toast
             .makeText(
                 pluginContext,
@@ -2866,11 +3030,166 @@ class XvDropDownReceiver(
                 if (err == null) android.widget.Toast.LENGTH_LONG else android.widget.Toast.LENGTH_LONG,
             ).show()
         if (err == null) {
-            // Rebuild both pickers so the new device appears in the
-            // dropdowns immediately without a settings re-open.
-            wireAinaPicker(rootView)
-            wireExternalButtonPicker(rootView)
+            checkAndEnforceBleHidUnbonded(
+                picked.mac,
+                picked.name,
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID,
+                onAllowed = {
+                    controller.setSelectedExternalButton(picked.mac)
+                    wireAinaPicker(rootView)
+                    wireExternalButtonPicker(rootView)
+                },
+                onCancel = {
+                    wireAinaPicker(rootView)
+                    wireExternalButtonPicker(rootView)
+                },
+            )
         }
+    }
+
+    // Shows/hides the inline "Fix this button" affordance and, on the
+    // transition into the OS-bonded state, auto-launches the unpair
+    // dialog once. [selectedMac] is the currently-assigned Button-input
+    // device; [devices] supplies its display name.
+    private fun maybeSurfaceBondedButtonFix(
+        v: View,
+        selectedMac: String?,
+        devices: List<AinaDeviceInfo>,
+    ) {
+        val fixBtn = v.findViewById<Button>(R.id.xv_btn_fix_bonded_button) ?: return
+        val bondedMac =
+            selectedMac?.takeIf {
+                com.atakmap.android.xv.aina.OsBondedBleHidDetector.isOsBondedBleHid(it)
+            }
+        if (bondedMac == null) {
+            fixBtn.visibility = View.GONE
+            lastAutoPromptedBondedButtonMac = null
+            return
+        }
+        val name = devices.firstOrNull { it.mac.equals(bondedMac, ignoreCase = true) }?.name
+        val openFixDialog = {
+            checkAndEnforceBleHidUnbonded(
+                bondedMac,
+                name,
+                com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID,
+                onAllowed = {
+                    // Reached after a successful unpair. Just refresh the
+                    // picker — the puck's reader reconnects on its own once
+                    // the OS finishes clearing the bond, so no in-app
+                    // reconnect is needed (or reliable) here.
+                    wireExternalButtonPicker(v)
+                },
+                onCancel = { },
+            )
+        }
+        fixBtn.visibility = View.VISIBLE
+        fixBtn.setOnClickListener { openFixDialog() }
+        // Auto-launch once per transition into the bonded state (or per
+        // Settings open, since detach resets the tracker) so re-adding the
+        // puck in Android Settings pops the removal dialog without the
+        // operator having to find the inline button.
+        if (!bondedMac.equals(lastAutoPromptedBondedButtonMac, ignoreCase = true)) {
+            lastAutoPromptedBondedButtonMac = bondedMac
+            openFixDialog()
+        }
+    }
+
+    private fun checkAndEnforceBleHidUnbonded(
+        mac: String?,
+        name: String?,
+        protocol: com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol?,
+        onAllowed: () -> Unit,
+        onCancel: () -> Unit,
+    ) {
+        if (mac == null || protocol != com.atakmap.android.xv.aina.AinaDeviceInfo.ButtonProtocol.BLE_HID) {
+            onAllowed()
+            return
+        }
+        val isBonded =
+            try {
+                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                adapter?.bondedDevices?.any { it.address.equals(mac, ignoreCase = true) } == true
+            } catch (_: SecurityException) {
+                // Fail closed: this guard exists to keep OS-bonded BLE_HID
+                // pucks out (they cause pairing loops). If we can't read
+                // bond state (no BLUETOOTH_CONNECT), treat the device as
+                // bonded and surface the unpair modal rather than letting
+                // it slip through. The modal's "Open Settings" / "Cancel"
+                // paths give the operator an escape hatch.
+                true
+            }
+        if (!isBonded) {
+            onAllowed()
+            return
+        }
+
+        val disp = name?.takeIf { it.isNotBlank() } ?: mac
+        val msg =
+            "This Bluetooth button ($disp) is paired in Android Settings. " +
+                "This causes severe pairing loops when the button is turned off and back on.\n\n" +
+                "Removing it will unpair the button from Android AND remove it from " +
+                "TAK-XVoice, leaving no half-paired state. Afterward, re-add it with " +
+                "\"Scan for BLE PTT device\" for a clean pairing."
+
+        val builder = android.app.AlertDialog.Builder(mapView.context)
+        builder.setTitle("Bluetooth Button Configuration Error")
+        builder.setMessage(msg)
+        builder.setCancelable(false)
+        builder.setPositiveButton("Unpair & Remove") { _, _ ->
+            var success = false
+            try {
+                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                val dev = adapter?.getRemoteDevice(mac)
+                if (dev != null) {
+                    val method = dev.javaClass.getMethod("removeBond")
+                    success = method.invoke(dev) as? Boolean == true
+                }
+            } catch (e: Exception) {
+                // Reflection-based removeBond() is best-effort; log the
+                // cause and fall through to the manual-forget guidance
+                // below rather than silently dropping it.
+                android.util.Log.w(
+                    "XvSettings",
+                    "removeBond() reflection failed for ${com.atakmap.android.xv.aina.redactMac(mac)} — prompting manual forget",
+                    e,
+                )
+            }
+            if (success) {
+                // Also drop XV's own registration + slot assignment so no
+                // half-paired state remains for the reader to churn on. The
+                // operator re-adds it fresh via Scan, which pairs unbonded
+                // and reconnects cleanly.
+                controller.removeBlePttDevice(mac)
+                android.widget.Toast.makeText(
+                    pluginContext,
+                    "Unpaired and removed $disp. Re-add it with \"Scan for BLE PTT device\" " +
+                        "once it's gone from Android Bluetooth Settings.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+                onAllowed()
+            } else {
+                android.widget.Toast.makeText(
+                    pluginContext,
+                    "Could not unpair automatically. Tap 'Open Settings', select 'Forget', " +
+                        "then remove the button here.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+                onCancel()
+            }
+        }
+        builder.setNeutralButton("Open Settings") { _, _ ->
+            try {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                pluginContext.startActivity(intent)
+            } catch (_: Exception) {}
+            onCancel()
+        }
+        builder.setNegativeButton("Cancel") { _, _ ->
+            onCancel()
+        }
+        builder.setOnCancelListener { onCancel() }
+        builder.show()
     }
 
     private fun wireAutoConnectBtSwitch(v: View) {
@@ -3091,6 +3410,12 @@ class XvDropDownReceiver(
         // Surface Duo idle (constant wakeups for nothing changing);
         // 2 s is fine for slow-moving fields like reconnect countdown.
         private const val REFRESH_MS = 2_000L
+
+        // Debounce for connectivity-driven Settings-picker rebuilds. Long
+        // enough to swallow the connect/disconnect churn of a BT power-
+        // cycle reconnect (~0.8s observed) so the picker rebuilds once,
+        // on the settled state, not per-transition.
+        private const val CONNECTIVITY_REFRESH_DEBOUNCE_MS = 900L
         private const val SECONDARY_NONE_LABEL = "(none)"
         private const val AINA_NONE_LABEL = "Screen-only PTT (no external button)"
 

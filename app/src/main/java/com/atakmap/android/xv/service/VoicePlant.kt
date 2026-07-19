@@ -224,6 +224,8 @@ class VoicePlant(
 
         fun onAinaConnectionChanged(connected: Boolean)
 
+        fun onExternalButtonConnectionChanged(connected: Boolean)
+
         fun onRxActivity()
 
         fun onAudioStateText(text: String)
@@ -576,6 +578,15 @@ class VoicePlant(
     // longer exists in the bond table.
     @Volatile private var connectedAinaMac: String? = null
 
+    // MAC of the external button this slot is currently bound to (or null
+    // when none). Set at connect-attempt time in [connectExternalButton]
+    // — BEFORE the reader reports its first connection edge — and cleared
+    // in [disconnectExternalButton]; it tracks "which puck are we driving",
+    // not a live up/down state. That's exactly what the BOND_STATE_CHANGED
+    // receiver needs: on a BOND_NONE for this MAC, tear the reader down if
+    // the operator unpairs the puck mid-flight.
+    @Volatile private var connectedExternalButtonMac: String? = null
+
     // Same SharedPreferences file as the plugin-side XvSettings — this
     // service runs in the same APK / UID, so it shares prefs storage.
     // Used to clear stale per-MAC AINA protocol overrides on BOND_NONE
@@ -626,6 +637,16 @@ class VoicePlant(
         if (current != null && current.equals(mac, ignoreCase = true)) {
             Log.w(TAG, "AINA $mac was unpaired — tearing down reader to stop reconnect storm")
             disconnectAina()
+        }
+        val extCurrent = connectedExternalButtonMac
+        if (extCurrent != null && extCurrent.equals(mac, ignoreCase = true)) {
+            Log.w(TAG, "External Button $mac was unpaired — tearing down reader to stop reconnect storm")
+            try {
+                settingsForOverride.persistExternalButtonKind(null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "clearExternalButtonKind threw", t)
+            }
+            disconnectExternalButton()
         }
     }
 
@@ -1589,7 +1610,13 @@ class VoicePlant(
             if (!up) {
                 releaseStuckPttOnTransportDrop(source)
             }
+            try {
+                callbacks.onExternalButtonConnectionChanged(up)
+            } catch (t: Throwable) {
+                Log.w(TAG, "onExternalButtonConnectionChanged threw", t)
+            }
         }
+        connectedExternalButtonMac = device.address
         when (resolvedKind) {
             "v1", "spp" -> {
                 val r =
@@ -1626,7 +1653,13 @@ class VoicePlant(
     }
 
     fun disconnectExternalButton() {
-        externalButtonBle?.disconnect()
+        connectedExternalButtonMac = null
+        try {
+            callbacks.onExternalButtonConnectionChanged(false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "onExternalButtonConnectionChanged(false) threw", t)
+        }
+        externalButtonBle?.dispose()
         externalButtonBle = null
         externalButtonSpp?.disconnect()
         externalButtonSpp = null
@@ -1866,12 +1899,13 @@ class VoicePlant(
      * sources.
      */
     fun disconnectAinaReaderOnly() {
-        ainaBle?.disconnect()
+        val hadReader = ainaBle != null || ainaSpp != null || prymeBle != null
+        // dispose() rather than disconnect() — see the analogous
+        // block in [disconnectExternalButton] for the rationale.
+        ainaBle?.dispose()
         ainaBle = null
         ainaSpp?.disconnect()
         ainaSpp = null
-        // dispose() rather than disconnect() — see the analogous
-        // block in [disconnectExternalButton] for the rationale.
         prymeBle?.dispose()
         prymeBle = null
         // Mirror [disconnectExternalButton]: if the operator (or a wholesale
@@ -1885,6 +1919,21 @@ class VoicePlant(
             pttDispatcher.forgetSource(PttSource.PRYME_BLE)
         } catch (t: Throwable) {
             Log.w(TAG, "forgetSource on primary reader teardown threw", t)
+        }
+        // dispose() sets a sticky flag that short-circuits the reader's
+        // own onConnectionState(false) dispatch, so the plugin would
+        // otherwise never learn the button reader is gone — leaving
+        // serviceAinaConnected and the UI dot stale after a teardown-only
+        // protocol flip ("no buttons / on-screen only"). Notify explicitly.
+        // Guarded on hadReader so a no-op teardown emits no spurious
+        // disconnect. [disconnectAina] also notifies (harmless idempotent
+        // repeat); the respawn path does not route through here.
+        if (hadReader) {
+            try {
+                callbacks.onAinaConnectionChanged(false)
+            } catch (t: Throwable) {
+                Log.w(TAG, "onAinaConnectionChanged(false) on reader teardown threw", t)
+            }
         }
     }
 

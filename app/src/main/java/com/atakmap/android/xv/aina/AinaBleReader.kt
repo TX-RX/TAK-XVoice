@@ -37,6 +37,9 @@ class AinaBleReader(
     private var targetDevice: BluetoothDevice? = null
 
     @Volatile
+    private var disposed: Boolean = false
+
+    @Volatile
     private var intentionalDisconnect: Boolean = false
 
     private var directRetryCount: Int = 0
@@ -106,12 +109,17 @@ class AinaBleReader(
 
     fun isConnecting(): Boolean = gatt != null
 
+    fun dispose() {
+        disposed = true
+        disconnect()
+    }
+
     fun disconnect() {
         intentionalDisconnect = true
         targetDevice = null
         handler.removeCallbacks(retryRunnable)
         closeGatt()
-        onConnectionState(false)
+        dispatchConnectionState(false)
     }
 
     private fun closeGatt() {
@@ -169,6 +177,16 @@ class AinaBleReader(
         handler.postDelayed(retryRunnable, delayMs)
     }
 
+    private fun dispatchConnectionState(state: Boolean) {
+        if (disposed) return
+        onConnectionState(state)
+    }
+
+    private fun dispatchEvent(button: AinaButton, isDown: Boolean) {
+        if (disposed) return
+        onEvent(button, isDown)
+    }
+
     private val callback =
         object : BluetoothGattCallback() {
             override fun onConnectionStateChange(
@@ -182,6 +200,11 @@ class AinaBleReader(
                             TAG,
                             "Connected (status=$status ${gattStatusName(status)}), discovering services",
                         )
+                        try {
+                            g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                        } catch (e: SecurityException) {
+                            Log.w(TAG, "Lacking BLUETOOTH_CONNECT permission to request high priority", e)
+                        }
                         // Quick-win M6 part 1: retry counter resets on
                         // any successful CONNECTED transition. Part 2
                         // mirrors this in onServicesDiscovered to
@@ -190,7 +213,7 @@ class AinaBleReader(
                         // pendingConfigReadModifyWrite window).
                         directRetryCount = 0
                         autoConnectArmed = false
-                        onConnectionState(true)
+                        dispatchConnectionState(true)
                         g.discoverServices()
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
@@ -212,7 +235,7 @@ class AinaBleReader(
                             )
                             pendingConfigReadModifyWrite = false
                         }
-                        onConnectionState(false)
+                        dispatchConnectionState(false)
                         if (!intentionalDisconnect) {
                             scheduleReconnect("status=$status ${gattStatusName(status)}")
                         }
@@ -315,6 +338,12 @@ class AinaBleReader(
                     "CCCD write OK — pendingConfigReadModifyWrite: true -> false, chaining to CONFIG read",
                 )
                 pendingConfigReadModifyWrite = false
+                // Subscription is now active — button notifications will
+                // flow from this point. This is the diagnostic anchor
+                // requested by issue #88: the log line below confirms
+                // button-subscription readiness post-reconnect. Any button
+                // presses from here on will arrive as onCharacteristicChanged.
+                Log.i(TAG, "button subscription ACTIVE — speakermic PTT ready")
                 val service = g.getService(SERVICE_UUID) ?: return
                 val configCh = service.getCharacteristic(CONFIG_CHAR_UUID)
                 if (configCh == null) {
@@ -413,6 +442,7 @@ class AinaBleReader(
                 g: BluetoothGatt,
                 ch: BluetoothGattCharacteristic,
             ) {
+                if (disposed) return
                 if (ch.uuid != BUTTON_CHAR_UUID) return
                 handleMask(ch.value)
             }
@@ -422,6 +452,7 @@ class AinaBleReader(
                 ch: BluetoothGattCharacteristic,
                 value: ByteArray,
             ) {
+                if (disposed) return
                 if (ch.uuid != BUTTON_CHAR_UUID) return
                 handleMask(value)
             }
@@ -430,7 +461,7 @@ class AinaBleReader(
                 if (bytes == null || bytes.isEmpty()) return
                 val mask = bytes[0].toInt() and 0xFF
                 for ((button, isDown) in decoder.process(mask)) {
-                    onEvent(button, isDown)
+                    dispatchEvent(button, isDown)
                 }
             }
         }

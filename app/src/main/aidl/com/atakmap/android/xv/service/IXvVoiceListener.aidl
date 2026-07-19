@@ -24,6 +24,10 @@ interface IXvVoiceListener {
     // AINA reader connection up/down — plugin updates the UI dot.
     void onAinaConnectionChanged(boolean connected);
 
+    // External button reader connection up/down — plugin updates UI state.
+    void onExternalButtonConnectionChanged(boolean connected);
+
+
     // RX activity heartbeat — plugin's TX side uses this for mic
     // pre-warm hints (legacy hook). May be a no-op going forward.
     void onRxActivity();

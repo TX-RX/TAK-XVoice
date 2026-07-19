@@ -214,29 +214,6 @@ object TptToneGenerator {
 
     const val LEAVE_CHIRP_DURATION_MS: Long = 120L
 
-    // DSP-readiness probe tick (2026-07-17). Played repeatedly by
-    // TxController.startProbing on cold-call bursts while it watches
-    // its own capture: a still-converging (closed) platform voice DSP
-    // suppresses the tick entirely; an open one passes it. Two-tone
-    // shape on purpose — pure sine risks being classified as noise by
-    // the platform NS, while the two-tone chirp is the same character
-    // as the TPT, which is bench-proven to pass an open chain (capture
-    // rms 620 during TPT playback). Quiet (-12 dBFS) and short so the
-    // cold-start ticking reads as "getting ready", clearly subordinate
-    // to the actual permit tone that follows.
-    fun probeTick(): ShortArray {
-        val perBeepMs = 40
-        val n = (SAMPLE_RATE_HZ * perBeepMs * 2) / 1000
-        val out = ShortArray(n)
-        val half = n / 2
-        // -12 dBFS ≈ 0.25
-        fillSine(out, 0, half, 880.0, peakAmp = 0.25)
-        fillSine(out, half, n - half, 660.0, peakAmp = 0.25)
-        return out
-    }
-
-    const val PROBE_TICK_DURATION_MS: Long = 80L
-
     private fun twoBeepStatus(
         firstHz: Double,
         secondHz: Double,
