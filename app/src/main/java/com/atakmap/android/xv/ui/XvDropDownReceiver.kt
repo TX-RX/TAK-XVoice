@@ -2034,11 +2034,11 @@ class XvDropDownReceiver(
             promptPickTeammatesThenShare(names)
             return
         }
-        
+
         val serverGroups = names.groupBy { controller.serverForChannel(it) ?: "Offline / ad-hoc" }
         // Sort groups: servers first (alphabetical), then Offline/ad-hoc at the end
         val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
-        
+
         val displayLabels = mutableListOf<String>()
         val orderedNames = mutableListOf<String>()
         for ((groupName, groupChannels) in sortedGroups) {
@@ -2048,7 +2048,7 @@ class XvDropDownReceiver(
                 orderedNames.add(ch)
             }
         }
-        
+
         val checked = BooleanArray(orderedNames.size) { true }
         android.app.AlertDialog
             .Builder(mapView.context)
