@@ -167,7 +167,12 @@ object XvChannelShare {
     ): ShareSignal? {
         val channelNames =
             channels
-                ?.split(CHANNEL_DELIM)
+                // Strict writer, tolerant reader: we SEND "|" (newlines
+                // don't survive CoT XML attribute encoding — that's why
+                // the delimiter moved off "\n"), but still ACCEPT
+                // newline-delimited input from builds that predate the
+                // change.
+                ?.split('|', '\n')
                 ?.map { it.trim() }
                 ?.filter { it.isNotBlank() }
                 ?: emptyList()

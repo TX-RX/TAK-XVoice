@@ -72,7 +72,15 @@ class XvChannelShareTest {
     }
 
     @Test
-    fun `multiple channel names split on newline, trimmed, blanks dropped`() {
+    fun `multiple channel names split on pipe, trimmed, blanks dropped`() {
+        // "|" is the wire delimiter (newlines don't survive CoT XML
+        // attribute encoding).
+        val s = parse(channels = "Falcon-73|  Ops 1  ||bravo|", ourUid = "uid-bob")!!
+        assertEquals(listOf("Falcon-73", "Ops 1", "bravo"), s.channelNames)
+    }
+
+    @Test
+    fun `legacy newline-delimited channels still parse - tolerant reader`() {
         val s = parse(channels = "Falcon-73\n  Ops 1  \n\nbravo\n", ourUid = "uid-bob")!!
         assertEquals(listOf("Falcon-73", "Ops 1", "bravo"), s.channelNames)
     }
