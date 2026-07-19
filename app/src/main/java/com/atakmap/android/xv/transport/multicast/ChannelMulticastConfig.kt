@@ -69,6 +69,14 @@ data class ChannelMulticastConfig(
     val pinnedGroup: String? = null,
     /** Operator-pinned UDP port; null ⇒ derive via v1 hash. */
     val pinnedPort: Int? = null,
+    /** Optional secondary patch group address for external interop. */
+    val patchGroup: String? = null,
+    /** Optional secondary patch UDP port. */
+    val patchPort: Int? = null,
+    /** Wire format for the secondary patch channel. */
+    val patchWireFormat: WireFormat = WireFormat.OPENMANET_COMPAT,
+    /** Crypto policy for the secondary patch channel. */
+    val patchCryptoPolicy: CryptoPolicy = CryptoPolicy.CLEARTEXT,
 ) {
     /**
      * Human-readable reason this config is unusable, or null if valid.
@@ -94,6 +102,18 @@ data class ChannelMulticastConfig(
             if (cryptoPolicy != CryptoPolicy.CLEARTEXT) {
                 return "OpenMANET-compat wire format has no encryption layer; crypto policy must be CLEARTEXT"
             }
+        }
+        if ((patchGroup == null) != (patchPort == null)) {
+            return "patch group and port must be set together"
+        }
+        if (patchPort != null && patchPort !in 1..65535) {
+            return "patch port $patchPort outside 1..65535"
+        }
+        if (patchGroup != null && !isIpv4MulticastAddress(patchGroup)) {
+            return "patch group '$patchGroup' is not an IPv4 multicast address"
+        }
+        if (patchGroup != null && patchWireFormat == WireFormat.OPENMANET_COMPAT && patchCryptoPolicy != CryptoPolicy.CLEARTEXT) {
+            return "OpenMANET-compat patch format has no encryption layer; patch crypto policy must be CLEARTEXT"
         }
         return null
     }
@@ -127,6 +147,12 @@ data class ChannelMulticastConfig(
             sb.append(",\"group\":").append(JSONObject.quote(pinnedGroup))
             sb.append(",\"port\":").append(pinnedPort)
         }
+        if (patchGroup != null && patchPort != null) {
+            sb.append(",\"patchGroup\":").append(JSONObject.quote(patchGroup))
+            sb.append(",\"patchPort\":").append(patchPort)
+            sb.append(",\"patchWireFormat\":\"").append(patchWireFormat.name).append('"')
+            sb.append(",\"patchCryptoPolicy\":\"").append(patchCryptoPolicy.name).append('"')
+        }
         sb.append('}')
         return sb.toString()
     }
@@ -159,6 +185,24 @@ data class ChannelMulticastConfig(
                     cryptoPolicy = CryptoPolicy.valueOf(o.getString("cryptoPolicy")),
                     pinnedGroup = if (o.has("group")) o.getString("group") else null,
                     pinnedPort = if (o.has("port")) o.getInt("port") else null,
+                    patchGroup = if (o.has("patchGroup")) o.getString("patchGroup") else null,
+                    patchPort = if (o.has("patchPort")) o.getInt("patchPort") else null,
+                    patchWireFormat = if (o.has(
+                            "patchWireFormat"
+                        )
+                    ) {
+                        WireFormat.valueOf(o.getString("patchWireFormat"))
+                    } else {
+                        WireFormat.OPENMANET_COMPAT
+                    },
+                    patchCryptoPolicy = if (o.has(
+                            "patchCryptoPolicy"
+                        )
+                    ) {
+                        CryptoPolicy.valueOf(o.getString("patchCryptoPolicy"))
+                    } else {
+                        CryptoPolicy.CLEARTEXT
+                    },
                 )
             } catch (_: Exception) {
                 null

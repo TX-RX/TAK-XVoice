@@ -476,6 +476,10 @@ class XvDropDownReceiver(
             cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
         ): String? = "not supported"
 
+        fun applyPatchToCurrentChannel(group: String, port: String): String?
+
+        fun meshActiveChannelPatchConfig(): Pair<String, String>?
+
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
         // currently have. Empty when everything is granted. Used to
@@ -1856,6 +1860,18 @@ class XvDropDownReceiver(
             promptImportChannelPlan(v)
         }
 
+        v.findViewById<Button>(R.id.xv_btn_patch_save).setOnClickListener {
+            val group = v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_group).text.toString().trim()
+            val port = v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_port).text.toString().trim()
+            val err = controller.applyPatchToCurrentChannel(group, port)
+            if (err == null) {
+                meshToast("Patch applied to current channel.")
+                refreshMeshSection(v)
+            } else {
+                meshToast(err)
+            }
+        }
+
         v.findViewById<Button>(R.id.xv_btn_mesh_forget_all).setOnClickListener {
             confirmForgetAllMeshChannels(v)
         }
@@ -2336,6 +2352,10 @@ class XvDropDownReceiver(
                 ),
             )
         }
+
+        val patchConfig = controller.meshActiveChannelPatchConfig()
+        v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_group).setText(patchConfig?.first ?: "")
+        v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_port).setText(patchConfig?.second ?: "")
 
         val list = v.findViewById<android.widget.LinearLayout>(R.id.xv_mesh_channel_list)
         list.removeAllViews()

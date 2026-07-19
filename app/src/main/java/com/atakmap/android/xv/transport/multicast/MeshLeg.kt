@@ -92,12 +92,14 @@ interface MeshLegSink {
         speakerKey: String,
         seqInBurst: Int?,
         sourceHost: String = "",
+        isPatchLeg: Boolean = false,
     )
 
     fun onControl(
         channelName: String,
         msg: ControlPacket.Message,
         sourceHost: String,
+        isPatchLeg: Boolean = false,
     )
 }
 

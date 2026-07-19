@@ -1012,6 +1012,66 @@
                     android:textAllCaps="false"
                     android:background="@drawable/xv_button_bg"/>
 
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="External Patch (OpenManet)"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Bridge the current channel to a secondary cleartext group (e.g. 224.0.0.1:5007)."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp">
+
+                    <EditText
+                        android:id="@+id/xv_edit_patch_group"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:hint="Group IP"
+                        android:textSize="14sp"
+                        android:background="@drawable/xv_card_bg"
+                        android:paddingHorizontal="12dp"
+                        android:layout_marginEnd="4dp"
+                        android:singleLine="true"/>
+
+                    <EditText
+                        android:id="@+id/xv_edit_patch_port"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:hint="Port"
+                        android:inputType="number"
+                        android:textSize="14sp"
+                        android:background="@drawable/xv_card_bg"
+                        android:paddingHorizontal="12dp"
+                        android:layout_marginStart="4dp"
+                        android:singleLine="true"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/xv_btn_patch_save"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Apply Patch to Current Channel"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
                 <!-- Panic wipe. Destructive + local-only: shreds every
                      stored channel key + config and the Keystore key that
                      seals them, without a full ATAK data clear. Gated in

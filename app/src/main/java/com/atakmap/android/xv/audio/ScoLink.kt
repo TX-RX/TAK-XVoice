@@ -1,3 +1,5 @@
+@file:android.annotation.SuppressLint("NewApi")
+
 package com.atakmap.android.xv.audio
 
 import android.content.Context

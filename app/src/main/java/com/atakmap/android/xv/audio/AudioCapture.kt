@@ -436,7 +436,8 @@ class AudioCapture(
             }
         Log.i(TAG, "available input devices: ${inputs.size}")
         for (d in inputs) {
-            Log.i(TAG, "  device: ${d.productName} type=${typeName(d.type)} address=${redactAddress(d.address)}")
+            val address = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) d.address else "N/A"
+            Log.i(TAG, "  device: ${d.productName} type=${typeName(d.type)} address=${redactAddress(address)}")
         }
         // BT SCO is the only "BT input" that exists at the OS level — the
         // earlier A2DP fallback was nonsense (A2DP is an output profile).

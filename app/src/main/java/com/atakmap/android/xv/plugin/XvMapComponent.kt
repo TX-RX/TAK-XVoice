@@ -2851,6 +2851,32 @@ class XvMapComponent : AbstractMapComponent() {
                 cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
             ): String? = saveMeshChannelInternal(name, group, port, wireFormat, cryptoPolicy)
 
+            override fun applyPatchToCurrentChannel(group: String, port: String): String? {
+                val channel = meshActiveChannelCanonical() ?: return "No active mesh channel."
+                val config = settings.channelMulticastConfigFor(channel) ?: return "Channel config not found."
+
+                val patchGroup = group.ifBlank { null }
+                val patchPortStr = port.ifBlank { null }
+
+                val updated = config.copy(
+                    patchGroup = patchGroup,
+                    patchPort = patchPortStr?.toIntOrNull(),
+                    patchWireFormat = com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT,
+                    patchCryptoPolicy = com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT
+                )
+                if (patchGroup != null && updated.patchPort == null) return "Invalid port number."
+
+                settings.persistChannelMulticastConfig(updated)
+                return null
+            }
+
+            override fun meshActiveChannelPatchConfig(): Pair<String, String>? {
+                val channel = meshActiveChannelCanonical() ?: return null
+                val config = settings.channelMulticastConfigFor(channel) ?: return null
+                if (config.patchGroup == null || config.patchPort == null) return null
+                return Pair(config.patchGroup, config.patchPort.toString())
+            }
+
             override fun forgetMeshChannel(name: String) = forgetMeshChannelInternal(name)
 
             override fun forgetAllMeshChannels() = forgetAllMeshChannelsInternal()

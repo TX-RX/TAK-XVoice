@@ -65,6 +65,7 @@ class MulticastMeshLegRelayTest {
             speakerKey: String,
             seqInBurst: Int?,
             sourceHost: String,
+            isPatchLeg: Boolean,
         ) {
         }
 
@@ -72,6 +73,7 @@ class MulticastMeshLegRelayTest {
             channelName: String,
             msg: ControlPacket.Message,
             sourceHost: String,
+            isPatchLeg: Boolean,
         ) {
         }
     }

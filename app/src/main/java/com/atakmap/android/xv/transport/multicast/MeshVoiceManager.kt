@@ -93,6 +93,7 @@ class MeshVoiceManager(
     // ---- leg + channel state ----
 
     private val legs = LinkedHashMap<String, MeshLeg>() // canonical channel → leg
+    private val patchLegs = LinkedHashMap<String, MeshLeg>() // canonical channel → patch leg
     private var rendezvousLeg: MeshLeg? = null
     private var primaryChannel: String? = null // canonical
 
@@ -330,6 +331,15 @@ class MeshVoiceManager(
                 }
             if (txNow) leg.sendOpus(opus)
         }
+        patchLegs.values.forEach { leg ->
+            val txNow =
+                when (leg.config.mode) {
+                    MulticastMode.ALWAYS -> true
+                    MulticastMode.FAILOVER -> meshTxActive || bridging
+                    MulticastMode.OFF -> false
+                }
+            if (txNow) leg.sendOpus(opus)
+        }
     }
 
     /** Is mesh currently the active TX leg (failover engaged)? */
@@ -396,18 +406,18 @@ class MeshVoiceManager(
         speakerKey: String,
         seqInBurst: Int?,
         sourceHost: String,
+        isPatchLeg: Boolean,
     ) {
-        val action = decideVoiceRx(channelName, speakerKey, sourceHost)
+        val action = decideVoiceRx(channelName, speakerKey, sourceHost, isPatchLeg)
         if (!action.play) return
         onRxOpus(opus, "mcast:$channelName:$speakerKey")
         if (action.relay) {
-            // Server-less speaker heard on the mesh while we hold the
-            // bridge: relay onto the Mumble channel. The frame rides
-            // OUR Mumble session (protocol limitation); mesh-side
-            // attribution stays intact for everyone on the group.
-            // Per-speaker frame order is preserved: a speaker's frames
-            // all arrive on their leg's single RX thread.
             relayToMumble(opus, action.relayBurstStart)
+            if (!isPatchLeg) {
+                patchLegs[channelName]?.sendRelayOpus(action.canonical, opus, action.relayBurstStart)
+            } else {
+                legs[channelName]?.sendRelayOpus(action.canonical, opus, action.relayBurstStart)
+            }
         }
     }
 
@@ -415,6 +425,8 @@ class MeshVoiceManager(
         val play: Boolean,
         val relay: Boolean,
         val relayBurstStart: Boolean,
+        val canonical: String = "",
+        val serverOriginated: Boolean = false,
     )
 
     @Synchronized
@@ -422,6 +434,7 @@ class MeshVoiceManager(
         channelName: String,
         speakerKey: String,
         sourceHost: String,
+        isPatchLeg: Boolean,
     ): VoiceRxAction {
         if (channelName == RENDEZVOUS_CHANNEL) {
             return VoiceRxAction(play = false, relay = false, relayBurstStart = false)
@@ -502,7 +515,13 @@ class MeshVoiceManager(
             relayToServerLastMs[speakerKey] = now
         }
         meshTalking.getOrPut(canonical) { MeshTalker(speakerKey, now) }.lastFrameMs = now
-        return VoiceRxAction(play = true, relay = relay, relayBurstStart = relayBurstStart)
+        return VoiceRxAction(
+            play = true,
+            relay = relay,
+            relayBurstStart = relayBurstStart,
+            canonical = canonical,
+            serverOriginated = serverOriginated
+        )
     }
 
     /**
@@ -544,6 +563,7 @@ class MeshVoiceManager(
         channelName: String,
         msg: ControlPacket.Message,
         sourceHost: String,
+        isPatchLeg: Boolean,
     ) {
         when (msg) {
             is ControlPacket.Message.PeerBeacon -> handleBeacon(msg)
@@ -722,17 +742,19 @@ class MeshVoiceManager(
         val cleartext: Boolean,
         val keyNeeded: Boolean,
         val legCount: Int,
+        val patched: Boolean = false,
     )
 
     @Synchronized
     fun statusSnapshot(): StatusSnapshot? {
-        if (legs.isEmpty()) return null
+        if (legs.isEmpty() && patchLegs.isEmpty()) return null
         return StatusSnapshot(
             active = meshTxActive,
             bridging = bridging,
-            cleartext = legs.values.any { !it.encryptedNow },
-            keyNeeded = legs.values.any { it.awaitingKey },
-            legCount = legs.size,
+            cleartext = legs.values.any { !it.encryptedNow } || patchLegs.values.any { !it.encryptedNow },
+            keyNeeded = legs.values.any { it.awaitingKey } || patchLegs.values.any { it.awaitingKey },
+            legCount = legs.size + patchLegs.size,
+            patched = patchLegs.isNotEmpty(),
         )
     }
 
@@ -748,6 +770,7 @@ class MeshVoiceManager(
         return buildString {
             append(if (snap.active) "MESH ACTIVE" else "MESH READY")
             if (snap.bridging) append(" · BRIDGING")
+            if (snap.patched) append(" · PATCHED")
             if (snap.cleartext) append(" · CLEAR")
             if (snap.keyNeeded) append(" · KEY NEEDED")
         }
@@ -758,6 +781,8 @@ class MeshVoiceManager(
     fun shutdown() {
         legs.values.forEach { runCatching { it.close() } }
         legs.clear()
+        patchLegs.values.forEach { runCatching { it.close() } }
+        patchLegs.clear()
         rendezvousLeg?.let { runCatching { it.close() } }
         rendezvousLeg = null
         deduper.reset()
@@ -798,21 +823,65 @@ class MeshVoiceManager(
             }.keys
         stale.forEach { channel ->
             legs.remove(channel)?.let { runCatching { it.close() } }
+            patchLegs.remove(channel)?.let { runCatching { it.close() } }
+        }
+
+        val stalePatch = patchLegs.filter { (channel, patchLeg) ->
+            val cfg = desired[channel] ?: return@filter true
+            if (cfg.patchGroup == null || cfg.patchPort == null) return@filter true
+            val endpoint = MulticastEndpoint(cfg.patchGroup, cfg.patchPort)
+            endpoint != patchLeg.endpoint
+        }.keys
+        stalePatch.forEach { channel ->
+            patchLegs.remove(channel)?.let { runCatching { it.close() } }
         }
 
         // Start newly-wanted legs. A derived endpoint needs a server
         // identity; a pinned one doesn't (offline comms-plan channels).
         desired.forEach { (channel, cfg) ->
-            if (channel in legs) return@forEach
-            val endpoint = resolveEndpoint(cfg) ?: return@forEach
-            val leg =
-                runCatching { legFactory.create(cfg, endpoint, registryFor(channel), this) }
-                    .getOrNull() ?: return@forEach
-            legs[channel] = leg
-            elections.getOrPut(channel) {
-                KeyElection(ourUid, stableChannelId(channel), registryFor(channel))
+            if (channel !in legs) {
+                val endpoint = resolveEndpoint(cfg)
+                if (endpoint != null) {
+                    val leg = runCatching { legFactory.create(cfg, endpoint, registryFor(channel), this) }.getOrNull()
+                    if (leg != null) {
+                        legs[channel] = leg
+                        elections.getOrPut(channel) {
+                            KeyElection(ourUid, stableChannelId(channel), registryFor(channel))
+                        }
+                        keyBootstrapTicks[channel] = 0
+                    }
+                }
             }
-            keyBootstrapTicks[channel] = 0
+            if (cfg.patchGroup != null && cfg.patchPort != null && channel !in patchLegs) {
+                val patchEndpoint = MulticastEndpoint(cfg.patchGroup, cfg.patchPort)
+                val patchCfg = ChannelMulticastConfig(
+                    channelName = channel,
+                    mode = cfg.mode,
+                    wireFormat = cfg.patchWireFormat,
+                    cryptoPolicy = cfg.patchCryptoPolicy,
+                    pinnedGroup = cfg.patchGroup,
+                    pinnedPort = cfg.patchPort,
+                )
+                val patchSink = object : MeshLegSink {
+                    override fun onVoice(
+                        channelName: String,
+                        opus: ByteArray,
+                        speakerKey: String,
+                        seqInBurst: Int?,
+                        sourceHost: String,
+                        isPatchLeg: Boolean
+                    ) {
+                        this@MeshVoiceManager.onVoice(channelName, opus, speakerKey, seqInBurst, sourceHost, true)
+                    }
+                    override fun onControl(channelName: String, msg: ControlPacket.Message, sourceHost: String, isPatchLeg: Boolean) {
+                        this@MeshVoiceManager.onControl(channelName, msg, sourceHost, true)
+                    }
+                }
+                val patchLeg = runCatching { legFactory.create(patchCfg, patchEndpoint, registryFor(channel), patchSink) }.getOrNull()
+                if (patchLeg != null) {
+                    patchLegs[channel] = patchLeg
+                }
+            }
         }
 
         // Rendezvous leg: up whenever mesh voice is on, so discovery
@@ -1121,7 +1190,9 @@ class MeshVoiceManager(
         now: Long,
     ) {
         val channel = primaryChannel ?: return
-        val leg = legs[channel] ?: return
+        val leg = legs[channel]
+        val patchLeg = patchLegs[channel]
+        if (leg == null && patchLeg == null) return
         val last = relayLastFrameMs[canonicalSpeaker]
         val burstStart = last == null || now - last > RELAY_BURST_GAP_MS
         relayLastFrameMs[canonicalSpeaker] = now
@@ -1132,7 +1203,7 @@ class MeshVoiceManager(
             // the Mumble username belongs. Once per burst — cheap.
             val name = displayNameFor(canonicalSpeaker, speakerKey = "")
             if (name != canonicalSpeaker) {
-                leg.sendControl(
+                leg?.sendControl(
                     ControlPacket.Message.SpeakerName(
                         channelId = stableChannelId(channel),
                         speakerKey = "ssrc:%08x".format(RtpFraming.fnv1aSsrc(canonicalSpeaker)),
@@ -1141,7 +1212,8 @@ class MeshVoiceManager(
                 )
             }
         }
-        leg.sendRelayOpus(canonicalSpeaker, opus, burstStart)
+        leg?.sendRelayOpus(canonicalSpeaker, opus, burstStart)
+        patchLeg?.sendRelayOpus(canonicalSpeaker, opus, burstStart)
     }
 
     // Snapshot of the peer set the SSRC map was last built from, so the
