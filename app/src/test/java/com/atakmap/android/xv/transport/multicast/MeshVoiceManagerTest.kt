@@ -350,21 +350,11 @@ class MeshVoiceManagerTest {
     }
 
     @Test
-    fun `bridge defers to a lower connected uid seen via beacon`() {
+    fun `bridge defers to a lower connected uid seen via presence`() {
         val h = Harness()
         h.joinAndTick()
         h.manager.observePeerConnectivity("uid-zzz-offline", mumbleConnected = false)
-        h.manager.onControl(
-            "ops-1",
-            ControlPacket.Message.PeerBeacon(
-                uid = "uid-aaa",
-                callsign = "Bravo-2",
-                mumbleConnected = true,
-                bridging = false,
-                channels = emptyList(),
-            ),
-            sourceHost = "198.51.100.9",
-        )
+        h.manager.observePeerConnectivity("uid-aaa", true)
         h.now += 1_000
         h.manager.tick()
         assertFalse(h.manager.isBridging())
@@ -406,17 +396,7 @@ class MeshVoiceManagerTest {
         // A lower connected uid appears via beacon → we defer, losing the
         // bridge role, and must drop the per-speaker relay codecs so they
         // don't linger until a possible re-acquire.
-        h.manager.onControl(
-            "ops-1",
-            ControlPacket.Message.PeerBeacon(
-                uid = "uid-aaa",
-                callsign = "Bravo-2",
-                mumbleConnected = true,
-                bridging = false,
-                channels = emptyList(),
-            ),
-            sourceHost = "198.51.100.9",
-        )
+        h.manager.observePeerConnectivity("uid-aaa", true)
         h.now += 1_000
         h.manager.tick()
         assertFalse(h.manager.isBridging())

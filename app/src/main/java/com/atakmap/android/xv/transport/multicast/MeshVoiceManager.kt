@@ -1381,7 +1381,7 @@ class MeshVoiceManager(
     }
 
     private fun MeshLeg.safeSendControl(msg: ControlPacket.Message) {
-        if (config.cryptoPolicy != com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT) {
+        if (config.wireFormat != com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT) {
             sendControl(msg)
         }
     }
