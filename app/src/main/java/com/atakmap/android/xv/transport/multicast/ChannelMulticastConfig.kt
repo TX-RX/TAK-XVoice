@@ -88,11 +88,11 @@ data class ChannelMulticastConfig(
         if ((pinnedGroup == null) != (pinnedPort == null)) {
             return "pinned group and port must be set together"
         }
-        if (pinnedPort != null && pinnedPort !in 1..65535) {
-            return "pinned port $pinnedPort outside 1..65535"
+        if (pinnedPort != null && pinnedPort !in 1024..65535) {
+            return "pinned port $pinnedPort outside 1024..65535"
         }
         if (pinnedGroup != null && !isIpv4MulticastAddress(pinnedGroup)) {
-            return "pinned group '$pinnedGroup' is not an IPv4 multicast address (224.0.0.0–239.255.255.255)"
+            return "pinned group '$pinnedGroup' is not an IPv4 multicast address (224.0.0.1—239.255.255.255)"
         }
         if (wireFormat == WireFormat.OPENMANET_COMPAT) {
             if (pinnedGroup == null) {
@@ -106,8 +106,8 @@ data class ChannelMulticastConfig(
         if ((patchGroup == null) != (patchPort == null)) {
             return "patch group and port must be set together"
         }
-        if (patchPort != null && patchPort !in 1..65535) {
-            return "patch port $patchPort outside 1..65535"
+        if (patchPort != null && patchPort !in 1024..65535) {
+            return "patch port $patchPort outside 1024..65535"
         }
         if (patchGroup != null && !isIpv4MulticastAddress(patchGroup)) {
             return "patch group '$patchGroup' is not an IPv4 multicast address"
@@ -213,6 +213,7 @@ data class ChannelMulticastConfig(
             if (parts.size != 4) return false
             val octets = parts.map { it.toIntOrNull() ?: return false }
             if (octets.any { it !in 0..255 }) return false
+            if (octets[0] == 224 && octets[1] == 0 && octets[2] == 0 && octets[3] == 0) return false
             return octets[0] in 224..239
         }
     }

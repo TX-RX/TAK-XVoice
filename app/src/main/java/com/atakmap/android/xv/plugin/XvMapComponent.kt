@@ -3012,6 +3012,8 @@ class XvMapComponent : AbstractMapComponent() {
                 passphrase: CharArray?,
             ): String = importChannelPlanCarrierInternal(text, passphrase)
 
+            override fun meshChannelConfig(name: String) = settings.channelMulticastConfigFor(name)
+
             override fun saveMeshChannel(
                 name: String,
                 group: String?,

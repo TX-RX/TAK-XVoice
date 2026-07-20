@@ -57,8 +57,9 @@ class ChannelMulticastConfigTest {
     fun `pinned port must be a real UDP port`() {
         fun withPort(p: Int) = ChannelMulticastConfig(channelName = "ops-1", pinnedGroup = "239.1.2.3", pinnedPort = p)
         assertNotNull(withPort(0).validate())
+        assertNotNull(withPort(1023).validate())
         assertNotNull(withPort(65536).validate())
-        assertNull(withPort(1).validate())
+        assertNull(withPort(1024).validate())
         assertNull(withPort(65535).validate())
     }
 
@@ -66,7 +67,8 @@ class ChannelMulticastConfigTest {
     fun `pinned group must be an ipv4 multicast address`() {
         fun withGroup(g: String) = ChannelMulticastConfig(channelName = "ops-1", pinnedGroup = g, pinnedPort = 5007)
         // Class D boundaries.
-        assertNull(withGroup("224.0.0.0").validate())
+        assertNotNull(withGroup("224.0.0.0").validate())
+        assertNull(withGroup("224.0.0.1").validate())
         assertNull(withGroup("239.255.255.255").validate())
         assertNotNull(withGroup("223.255.255.255").validate())
         assertNotNull(withGroup("240.0.0.0").validate())

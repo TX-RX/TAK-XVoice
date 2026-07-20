@@ -469,6 +469,7 @@ class XvDropDownReceiver(
         // group/port blank keeps the automatic derivation. Returns null
         // on success (saved + keyed + joined), or an operator-readable
         // validation error.
+        fun meshChannelConfig(name: String): com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig?
         fun saveMeshChannel(
             name: String,
             group: String?,
@@ -2355,7 +2356,8 @@ class XvDropDownReceiver(
     // block (pin group/port, wire format, crypto). Blank group/port keeps
     // the automatic derivation, so "name it myself" needs no address
     // entry; the interop fields exist only to match an external system.
-    private fun showChannelConfigDialog(section: View) {
+    private fun showChannelConfigDialog(section: View, existingName: String? = null) {
+        val existingConfig = existingName?.let { controller.meshChannelConfig(it) }
         val ctx = mapView.context
         val density = ctx.resources.displayMetrics.density
         fun dp(n: Int) = (n * density).toInt()
@@ -2371,16 +2373,20 @@ class XvDropDownReceiver(
         val nameField =
             android.widget.EditText(ctx).apply {
                 hint = "Channel name (required)"
+                setText(existingConfig?.channelName ?: "")
+                if (existingName != null) isEnabled = false
                 setSingleLine(true)
             }
         val groupField =
             android.widget.EditText(ctx).apply {
                 hint = "Multicast group (blank = automatic)"
+                setText(existingConfig?.pinnedGroup ?: existingConfig?.patchGroup ?: "")
                 setSingleLine(true)
             }
         val portField =
             android.widget.EditText(ctx).apply {
                 hint = "Port (blank = automatic)"
+                setText(existingConfig?.pinnedPort?.toString() ?: existingConfig?.patchPort?.toString() ?: "")
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
                 setSingleLine(true)
             }
@@ -2392,6 +2398,10 @@ class XvDropDownReceiver(
                         android.R.layout.simple_spinner_dropdown_item,
                         listOf("XV native (encrypted)", "OpenMANET compatible (cleartext)"),
                     )
+                val isOpenManet =
+                    (existingConfig?.wireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT) ||
+                        (existingConfig?.patchWireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT)
+                setSelection(if (isOpenManet) 1 else 0)
             }
         val cryptoSpinner =
             Spinner(ctx).apply {
@@ -2401,6 +2411,13 @@ class XvDropDownReceiver(
                         android.R.layout.simple_spinner_dropdown_item,
                         listOf("Encrypted — preferred", "Encrypted — required", "Cleartext"),
                     )
+                val p = existingConfig?.cryptoPolicy ?: existingConfig?.patchCryptoPolicy
+                val idx = when (p) {
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED -> 1
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT -> 2
+                    else -> 0
+                }
+                setSelection(idx)
             }
 
         val container =
@@ -2587,7 +2604,13 @@ class XvDropDownReceiver(
                             layoutParams = lp
 
                             setOnClickListener {
-                                promptConfigureChannel(v, name) { refreshMeshSection(v) }
+                                if (groupName ==
+                                    "Offline / ad-hoc"
+                                ) {
+                                    showChannelConfigDialog(v, name)
+                                } else {
+                                    promptConfigureChannel(v, name) { refreshMeshSection(v) }
+                                }
                             }
                             setOnLongClickListener {
                                 confirmForgetMeshChannel(v, name)
