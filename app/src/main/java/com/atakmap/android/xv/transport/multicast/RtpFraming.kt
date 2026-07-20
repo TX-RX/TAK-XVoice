@@ -105,16 +105,16 @@ object RtpFraming {
         if (datagram.size < HEADER_BYTES) return null
         val v = (datagram[0].toInt() shr 6) and 0x3
         if (v != 2) return null
-        val padding = (datagram[0].toInt() shr 5) and 0x1
-        val extension = (datagram[0].toInt() shr 4) and 0x1
+        val padding = (datagram[0].toInt() and 0x20) != 0
+        val extension = (datagram[0].toInt() and 0x10) != 0
         val csrcCount = datagram[0].toInt() and 0x0F
-        // Reject extensions / CSRC list / padding for now — we don't
-        // emit any of these, and OpenMANET's pion-based RTP sender
-        // also doesn't (the pion interceptor chain only sets SR
-        // payloads, which travel separately on the RTCP port).
-        if (padding != 0 || extension != 0 || csrcCount != 0) return null
+
         val marker = (datagram[1].toInt() and 0x80) != 0
         val payloadType = datagram[1].toInt() and 0x7F
+
+        // Accept any dynamic payload type (96-127) to support legacy VX
+        if (payloadType < 96 || payloadType > 127) return null
+
         val seq =
             ((datagram[2].toInt() and 0xFF) shl 8) or
                 (datagram[3].toInt() and 0xFF)
@@ -128,7 +128,27 @@ object RtpFraming {
                 ((datagram[9].toLong() and 0xFF) shl 16) or
                 ((datagram[10].toLong() and 0xFF) shl 8) or
                 (datagram[11].toLong() and 0xFF)
-        val payload = datagram.copyOfRange(HEADER_BYTES, datagram.size)
+
+        var offset = HEADER_BYTES
+        offset += csrcCount * 4
+        if (offset > datagram.size) return null
+
+        if (extension) {
+            if (offset + 4 > datagram.size) return null
+            val extLen = ((datagram[offset + 2].toInt() and 0xFF) shl 8) or (datagram[offset + 3].toInt() and 0xFF)
+            offset += 4 + (extLen * 4)
+            if (offset > datagram.size) return null
+        }
+
+        var payloadSize = datagram.size - offset
+        if (padding) {
+            if (payloadSize == 0) return null
+            val padLen = datagram[datagram.size - 1].toInt() and 0xFF
+            if (padLen > payloadSize) return null
+            payloadSize -= padLen
+        }
+
+        val payload = datagram.copyOfRange(offset, offset + payloadSize)
         return Header(seq, ts, ssrc, payloadType, marker) to payload
     }
 

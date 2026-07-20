@@ -39,6 +39,7 @@ class XvCotListener(
         object : CotDetailHandler(
             setOf(
                 XvCotPublisher.DETAIL_NAME,
+                XvBridgeCotPublisher.DETAIL_NAME,
                 com.atakmap.android.xv.provisioning.XvChannelShare.DETAIL_NAME,
             ),
         ) {
@@ -50,6 +51,7 @@ class XvCotListener(
                 if (event == null || detail == null) return CommsMapComponent.ImportResult.IGNORE
                 return when (detail.elementName) {
                     XvCotPublisher.DETAIL_NAME -> handlePresence(event, detail)
+                    XvBridgeCotPublisher.DETAIL_NAME -> handleBridgePresence(event, detail)
                     com.atakmap.android.xv.provisioning.XvChannelShare.DETAIL_NAME -> handleShare(event)
                     else -> CommsMapComponent.ImportResult.IGNORE
                 }
@@ -91,6 +93,39 @@ class XvCotListener(
             Log.w(TAG, "unregisterHandler threw", t)
         }
         registered = false
+    }
+
+    /**
+     * Parse a `<__xv_bridge>` local-only bridge-election CoT.
+     *
+     * These events travel exclusively over SA multicast (dispatchToBroadcast),
+     * never to the TAK Server. They carry per-peer bridge state that lets
+     * devices on the same local network know who is currently bridging to
+     * Mumble — critical for CLEARTEXT channels where multicast control
+     * packets are suppressed to avoid VX radio static.
+     *
+     * Security note: we read the operator UID from the `uid` attribute
+     * inside the detail (NOT from event.uid, which is the derived bridge
+     * UID "<op>-xv-bridge"). The inner uid is acceptable here because
+     * bridge CoT is local-only — it is never TAK-Server-authenticated and
+     * never crosses the WAN. An adversary on the LAN could spoof it, but
+     * bridge election is a BFT-style low-stakes signal: worst case a rogue
+     * node gets elected bridge and fails to relay, which has the same
+     * effect as a disconnected bridge node.
+     */
+    private fun handleBridgePresence(
+        event: CotEvent,
+        xvb: CotDetail,
+    ): CommsMapComponent.ImportResult {
+        val uid = xvb.getAttribute("uid")?.takeIf { it.isNotBlank() }
+            ?: event.uid?.takeIf { it.isNotBlank() }
+            ?: return CommsMapComponent.ImportResult.IGNORE
+        if (ourUid != null && uid == ourUid) return CommsMapComponent.ImportResult.SUCCESS
+        val mumbleConnected = xvb.getAttribute("mumbleConnected") == "true"
+        val isBridging = xvb.getAttribute("bridging") == "true"
+        registry.upsertBridgeState(uid, mumbleConnected, isBridging, System.currentTimeMillis())
+        Log.d(TAG, "bridge CoT from uid=$uid mumbleConnected=$mumbleConnected bridging=$isBridging")
+        return CommsMapComponent.ImportResult.SUCCESS
     }
 
     private fun handleShare(event: CotEvent): CommsMapComponent.ImportResult {

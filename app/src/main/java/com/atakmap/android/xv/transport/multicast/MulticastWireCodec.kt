@@ -245,13 +245,7 @@ class VxWireCodec(private val ssrc: Long) : MulticastWireCodec {
         burstStart = true
     }
 
-    override fun encodeTx(opus: ByteArray): ByteArray? {
-        val rtp = RtpFraming.encode(seq, timestamp, ssrc, opus, burstStart)
-        seq = (seq + 1) and 0xFFFF
-        timestamp = (timestamp + RtpFraming.TIMESTAMP_INCREMENT_20MS) and 0xFFFFFFFFL
-        burstStart = false
-        return rtp
-    }
+    override fun encodeTx(opus: ByteArray): ByteArray? = opus
 
     override fun decodeRx(
         datagram: ByteArray,
@@ -264,17 +258,10 @@ class VxWireCodec(private val ssrc: Long) : MulticastWireCodec {
             return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.MALFORMED)
         }
 
-        val decoded = RtpFraming.decode(datagram)
-            ?: return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.NOT_RTP)
-
-        val (header, payload) = decoded
-        if (header.payloadType != RtpFraming.PAYLOAD_TYPE_OPUS) {
-            return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.WRONG_PAYLOAD_TYPE)
-        }
         return MulticastWireCodec.RxResult.Voice(
-            speakerKey = "ssrc:%08x".format(header.ssrc),
-            seqInBurst = header.sequenceNumber,
-            opus = payload,
+            speakerKey = "ip:$sourceHost",
+            seqInBurst = null,
+            opus = datagram,
         )
     }
 

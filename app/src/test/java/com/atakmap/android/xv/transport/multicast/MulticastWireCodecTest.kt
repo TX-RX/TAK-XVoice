@@ -281,6 +281,16 @@ class MulticastWireCodecTest {
         )
     }
 
+    @Test
+    fun `vx rx passes through raw opus datagrams`() {
+        val codec = VxWireCodec(12345L)
+        val datagram = byteArrayOf(0x11, 0x22, 0x33, 0x44, 0x55)
+        val v = voice(codec.decodeRx(datagram, sourceHost = "198.51.100.7"))
+        assertEquals("ip:198.51.100.7", v.speakerKey)
+        assertNull(v.seqInBurst)
+        assertArrayEquals(datagram, v.opus)
+    }
+
     // ---- factory ----
 
     @Test

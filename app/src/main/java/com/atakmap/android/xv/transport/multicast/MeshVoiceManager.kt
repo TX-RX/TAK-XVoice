@@ -89,6 +89,12 @@ class MeshVoiceManager(
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val failoverPolicy: FailoverPolicy = FailoverPolicy(),
     private val deduper: RxDeduper = RxDeduper(),
+    /**
+     * Optional publisher that broadcasts bridge-election state over the
+     * local mesh using ATAK's SA-multicast (never to TAK Server). Null in
+     * tests that don't exercise CoT dispatch.
+     */
+    private val bridgeCotPublisher: com.atakmap.android.xv.presence.XvBridgeCotPublisher? = null,
 ) : MeshLegSink {
     // ---- leg + channel state ----
 
@@ -605,6 +611,11 @@ class MeshVoiceManager(
         // arrive via observePeerConnectivity; beacons via handleBeacon.
         val wasBridging = bridging
         bridging = legs.isNotEmpty() && bridgeElection.evaluate(now, mumbleConnected())
+        if (bridging != wasBridging) {
+            // Notify local-mesh peers of our bridge role change via CoT.
+            bridgeCotPublisher?.setBridging(bridging)
+            bridgeCotPublisher?.setMumbleSession(if (mumbleConnected()) 0 else null)
+        }
         if (wasBridging && !bridging) {
             // Lost the bridge role: shed all per-speaker relay state so a
             // later re-acquire starts clean and codecs/timestamps for
@@ -787,6 +798,7 @@ class MeshVoiceManager(
         rendezvousLeg = null
         deduper.reset()
         bridgeElection.reset()
+        bridgeCotPublisher?.stop()
         relayLastFrameMs.clear()
         relayToServerLastMs.clear()
         if (meshTxActive) {
