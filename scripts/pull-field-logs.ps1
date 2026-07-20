@@ -98,7 +98,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 # masking MACs first keeps them from being double-tagged as IPv6.
 $macRe   = '(?i)\b([0-9A-F]{2}):[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:([0-9A-F]{2})\b'
 $ipv4Re  = '\b(?:\d{1,3}\.){3}\d{1,3}\b'
-$ipv6Re  = '(?i)\b(?:[0-9A-F]{1,4}:){2,7}[0-9A-F]{1,4}\b'
+$ipv6Re  = '(?i)\b(?:[0-9A-F]{1,4}:){2,7}[0-9A-F]{1,4}\b|(?<![a-zA-Z0-9:])(?:[0-9A-F]{1,4}:)*::(?:[0-9A-F]{1,4}:)*[0-9A-F]{1,4}(?![a-zA-Z0-9:])'
 $geoRe   = '-?\d{1,3}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}'
 # Operator content patterns (real hostnames / callsigns / unit names).
 $opPatterns = @($cfg.contentForbiddenPatterns | Where-Object { $_ -and $_.Trim() -ne "" })
@@ -119,7 +119,8 @@ function Invoke-Scrub([string] $Text) {
 # Residual-leak gate: patterns that must NOT survive a scrub.
 $leakGate = @(
     @{ name = 'raw MAC'; re = '(?i)\b[0-9A-F]{2}(:[0-9A-F]{2}){5}\b' },
-    @{ name = 'IPv4';    re = $ipv4Re }
+    @{ name = 'IPv4';    re = $ipv4Re },
+    @{ name = 'IPv6';    re = $ipv6Re }
 ) + ($opPatterns | ForEach-Object { @{ name = "operator pattern /$_/"; re = $_ } })
 
 $anyLeak = $false

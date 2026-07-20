@@ -37,7 +37,7 @@ data class ServerIdentity(
          * after the last colon would corrupt it).
          */
         fun fromHostname(host: String): ServerIdentity {
-            var h = host.trim().lowercase()
+            var h = host.trim().lowercase(java.util.Locale.ROOT)
             val schemeIdx = h.indexOf("://")
             if (schemeIdx >= 0) h = h.substring(schemeIdx + 3)
             h = h.substringBefore('/')
@@ -58,7 +58,7 @@ data class ServerIdentity(
          * alternative identity root for a future `xv-mcast-v2`.
          */
         fun fromCertFingerprint(fp: String): ServerIdentity {
-            val cleaned = fp.trim().lowercase().replace(":", "").replace(" ", "")
+            val cleaned = fp.trim().lowercase(java.util.Locale.ROOT).replace(":", "").replace(" ", "")
             require(cleaned.matches(Regex("[0-9a-f]{64}"))) {
                 "expected 64 hex chars of SHA-256 fingerprint"
             }

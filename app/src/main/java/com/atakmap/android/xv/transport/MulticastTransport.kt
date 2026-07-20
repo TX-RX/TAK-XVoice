@@ -162,6 +162,16 @@ class MulticastTransport(
             val buf = ByteArray(MAX_DATAGRAM_BYTES)
             val packet = DatagramPacket(buf, buf.size)
 
+            val localSpeakerKeys = mutableSetOf<String>()
+            if (localSpeakerKey != null) localSpeakerKeys.add(localSpeakerKey)
+            runCatching {
+                NetworkInterface.getNetworkInterfaces()?.iterator()?.forEach { intf ->
+                    intf.inetAddresses.iterator().forEach { addr ->
+                        addr.hostAddress?.let { localSpeakerKeys.add("ip:$it") }
+                    }
+                }
+            }
+
             while (connected && !Thread.currentThread().isInterrupted) {
                 packet.length = buf.size
                 try {
@@ -174,7 +184,7 @@ class MulticastTransport(
                 val datagram = packet.data.copyOfRange(0, packet.length)
                 when (val r = rxCodec.decodeRx(datagram, sourceHost)) {
                     is MulticastWireCodec.RxResult.Voice -> {
-                        if (localSpeakerKey != null && r.speakerKey == localSpeakerKey) {
+                        if (localSpeakerKeys.contains(r.speakerKey)) {
                             // Our own TX looped back by the OS — not a peer.
                             continue
                         }
