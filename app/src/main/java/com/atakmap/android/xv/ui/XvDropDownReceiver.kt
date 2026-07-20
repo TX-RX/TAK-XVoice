@@ -1040,10 +1040,10 @@ class XvDropDownReceiver(
         }
 
         val list = v.findViewById<android.widget.ExpandableListView>(R.id.xv_picker_list)
-        
+
         val allChannels = controller.availableChannels().map { it.name }.toMutableSet()
         val serverGroups = controller.availableChannels().groupBy { controller.connectedTakHost() ?: "Offline / ad-hoc" }.toMutableMap()
-        
+
         // Add offline/mesh candidates
         if (slot == 0 && controller.meshVoiceEnabled()) {
             val serverCanon = allChannels.map { MulticastGroupDerivation.canonicalChannelName(it) }.toSet()
@@ -1053,15 +1053,23 @@ class XvDropDownReceiver(
                 val existingOffline = serverGroups["Offline / ad-hoc"]?.map { it.name } ?: emptyList()
                 val newOffline = offlineOnly.filter { it !in existingOffline }
                 val offlineList = (serverGroups["Offline / ad-hoc"] ?: emptyList()).toMutableList()
-                newOffline.forEach { offlineList.add(com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo(-1, it, com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE)) }
+                newOffline.forEach {
+                    offlineList.add(
+                        com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo(
+                            -1,
+                            it,
+                            com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE
+                        )
+                    )
+                }
                 serverGroups["Offline / ad-hoc"] = offlineList
             }
         }
-        
+
         val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
         val groupList = sortedGroups.map { it.key }
         val childMap = sortedGroups.associate { it.key to it.value.map { ch -> ch.name }.sorted() }
-        
+
         val current = if (slot == 0) controller.currentChannelName() else controller.secondaryChannelName()
         val otherSlotChannel = if (slot == 0) controller.secondaryChannelName() else controller.currentChannelName()
         val otherSlotLabel = if (slot == 0) "VS2" else "VS1"
@@ -1076,19 +1084,31 @@ class XvDropDownReceiver(
             override fun getChildId(groupPosition: Int, childPosition: Int): Long = childPosition.toLong()
             override fun hasStableIds(): Boolean = false
 
-            override fun getGroupView(groupPosition: Int, isExpanded: Boolean, convertView: View?, parent: android.view.ViewGroup?): View {
+            override fun getGroupView(
+                groupPosition: Int,
+                isExpanded: Boolean,
+                convertView: View?,
+                parent: android.view.ViewGroup?,
+            ): View {
                 val groupName = getGroup(groupPosition) as String
-                val gv = convertView ?: android.view.LayoutInflater.from(pluginContext).inflate(R.layout.xv_share_picker_group, parent, false)
+                val gv =
+                    convertView ?: android.view.LayoutInflater.from(pluginContext).inflate(R.layout.xv_share_picker_group, parent, false)
                 gv.findViewById<TextView>(R.id.xv_group_name).text = groupName
                 gv.findViewById<TextView>(R.id.xv_group_indicator).text = if (isExpanded) "▼" else "▶"
                 return gv
             }
 
-            override fun getChildView(groupPosition: Int, childPosition: Int, isLastChild: Boolean, convertView: View?, parent: android.view.ViewGroup?): View {
+            override fun getChildView(
+                groupPosition: Int,
+                childPosition: Int,
+                isLastChild: Boolean,
+                convertView: View?,
+                parent: android.view.ViewGroup?,
+            ): View {
                 val chName = getChild(groupPosition, childPosition) as String
                 val isCurrent = chName.equals(current, ignoreCase = true)
                 val isOnOtherSlot = !otherSlotChannel.isNullOrBlank() && chName.equals(otherSlotChannel, ignoreCase = true)
-                
+
                 var chParticipation = com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE
                 for (ch in controller.availableChannels()) {
                     if (ch.name == chName) {
@@ -1096,14 +1116,17 @@ class XvDropDownReceiver(
                         break
                     }
                 }
-                
+
                 val effectiveTier = when {
                     isOnOtherSlot -> com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.UNAUTHORIZED
-                    isCurrent && currentSuppressed && chParticipation == com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE -> com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN
+                    isCurrent &&
+                        currentSuppressed &&
+                        chParticipation == com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE ->
+                        com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN
                     else -> chParticipation
                 }
                 val labelOverride = if (isOnOtherSlot) "$chName   (in use by $otherSlotLabel)" else chName
-                
+
                 val container = android.widget.LinearLayout(pluginContext).apply {
                     orientation = android.widget.LinearLayout.HORIZONTAL
                     layoutParams = android.widget.AbsListView.LayoutParams(
@@ -1114,9 +1137,12 @@ class XvDropDownReceiver(
                 }
 
                 val buildParticipation = when (effectiveTier) {
-                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE -> Participation.PARTICIPATE
-                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN -> Participation.LISTEN
-                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.UNAUTHORIZED -> Participation.UNAUTHORIZED
+                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE ->
+                        Participation.PARTICIPATE
+                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN ->
+                        Participation.LISTEN
+                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.UNAUTHORIZED ->
+                        Participation.UNAUTHORIZED
                     else -> Participation.UNKNOWN
                 }
 
@@ -1139,7 +1165,10 @@ class XvDropDownReceiver(
                     setBackgroundResource(android.R.color.transparent)
                     val dp = (12 * pluginContext.resources.displayMetrics.density).toInt()
                     setPadding(dp, dp, dp, dp)
-                    val p = android.widget.LinearLayout.LayoutParams(android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT)
+                    val p = android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
                     p.gravity = android.view.Gravity.CENTER_VERTICAL
                     layoutParams = p
                     setOnClickListener {
@@ -1149,7 +1178,7 @@ class XvDropDownReceiver(
                     }
                 }
                 container.addView(gear)
-                
+
                 if (groupList[groupPosition] == "Offline / ad-hoc") {
                     container.setOnLongClickListener {
                         confirmForgetOfflineChannel(chName, slot)
@@ -1166,18 +1195,20 @@ class XvDropDownReceiver(
         if (slot == 1) {
             val header = android.widget.LinearLayout(pluginContext).apply {
                 orientation = android.widget.LinearLayout.HORIZONTAL
-                addView(buildChannelButton(
-                    label = "(none)",
-                    isCurrent = current.isNullOrBlank(),
-                    participation = Participation.PARTICIPATE
-                ) {
-                    controller.setSecondaryChannel("")
-                    mainHandler.post { inflateMainAndShow() }
-                })
+                addView(
+                    buildChannelButton(
+                        label = "(none)",
+                        isCurrent = current.isNullOrBlank(),
+                        participation = Participation.PARTICIPATE
+                    ) {
+                        controller.setSecondaryChannel("")
+                        mainHandler.post { inflateMainAndShow() }
+                    }
+                )
             }
             list.addHeaderView(header)
         }
-        
+
         list.setAdapter(adapter)
 
         val connectedServer = controller.connectedTakHost()
@@ -1207,7 +1238,7 @@ class XvDropDownReceiver(
             }.setNegativeButton("Cancel", null)
             .show()
     }
-    
+
     private fun promptConfigureChannel(v: View, channel: String, onSaved: () -> Unit = { refreshMeshSection(v) }) {
         val ctx = mapView.context
         val view = android.widget.LinearLayout(ctx).apply {
@@ -2470,7 +2501,7 @@ class XvDropDownReceiver(
             candidates.forEach { name ->
                 val canonical = MulticastGroupDerivation.canonicalChannelName(name)
                 val dp = pluginContext.resources.displayMetrics.density
-                
+
                 val chip = Button(pluginContext).apply {
                     text = "⚙ $name"
                     isAllCaps = false
