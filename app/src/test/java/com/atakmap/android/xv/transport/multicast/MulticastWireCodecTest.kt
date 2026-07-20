@@ -267,8 +267,6 @@ class MulticastWireCodecTest {
 
     // ---- VX compat ----
 
-
-
     @Test
     fun `vx rx drops empties and stray xv control traffic`() {
         val codec = VxWireCodec(12345L)

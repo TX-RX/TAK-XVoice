@@ -258,7 +258,7 @@ class VxWireCodec(private val ssrc: Long) : MulticastWireCodec {
         sourceHost: String,
     ): MulticastWireCodec.RxResult {
         if (datagram.isEmpty()) return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.EMPTY)
-        
+
         // Ignore any XV control packets if they accidentally bleed over.
         if (ControlPacket.isControl(datagram)) {
             return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.MALFORMED)
@@ -266,7 +266,7 @@ class VxWireCodec(private val ssrc: Long) : MulticastWireCodec {
 
         val decoded = RtpFraming.decode(datagram)
             ?: return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.NOT_RTP)
-            
+
         val (header, payload) = decoded
         if (header.payloadType != RtpFraming.PAYLOAD_TYPE_OPUS) {
             return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.WRONG_PAYLOAD_TYPE)
