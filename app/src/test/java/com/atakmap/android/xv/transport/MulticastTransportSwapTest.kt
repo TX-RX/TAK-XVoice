@@ -2,7 +2,7 @@ package com.atakmap.android.xv.transport
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.atakmap.android.xv.transport.multicast.OpenManetWireCodec
+import com.atakmap.android.xv.transport.multicast.VxWireCodec
 import io.mockk.every
 import io.mockk.mockk
 import java.net.DatagramPacket
@@ -108,8 +108,8 @@ class MulticastTransportSwapTest {
                 channelLabel = "test",
             ),
             context = ctx,
-            txCodec = OpenManetWireCodec(),
-            rxCodec = OpenManetWireCodec(),
+            txCodec = VxWireCodec(12345L),
+            rxCodec = VxWireCodec(12345L),
             socketFactory = socketFactory,
         )
     }

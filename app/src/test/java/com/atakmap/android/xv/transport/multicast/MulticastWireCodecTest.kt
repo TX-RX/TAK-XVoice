@@ -265,18 +265,18 @@ class MulticastWireCodecTest {
         )
     }
 
-    // ---- OpenMANET compat ----
+    // ---- VX compat ----
 
     @Test
     fun `openmanet tx is the raw opus frame`() {
-        val codec = OpenManetWireCodec()
+        val codec = VxWireCodec(12345L)
         codec.beginBurst()
         assertArrayEquals(opus, codec.encodeTx(opus))
     }
 
     @Test
     fun `openmanet rx attributes by source ip with no sequence`() {
-        val codec = OpenManetWireCodec()
+        val codec = VxWireCodec(12345L)
         val v = voice(codec.decodeRx(opus, sourceHost = "198.51.100.7"))
         assertEquals("ip:198.51.100.7", v.speakerKey)
         assertNull(v.seqInBurst)
@@ -285,7 +285,7 @@ class MulticastWireCodecTest {
 
     @Test
     fun `openmanet rx drops empties and stray xv control traffic`() {
-        val codec = OpenManetWireCodec()
+        val codec = VxWireCodec(12345L)
         assertEquals(
             MulticastWireCodec.DropReason.EMPTY,
             dropReason(codec.decodeRx(ByteArray(0), sourceHost = "198.51.100.7")),
@@ -307,11 +307,11 @@ class MulticastWireCodecTest {
         val compat =
             ChannelMulticastConfig(
                 channelName = "mesh-ptt",
-                wireFormat = WireFormat.OPENMANET_COMPAT,
+                wireFormat = WireFormat.VX_COMPAT,
                 cryptoPolicy = CryptoPolicy.CLEARTEXT,
                 pinnedGroup = "224.0.0.1",
                 pinnedPort = 5007,
             ).newWireCodec(ssrc, keyRegistry = null)
-        assertTrue(compat is OpenManetWireCodec)
+        assertTrue(compat is VxWireCodec)
     }
 }

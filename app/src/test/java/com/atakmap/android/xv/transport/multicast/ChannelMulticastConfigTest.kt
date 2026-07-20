@@ -85,7 +85,7 @@ class ChannelMulticastConfigTest {
         val cfg =
             ChannelMulticastConfig(
                 channelName = "mesh-ptt",
-                wireFormat = WireFormat.OPENMANET_COMPAT,
+                wireFormat = WireFormat.VX_COMPAT,
                 cryptoPolicy = CryptoPolicy.CLEARTEXT,
             )
         assertNotNull(cfg.validate())
@@ -96,7 +96,7 @@ class ChannelMulticastConfigTest {
         fun withCrypto(c: CryptoPolicy) =
             ChannelMulticastConfig(
                 channelName = "mesh-ptt",
-                wireFormat = WireFormat.OPENMANET_COMPAT,
+                wireFormat = WireFormat.VX_COMPAT,
                 cryptoPolicy = c,
                 pinnedGroup = "224.0.0.1",
                 pinnedPort = 5007,
@@ -131,11 +131,11 @@ class ChannelMulticastConfigTest {
             ChannelMulticastConfig.defaultFor("ops-1").toJson(),
         )
         assertEquals(
-            """{"channel":"mesh-ptt","mode":"ALWAYS","wireFormat":"OPENMANET_COMPAT","cryptoPolicy":"CLEARTEXT","group":"224.0.0.1","port":5007}""",
+            """{"channel":"mesh-ptt","mode":"ALWAYS","wireFormat":"VX_COMPAT","cryptoPolicy":"CLEARTEXT","group":"224.0.0.1","port":5007}""",
             ChannelMulticastConfig(
                 channelName = "mesh-ptt",
                 mode = MulticastMode.ALWAYS,
-                wireFormat = WireFormat.OPENMANET_COMPAT,
+                wireFormat = WireFormat.VX_COMPAT,
                 cryptoPolicy = CryptoPolicy.CLEARTEXT,
                 pinnedGroup = "224.0.0.1",
                 pinnedPort = 5007,
@@ -152,7 +152,7 @@ class ChannelMulticastConfigTest {
             ChannelMulticastConfig(
                 channelName = "mesh-ptt",
                 mode = MulticastMode.ALWAYS,
-                wireFormat = WireFormat.OPENMANET_COMPAT,
+                wireFormat = WireFormat.VX_COMPAT,
                 cryptoPolicy = CryptoPolicy.CLEARTEXT,
                 pinnedGroup = "224.0.0.1",
                 pinnedPort = 5007,
@@ -189,7 +189,7 @@ class ChannelMulticastConfigTest {
         // is rejected instead of silently reverting to defaults.
         val parsed =
             ChannelMulticastConfig.fromJson(
-                """{"channel":"mesh-ptt","mode":"ALWAYS","wireFormat":"OPENMANET_COMPAT","cryptoPolicy":"CLEARTEXT"}""",
+                """{"channel":"mesh-ptt","mode":"ALWAYS","wireFormat":"VX_COMPAT","cryptoPolicy":"CLEARTEXT"}""",
             )
         assertNotNull(parsed)
         assertTrue(parsed!!.validate() != null)

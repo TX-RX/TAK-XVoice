@@ -36,7 +36,7 @@ class RtpFramingTest {
     }
 
     @Test
-    fun `payload type 111 matches OpenMANET`() {
+    fun `payload type 111 matches VX`() {
         val wire = RtpFraming.encode(0, 0L, 0L, byteArrayOf())
         val pt = wire[1].toInt() and 0x7F
         assertEquals(111, pt)

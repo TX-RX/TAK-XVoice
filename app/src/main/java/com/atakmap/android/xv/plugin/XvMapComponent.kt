@@ -3039,7 +3039,7 @@ class XvMapComponent : AbstractMapComponent() {
                 val updated = config.copy(
                     patchGroup = patchGroup,
                     patchPort = patchPortStr?.toIntOrNull(),
-                    patchWireFormat = com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT,
+                    patchWireFormat = com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT,
                     patchCryptoPolicy = com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT
                 )
                 if (patchGroup != null && updated.patchPort == null) return "Invalid port number."

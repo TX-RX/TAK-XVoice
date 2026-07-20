@@ -47,7 +47,7 @@ class MeshChannelSpecTest {
                 "mesh-ptt",
                 group = "224.0.0.1",
                 port = "5007",
-                WireFormat.OPENMANET_COMPAT,
+                WireFormat.VX_COMPAT,
                 CryptoPolicy.CLEARTEXT,
             )
         assertNull(r.error)
@@ -89,7 +89,7 @@ class MeshChannelSpecTest {
 
     @Test
     fun `openmanet compat without a pin is rejected`() {
-        val r = MeshChannelSpec.build("x", group = null, port = null, WireFormat.OPENMANET_COMPAT, CryptoPolicy.CLEARTEXT)
+        val r = MeshChannelSpec.build("x", group = null, port = null, WireFormat.VX_COMPAT, CryptoPolicy.CLEARTEXT)
         assertNotNull(r.error)
     }
 
@@ -100,7 +100,7 @@ class MeshChannelSpecTest {
                 "x",
                 group = "224.0.0.1",
                 port = "5007",
-                WireFormat.OPENMANET_COMPAT,
+                WireFormat.VX_COMPAT,
                 CryptoPolicy.REQUIRED,
             )
         assertNotNull(r.error)

@@ -14,7 +14,7 @@ import com.atakmap.android.xv.transport.VoiceFrame
  * Relay TX keeps per-speaker [XvNativeWireCodec] instances so frames
  * a bridge forwards from the server carry the ORIGINAL speaker's
  * FNV-1a SSRC — mesh receivers attribute and dedup them correctly.
- * On OpenMANET-compat legs the wire has no speaker field at all, so
+ * On VX-compat legs the wire has no speaker field at all, so
  * relay degrades to raw Opus (attribution becomes the bridge's IP;
  * inherent to that format).
  */
@@ -111,7 +111,7 @@ class MulticastMeshLeg(
     // OS loopback arrives within milliseconds of our send, so a short
     // TTL past the last relayed frame cleanly separates "our relay
     // echoing back" from "the speaker now talking on mesh for real".
-    // (OPENMANET_COMPAT relays are raw Opus with source-IP
+    // (VX_COMPAT relays are raw Opus with source-IP
     // attribution; loopback carries our own source address, which
     // that format's receivers key on, so this map is XV_NATIVE-only
     // by construction.)
@@ -133,7 +133,7 @@ class MulticastMeshLeg(
     ) {
         val codec =
             when (config.wireFormat) {
-                WireFormat.OPENMANET_COMPAT -> {
+                WireFormat.VX_COMPAT -> {
                     // No speaker field on this wire; raw passthrough.
                     transport.sendRaw(opus)
                     return

@@ -233,51 +233,59 @@ class XvNativeWireCodec(
 }
 
 /**
- * OpenMANET 1.7.0 / ATAK VX / OpenVLM interop framing: one raw Opus
- * frame per UDP datagram. Nothing else on the wire — no header, no
- * sequence, no speaker id, no crypto. Attribution is the source IP,
- * which is also all the dedup layer gets ([RxResult.Voice.seqInBurst]
- * is always null).
- *
- * OpenMANET's encoder profile, for reference when tuning XV's TX side
- * to be a polite citizen on constrained mesh links (RX-side interop
- * needs none of this — Opus decoders are bitrate-agnostic):
- * 48 kHz, mono, 12 kbps target, 20 ms frames (960 samples),
- * complexity 3, in-band FEC on, DTX off.
+ * ATAK VX interop framing (Standard RTP)
  */
-class OpenManetWireCodec : MulticastWireCodec {
+class VxWireCodec(private val ssrc: Long) : MulticastWireCodec {
+    private var seq = 0
+    private var timestamp = 0L
+    private var burstStart = true
+
     override fun beginBurst() {
-        // No burst-relative wire state in this format.
+        seq = 0
+        burstStart = true
     }
 
-    override fun encodeTx(opus: ByteArray): ByteArray = opus
+    override fun encodeTx(opus: ByteArray): ByteArray? {
+        val rtp = RtpFraming.encode(seq, timestamp, ssrc, opus, burstStart)
+        seq = (seq + 1) and 0xFFFF
+        timestamp = (timestamp + RtpFraming.TIMESTAMP_INCREMENT_20MS) and 0xFFFFFFFFL
+        burstStart = false
+        return rtp
+    }
 
     override fun decodeRx(
         datagram: ByteArray,
         sourceHost: String,
     ): MulticastWireCodec.RxResult {
         if (datagram.isEmpty()) return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.EMPTY)
-        // Defensive: if an XV peer is misconfigured onto an interop
-        // group its XVMC control traffic must not reach a decoder.
-        if (ControlPacket.isControl(datagram) && ControlPacket.decode(datagram) != null) {
+        
+        // Ignore any XV control packets if they accidentally bleed over.
+        if (ControlPacket.isControl(datagram)) {
             return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.MALFORMED)
         }
+
+        val decoded = RtpFraming.decode(datagram)
+            ?: return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.NOT_RTP)
+            
+        val (header, payload) = decoded
+        if (header.payloadType != RtpFraming.PAYLOAD_TYPE_OPUS) {
+            return MulticastWireCodec.RxResult.Dropped(MulticastWireCodec.DropReason.WRONG_PAYLOAD_TYPE)
+        }
         return MulticastWireCodec.RxResult.Voice(
-            speakerKey = "ip:$sourceHost",
-            seqInBurst = null,
-            opus = datagram,
+            speakerKey = "ssrc:%08x".format(header.ssrc),
+            seqInBurst = header.sequenceNumber,
+            opus = payload,
         )
     }
 
     companion object {
-        // OpenMANET 1.7.0 voice profile (openmanetd internal/ptt).
-        const val OPENMANET_SAMPLE_RATE_HZ = 48_000
-        const val OPENMANET_CHANNELS = 1
-        const val OPENMANET_BITRATE_BPS = 12_000
-        const val OPENMANET_FRAME_MS = 20
-        const val OPENMANET_FRAME_SAMPLES = 960
-        const val OPENMANET_FEC = true
-        const val OPENMANET_DTX = false
+        const val VX_SAMPLE_RATE_HZ = 48_000
+        const val VX_CHANNELS = 1
+        const val VX_BITRATE_BPS = 12_000
+        const val VX_FRAME_MS = 20
+        const val VX_FRAME_SAMPLES = 960
+        const val VX_FEC = true
+        const val VX_DTX = false
     }
 }
 
@@ -288,5 +296,5 @@ fun ChannelMulticastConfig.newWireCodec(
 ): MulticastWireCodec =
     when (wireFormat) {
         WireFormat.XV_NATIVE -> XvNativeWireCodec(ssrc, cryptoPolicy, keyRegistry)
-        WireFormat.OPENMANET_COMPAT -> OpenManetWireCodec()
+        WireFormat.VX_COMPAT -> VxWireCodec(ssrc)
     }

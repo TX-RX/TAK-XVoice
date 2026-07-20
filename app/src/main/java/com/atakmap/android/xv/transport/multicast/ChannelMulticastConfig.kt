@@ -10,17 +10,17 @@ import org.json.JSONObject
  *                     XV↔XV channels (including every auto-derived
  *                     failover group — only XV computes the derivation,
  *                     so there is no interop cost to encrypting them).
- *   OPENMANET_COMPAT — each UDP datagram is one raw Opus frame. No
+ *   VX_COMPAT — each UDP datagram is one raw Opus frame. No
  *                     framing, no sequence numbers, no encryption;
  *                     speaker identity is implicit in the source IP.
- *                     Matches OpenMANET 1.7.0 voice comms / the ATAK VX
+ *                     Matches VX 1.7.0 voice comms / the ATAK VX
  *                     plugin / OpenVLM. Requires an operator-pinned
  *                     group + port (typically 224.0.0.1:5007 or a
  *                     talkgroup in 225.41.1.1–.5) because those
  *                     deployments chose their addresses on their own
  *                     scheme — the XV derivation can't find them.
  */
-enum class WireFormat { XV_NATIVE, OPENMANET_COMPAT }
+enum class WireFormat { XV_NATIVE, VX_COMPAT }
 
 /**
  * Per-channel encryption posture for the multicast leg.
@@ -30,7 +30,7 @@ enum class WireFormat { XV_NATIVE, OPENMANET_COMPAT }
  *   PREFERRED — encrypt when a channel key is live, fall back to clear
  *               RTP when keying hasn't converged. Degrades to degraded
  *               comms, never to silence. Default.
- *   CLEARTEXT — never encrypt. Forced for [WireFormat.OPENMANET_COMPAT]
+ *   CLEARTEXT — never encrypt. Forced for [WireFormat.VX_COMPAT]
  *               (the interop format has no crypto layer at all) and
  *               surfaced in the UI as a clear-traffic badge.
  */
@@ -54,7 +54,7 @@ enum class MulticastMode { OFF, FAILOVER, ALWAYS }
  * with NO stored config is not "multicast off" — it gets [defaultFor]
  * (auto-derived FAILOVER leg) whenever the global mesh-voice toggle is
  * on. Stored configs are overrides: pinning a group/port, switching to
- * the OpenMANET-compat wire format, or forcing the mode.
+ * the VX-compat wire format, or forcing the mode.
  *
  * [channelName] is stored canonicalized
  * ([MulticastGroupDerivation.canonicalChannelName]) so lookups can't
@@ -74,7 +74,7 @@ data class ChannelMulticastConfig(
     /** Optional secondary patch UDP port. */
     val patchPort: Int? = null,
     /** Wire format for the secondary patch channel. */
-    val patchWireFormat: WireFormat = WireFormat.OPENMANET_COMPAT,
+    val patchWireFormat: WireFormat = WireFormat.VX_COMPAT,
     /** Crypto policy for the secondary patch channel. */
     val patchCryptoPolicy: CryptoPolicy = CryptoPolicy.CLEARTEXT,
 ) {
@@ -94,13 +94,13 @@ data class ChannelMulticastConfig(
         if (pinnedGroup != null && !isIpv4MulticastAddress(pinnedGroup)) {
             return "pinned group '$pinnedGroup' is not an IPv4 multicast address (224.0.0.1—239.255.255.255)"
         }
-        if (wireFormat == WireFormat.OPENMANET_COMPAT) {
+        if (wireFormat == WireFormat.VX_COMPAT) {
             if (pinnedGroup == null) {
-                return "OpenMANET-compat channels need an explicit group + port " +
+                return "VX-compat channels need an explicit group + port " +
                     "(the interop deployment chose them; XV can't derive them)"
             }
             if (cryptoPolicy != CryptoPolicy.CLEARTEXT) {
-                return "OpenMANET-compat wire format has no encryption layer; crypto policy must be CLEARTEXT"
+                return "VX-compat wire format has no encryption layer; crypto policy must be CLEARTEXT"
             }
         }
         if ((patchGroup == null) != (patchPort == null)) {
@@ -112,8 +112,8 @@ data class ChannelMulticastConfig(
         if (patchGroup != null && !isIpv4MulticastAddress(patchGroup)) {
             return "patch group '$patchGroup' is not an IPv4 multicast address"
         }
-        if (patchGroup != null && patchWireFormat == WireFormat.OPENMANET_COMPAT && patchCryptoPolicy != CryptoPolicy.CLEARTEXT) {
-            return "OpenMANET-compat patch format has no encryption layer; patch crypto policy must be CLEARTEXT"
+        if (patchGroup != null && patchWireFormat == WireFormat.VX_COMPAT && patchCryptoPolicy != CryptoPolicy.CLEARTEXT) {
+            return "VX-compat patch format has no encryption layer; patch crypto policy must be CLEARTEXT"
         }
         return null
     }
@@ -193,7 +193,7 @@ data class ChannelMulticastConfig(
                     ) {
                         WireFormat.valueOf(o.getString("patchWireFormat"))
                     } else {
-                        WireFormat.OPENMANET_COMPAT
+                        WireFormat.VX_COMPAT
                     },
                     patchCryptoPolicy = if (o.has(
                             "patchCryptoPolicy"

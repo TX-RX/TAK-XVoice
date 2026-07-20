@@ -105,13 +105,13 @@ class CommsPlanTest {
 
     @Test
     fun `a channel config problem is reported against the offending channel`() {
-        // OPENMANET_COMPAT with no pin is the config-level error.
+        // VX_COMPAT with no pin is the config-level error.
         val broken =
             CommsPlan.Channel(
                 displayName = "Mesh PTT",
                 config =
                 ChannelMulticastConfig.defaultFor("mesh-ptt").copy(
-                    wireFormat = com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT,
+                    wireFormat = com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT,
                     cryptoPolicy = CryptoPolicy.CLEARTEXT,
                 ),
             )

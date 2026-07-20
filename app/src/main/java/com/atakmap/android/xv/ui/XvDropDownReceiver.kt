@@ -465,7 +465,7 @@ class XvDropDownReceiver(
         // Provisioning path 3 ("configure manually" / interop): save a
         // channel with an operator-chosen name and, optionally, a pinned
         // group/port + wire format + crypto policy for interop with an
-        // external system (OpenMANET, an ATAK VX talkgroup). Leaving the
+        // external system (VX, an ATAK VX talkgroup). Leaving the
         // group/port blank keeps the automatic derivation. Returns null
         // on success (saved + keyed + joined), or an operator-readable
         // validation error.
@@ -1279,7 +1279,7 @@ class XvDropDownReceiver(
         view.addView(overrideSpinner)
 
         val patchText = android.widget.TextView(ctx).apply {
-            text = "External Patch (OpenManet)"
+            text = "External Patch (Vx)"
             setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
             textSize = 12f
             val density = ctx.resources.displayMetrics.density
@@ -2430,12 +2430,12 @@ class XvDropDownReceiver(
                     ArrayAdapter(
                         ctx,
                         android.R.layout.simple_spinner_dropdown_item,
-                        listOf("XV native (encrypted)", "OpenMANET compatible (cleartext)"),
+                        listOf("XV native (encrypted)", "VX compatible (cleartext)"),
                     )
-                val isOpenManet =
-                    (existingConfig?.wireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT) ||
-                        (existingConfig?.patchWireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.OPENMANET_COMPAT)
-                setSelection(if (isOpenManet) 1 else 0)
+                val isVx =
+                    (existingConfig?.wireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT) ||
+                        (existingConfig?.patchWireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT)
+                setSelection(if (isVx) 1 else 0)
             }
         val cryptoSpinner =
             Spinner(ctx).apply {
@@ -2462,7 +2462,7 @@ class XvDropDownReceiver(
                 addView(
                     caption(
                         "Interoperability (optional) — pin a group/port to match an external " +
-                            "system like OpenMANET. Leave blank for automatic.",
+                            "system like VX. Leave blank for automatic.",
                     ),
                 )
                 addView(groupField)
@@ -2479,7 +2479,7 @@ class XvDropDownReceiver(
             .setView(android.widget.ScrollView(ctx).apply { addView(container) })
             .setPositiveButton("Save") { _, _ ->
                 val wireFormat =
-                    if (wireSpinner.selectedItemPosition == 1) WireFormat.OPENMANET_COMPAT else WireFormat.XV_NATIVE
+                    if (wireSpinner.selectedItemPosition == 1) WireFormat.VX_COMPAT else WireFormat.XV_NATIVE
                 val cryptoPolicy =
                     when (cryptoSpinner.selectedItemPosition) {
                         1 -> CryptoPolicy.REQUIRED
