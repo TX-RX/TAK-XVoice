@@ -3014,6 +3014,13 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun meshChannelConfig(name: String) = settings.channelMulticastConfigFor(name)
 
+            override fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String? {
+                val err = config.validate()
+                if (err != null) return err
+                settings.persistChannelMulticastConfig(config)
+                return null
+            }
+
             override fun saveMeshChannel(
                 name: String,
                 group: String?,

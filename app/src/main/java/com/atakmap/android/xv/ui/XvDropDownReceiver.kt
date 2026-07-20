@@ -470,6 +470,7 @@ class XvDropDownReceiver(
         // on success (saved + keyed + joined), or an operator-readable
         // validation error.
         fun meshChannelConfig(name: String): com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig?
+        fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String?
         fun saveMeshChannel(
             name: String,
             group: String?,
@@ -1241,6 +1242,8 @@ class XvDropDownReceiver(
     }
 
     private fun promptConfigureChannel(v: View, channel: String, onSaved: () -> Unit = { refreshMeshSection(v) }) {
+        val existingConfig =
+            controller.meshChannelConfig(channel) ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(channel)
         val ctx = mapView.context
         val view = android.widget.LinearLayout(ctx).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -1266,7 +1269,12 @@ class XvDropDownReceiver(
             )
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             this.adapter = adapter
-            setSelection(0)
+            val modeIndex = when (existingConfig.mode) {
+                com.atakmap.android.xv.transport.multicast.MulticastMode.FAILOVER -> 0
+                com.atakmap.android.xv.transport.multicast.MulticastMode.ALWAYS -> 1
+                com.atakmap.android.xv.transport.multicast.MulticastMode.OFF -> 2
+            }
+            setSelection(modeIndex)
         }
         view.addView(overrideSpinner)
 
@@ -1282,6 +1290,7 @@ class XvDropDownReceiver(
         val patchGroup = android.widget.EditText(ctx).apply {
             hint = "Group IP (e.g. 224.0.0.1)"
             setSingleLine()
+            setText(existingConfig.patchGroup ?: "")
             layoutParams = android.widget.LinearLayout.LayoutParams(
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
                 android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1293,6 +1302,7 @@ class XvDropDownReceiver(
             hint = "Port (e.g. 5007)"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setSingleLine()
+            setText(existingConfig.patchPort?.toString() ?: "")
             layoutParams = android.widget.LinearLayout.LayoutParams(
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
                 android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1304,8 +1314,32 @@ class XvDropDownReceiver(
             .setTitle("Configure: $channel")
             .setView(view)
             .setPositiveButton("Save") { _, _ ->
-                meshToast("Not yet implemented")
-                onSaved()
+                val mode = when (overrideSpinner.selectedItemPosition) {
+                    0 -> com.atakmap.android.xv.transport.multicast.MulticastMode.FAILOVER
+                    1 -> com.atakmap.android.xv.transport.multicast.MulticastMode.ALWAYS
+                    else -> com.atakmap.android.xv.transport.multicast.MulticastMode.OFF
+                }
+                val pg = patchGroup.text.toString().trim().ifEmpty { null }
+                val pp = patchPort.text.toString().trim().ifEmpty { null }?.toIntOrNull()
+
+                if (pg != null && pp == null) {
+                    meshToast("Invalid patch port.")
+                    return@setPositiveButton
+                }
+
+                val newConfig = existingConfig.copy(
+                    mode = mode,
+                    patchGroup = pg,
+                    patchPort = pp
+                )
+
+                val err = controller.saveChannelConfig(newConfig)
+                if (err != null) {
+                    meshToast("Validation failed: $err")
+                } else {
+                    meshToast("Saved patch config.")
+                    onSaved()
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
