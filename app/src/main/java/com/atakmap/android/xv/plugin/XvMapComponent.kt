@@ -3405,6 +3405,9 @@ class XvMapComponent : AbstractMapComponent() {
                 bridgeCotPublisher = bridgeCotPublisher,
             )
         meshVoiceManager = manager
+        presenceRegistry?.addListener { p ->
+            manager.observePeerConnectivity(p.deviceUid, p.mumbleConnected == true)
+        }
         // Re-install persisted per-channel keys (encrypted at rest) before
         // seeding, so a channel provisioned/imported in a prior session is
         // keyed and shareable again the moment mesh comes up.

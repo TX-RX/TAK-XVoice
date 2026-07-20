@@ -930,7 +930,7 @@ class MeshVoiceManager(
         val election = elections[channel] ?: return
         when (val action = election.tick()) {
             is KeyElection.Action.RequestKey -> {
-                leg.sendControl(
+                leg.safeSendControl(
                     ControlPacket.Message.KeyReq(
                         channelId = stableChannelId(channel),
                         forEpoch = action.forEpoch,
@@ -971,7 +971,7 @@ class MeshVoiceManager(
         // Offer the new key to every peer whose cert we hold.
         peerCerts.forEach { (uid, certDer) ->
             val wrapped = wrapKeyFor(certDer, fresh) ?: return@forEach
-            leg.sendControl(
+            leg.safeSendControl(
                 ControlPacket.Message.KeyOffer(
                     channelId = stableChannelId(channel),
                     epoch = nextEpoch,
@@ -985,7 +985,7 @@ class MeshVoiceManager(
     private fun handleBeacon(msg: ControlPacket.Message.PeerBeacon) {
         if (msg.uid == ourUid) return
         val now = nowMs()
-        bridgeElection.observePeer(msg.uid, msg.mumbleConnected, now)
+        // Bridge election is now fed exclusively by CoT via observePeerConnectivity (Task 3)
         // Callsign directory for talker attribution — covers mesh-only
         // peers whose CoT presence hasn't reached us. Beacons default
         // the callsign to the uid; only store real display names.
@@ -1116,14 +1116,14 @@ class MeshVoiceManager(
             // the CertReply lands.
             val fp = certFpForUid(requesterUid) ?: return
             pendingOffers[requesterUid] = PendingOffer(channel, epoch)
-            leg.sendControl(ControlPacket.Message.CertReq(wantedCertFp = fp))
+            leg.safeSendControl(ControlPacket.Message.CertReq(wantedCertFp = fp))
             return
         }
         // The registry holds the raw key only transiently for wrap: we
         // re-derive nothing — KeyOffer carries the wrapped CURRENT key.
         val key = currentKeyForWrap(channel) ?: return
         val wrapped = wrapKeyFor(certDer, key) ?: return
-        leg.sendControl(
+        leg.safeSendControl(
             ControlPacket.Message.KeyOffer(
                 channelId = stableChannelId(channel),
                 epoch = epoch,
@@ -1156,7 +1156,7 @@ class MeshVoiceManager(
         val ours = ourCertDer() ?: return
         val ourFp = sha256Hex(ours)
         if (!ourFp.equals(msg.wantedCertFp, ignoreCase = true)) return
-        (legs[channelName] ?: rendezvousLeg)?.sendControl(ControlPacket.Message.CertReply(certDer = ours))
+        (legs[channelName] ?: rendezvousLeg)?.safeSendControl(ControlPacket.Message.CertReply(certDer = ours))
     }
 
     private fun handleCertReply(msg: ControlPacket.Message.CertReply) {
@@ -1192,8 +1192,8 @@ class MeshVoiceManager(
                 bridging = bridging,
                 channels = channelInfos,
             )
-        legs.values.forEach { it.sendControl(beacon) }
-        rendezvousLeg?.sendControl(beacon)
+        legs.values.forEach { it.safeSendControl(beacon) }
+        rendezvousLeg?.safeSendControl(beacon)
     }
 
     private fun relayServerFrameToMesh(
@@ -1215,7 +1215,7 @@ class MeshVoiceManager(
             // the Mumble username belongs. Once per burst — cheap.
             val name = displayNameFor(canonicalSpeaker, speakerKey = "")
             if (name != canonicalSpeaker) {
-                leg?.sendControl(
+                leg?.safeSendControl(
                     ControlPacket.Message.SpeakerName(
                         channelId = stableChannelId(channel),
                         speakerKey = "ssrc:%08x".format(RtpFraming.fnv1aSsrc(canonicalSpeaker)),
@@ -1378,5 +1378,11 @@ class MeshVoiceManager(
          * so a healthy-but-idle server stays gated without flapping.
          */
         private const val MUMBLE_LIVE_GRACE_MS = 8_000L
+    }
+
+    private fun MeshLeg.safeSendControl(msg: ControlPacket.Message) {
+        if (config.cryptoPolicy != com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT) {
+            sendControl(msg)
+        }
     }
 }
