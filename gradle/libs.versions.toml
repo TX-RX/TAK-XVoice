@@ -11,8 +11,8 @@
 # the [libraries]/[plugins] blocks stable.
 
 [versions]
-agp = "8.7.3"
-kotlin = "2.4.0"
+agp = "8.13.2"
+kotlin = "2.4.10"
 ktlintPlugin = "14.2.0"
 protobufPlugin = "0.10.0"
 # Standalone ktlint CLI version. NOTE: the CI job (.github/workflows/
