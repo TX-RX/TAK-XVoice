@@ -36,7 +36,7 @@ class RtpFramingTest {
     }
 
     @Test
-    fun `payload type 111 matches OpenMANET`() {
+    fun `payload type 111 matches VX`() {
         val wire = RtpFraming.encode(0, 0L, 0L, byteArrayOf())
         val pt = wire[1].toInt() and 0x7F
         assertEquals(111, pt)
@@ -66,18 +66,42 @@ class RtpFramingTest {
     }
 
     @Test
-    fun `decode rejects datagrams with extension flag set`() {
-        val wire = RtpFraming.encode(0, 0L, 0L, byteArrayOf())
-        // Set X bit so the decoder must reject (we never emit X).
+    fun `decode accepts and skips extensions`() {
+        val wire = RtpFraming.encode(0, 0L, 0L, byteArrayOf(0x05))
+        // Set X bit
         wire[0] = (wire[0].toInt() or 0x10).toByte()
-        assertNull(RtpFraming.decode(wire))
+        // We need to inject the extension before the payload
+        val withExt = ByteArray(wire.size + 4)
+        System.arraycopy(wire, 0, withExt, 0, 12)
+        // Extension length = 0
+        withExt[12] = 0
+        withExt[13] = 0
+        withExt[14] = 0
+        withExt[15] = 0
+        System.arraycopy(wire, 12, withExt, 16, wire.size - 12)
+
+        val decoded = RtpFraming.decode(withExt)
+        assertTrue(decoded != null)
+        assertArrayEquals(byteArrayOf(0x05), decoded!!.second)
     }
 
     @Test
-    fun `decode rejects datagrams with CSRC count nonzero`() {
-        val wire = RtpFraming.encode(0, 0L, 0L, byteArrayOf())
-        wire[0] = (wire[0].toInt() or 0x01).toByte() // CC=1
-        assertNull(RtpFraming.decode(wire))
+    fun `decode accepts and skips CSRC list`() {
+        val wire = RtpFraming.encode(0, 0L, 0L, byteArrayOf(0x05))
+        // Set CC=1
+        wire[0] = (wire[0].toInt() or 0x01).toByte()
+        val withCsrc = ByteArray(wire.size + 4)
+        System.arraycopy(wire, 0, withCsrc, 0, 12)
+        // CSRC value
+        withCsrc[12] = 1
+        withCsrc[13] = 2
+        withCsrc[14] = 3
+        withCsrc[15] = 4
+        System.arraycopy(wire, 12, withCsrc, 16, wire.size - 12)
+
+        val decoded = RtpFraming.decode(withCsrc)
+        assertTrue(decoded != null)
+        assertArrayEquals(byteArrayOf(0x05), decoded!!.second)
     }
 
     @Test

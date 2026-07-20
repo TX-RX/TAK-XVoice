@@ -2,7 +2,7 @@ package com.atakmap.android.xv.transport
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.atakmap.android.xv.audio.AudioPlayback
+import com.atakmap.android.xv.transport.multicast.VxWireCodec
 import io.mockk.every
 import io.mockk.mockk
 import java.net.DatagramPacket
@@ -100,7 +100,6 @@ class MulticastTransportSwapTest {
 
     private fun build(socketFactory: (Int) -> MulticastSocket): MulticastTransport {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val playback = mockk<AudioPlayback>(relaxed = true)
         return MulticastTransport(
             config = TransportConfig.Multicast(
                 groupAddress = "239.255.0.1",
@@ -109,8 +108,8 @@ class MulticastTransportSwapTest {
                 channelLabel = "test",
             ),
             context = ctx,
-            playback = playback,
-            opusDecoderFactory = { mockk(relaxed = true) },
+            txCodec = VxWireCodec(12345L),
+            rxCodec = VxWireCodec(12345L),
             socketFactory = socketFactory,
         )
     }

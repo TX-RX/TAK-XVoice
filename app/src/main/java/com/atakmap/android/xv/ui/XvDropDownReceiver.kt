@@ -26,6 +26,7 @@ import com.atakmap.android.xv.R
 import com.atakmap.android.xv.aina.AinaDeviceInfo
 import com.atakmap.android.xv.audio.OutputRoute
 import com.atakmap.android.xv.audio.TptTone
+import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
 import com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation
 
 // Main XV control panel. Inspired by FlexRadio + modern SDR UIs:
@@ -47,6 +48,16 @@ class XvDropDownReceiver(
     data class ReconnectInfo(
         val attempt: Int,
         val nextDelayMs: Long,
+    )
+
+    // Live mesh-voice state for the main panel status line.
+    // [label] is the short human string (e.g. "MESH ACTIVE · BRIDGE");
+    // [cleartext] drives the safety-critical unencrypted warning colour
+    // so an operator can never transmit in the clear over the mesh
+    // without an unmistakable on-screen cue.
+    data class MeshStatus(
+        val label: String,
+        val cleartext: Boolean,
     )
 
     interface Controller {
@@ -335,6 +346,141 @@ class XvDropDownReceiver(
 
         fun setHotMicMode(enabled: Boolean)
 
+        // Mesh voice (multicast) master toggle. When ON, every joined
+        // channel gets an auto-derived multicast failover leg; the mesh
+        // manager re-reads the pref on its ~1 Hz tick, so flipping the
+        // switch takes effect within a second — no reconnect.
+        fun meshVoiceEnabled(): Boolean
+
+        fun setMeshVoiceEnabled(enabled: Boolean)
+
+        // Mission auto-channels: the operator's active ATAK Data Sync
+        // mission drives the primary voice channel (name derived from
+        // the mission, created server-side when allowed). Reconciled
+        // on the same ~1 Hz tick as mesh voice.
+        fun missionChannelsEnabled(): Boolean
+
+        fun setMissionChannelsEnabled(enabled: Boolean)
+
+        // Offline channel selection. When Mumble can't connect the
+        // picker has no server directory to list, but mesh voice can
+        // still run: candidates are the operator's last-joined channel
+        // plus any channels heard in peer discovery beacons. Selecting
+        // one binds the mesh leg (and persists it as the primary, so a
+        // later Mumble reconnect lands on the same channel).
+        fun meshChannelCandidates(): List<String> = emptyList()
+
+        // Canonical name of the channel the mesh leg is currently
+        fun meshActiveChannelCanonical(): String? = null
+
+        fun serverForChannel(name: String): String? = null
+
+        fun selectMeshChannel(name: String) {}
+
+        // Forget a stored channel: removes its saved multicast override
+        // (pin / interop / crypto) and its shareable key, so it stops
+        // being offered and stops applying its override. The plain
+        // name-derived default still works if rejoined later.
+        fun forgetMeshChannel(name: String) {}
+
+        // Forget every stored channel at once (the fast way to clear a
+        // list cluttered with ad-hoc test channels): wipes the directory,
+        // overrides, keys, and live legs. Server channels re-populate from
+        // the next directory snapshot while connected; offline/ad-hoc ones
+        // stay gone.
+        fun forgetAllMeshChannels() {}
+
+        // Panic wipe: zeroize every stored mesh channel key + config and
+        // delete the Keystore key that seals them at rest, shredding the
+        // on-disk vault without a full ATAK data clear. Destructive and
+        // irreversible — the UI gates it behind a double slide-to-confirm.
+        fun wipeMeshKeys() {}
+
+        // Live mesh state for the main panel, or null when mesh voice
+        // is dormant (off, or no leg up). Rendered as a status line so
+        // the operator can see failover/bridge state at a glance — and,
+        // critically, the [MeshStatus.cleartext] flag so an unencrypted
+        // mesh transmission is never invisible.
+        fun meshStatus(): MeshStatus? = null
+
+        // Provisioning path 2 ("create a channel", zero config): generate
+        // a named, auto-encrypted channel (endpoint derived from the
+        // name — no IP/port to enter), persist + key + join it, and turn
+        // mesh voice on. Returns the created channel name, or null on
+        // failure. Also enables the mesh master toggle.
+        fun provisionMeshChannel(): String? = null
+
+        // True when this device holds the key for at least one channel
+        // (provisioned or imported), so there is something shareable.
+        fun canShareChannelPlan(): Boolean = false
+
+        // Display names of every channel this device could share, in a
+        // stable order — the choices offered by the selective-share
+        // picker. Empty when there is nothing to share.
+        fun shareableChannels(): List<String> = emptyList()
+
+        // Teammates to offer in the share picker: uid (to address) → callsign
+        // (to show). Empty when no XV peers are known (share to Everyone).
+        fun shareTargets(): List<Pair<String, String>> = emptyList()
+
+        // Broadcast a "join my channel(s)" CoT nudge to the chosen teammates
+        // (empty targetUids = everyone). No passphrase, no string, no key on
+        // the wire — the recipient derives the endpoint and auto-exchanges
+        // the key. Returns false when it couldn't be dispatched (e.g. no
+        // device UID / offline), so the UI can offer the offline QR instead.
+        fun shareChannels(
+            channelNames: List<String>,
+            targetUids: List<String>,
+        ): Boolean = false
+
+        // True iff the offline carrier for [selected] must be passphrase-
+        // locked (any selected channel resolves to a held key). Keyless /
+        // config-only plans go in the clear, so the UI can skip the prompt.
+        fun channelPlanNeedsPassphrase(selected: List<String>): Boolean = false
+
+        // Build a comms-plan carrier string for the
+        // chosen subset of channels (by display name), or null if the
+        // selection is empty / unresolvable. The plan carries the
+        // pre-shared keys only when a channel holds one; a config-only plan
+        // is emitted clear. Pass a null passphrase to accept clear when
+        // keyless. Used only by the offline / other-platform fallback.
+        fun buildChannelPlanCarrier(
+            passphrase: CharArray?,
+            selected: List<String>,
+        ): String? = null
+
+        // Import a comms-plan carrier string (pasted, scanned, received).
+        // Persists each channel's config, installs its key, joins the
+        // first, and enables mesh voice. Returns a short human summary
+        // on success; throws IllegalArgumentException with an operator-
+        // readable message on any failure (unknown format, wrong
+        // passphrase, unsupported schema).
+        fun importChannelPlanCarrier(
+            text: String,
+            passphrase: CharArray?,
+        ): String = throw UnsupportedOperationException()
+
+        // Provisioning path 3 ("configure manually" / interop): save a
+        // channel with an operator-chosen name and, optionally, a pinned
+        // group/port + wire format + crypto policy for interop with an
+        // external system (VX, an ATAK VX talkgroup). Leaving the
+        // group/port blank keeps the automatic derivation. Returns null
+        // on success (saved + keyed + joined), or an operator-readable
+        // validation error.
+        fun meshChannelConfig(name: String): com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig?
+        fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String?
+        fun channelCryptoPolicy(name: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy?
+        fun saveMeshChannel(
+            name: String,
+            group: String?,
+            port: String?,
+            channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
+        ): String? = "not supported"
+
+        fun applyPatchToCurrentChannel(group: String, port: String): String?
+
+        fun meshActiveChannelPatchConfig(): Pair<String, String>?
+
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
         // currently have. Empty when everything is granted. Used to
@@ -433,6 +579,13 @@ class XvDropDownReceiver(
     @Volatile
     private var mainView: View? = null
 
+    // Open channel-picker tracking (#10): which slot's picker is on screen
+    // (null = none) and a signature of the channel set it was built from,
+    // so the refresh loop can re-populate it when Mumble drops/reconnects
+    // mid-picker instead of leaving a stale list the operator taps into.
+    private var openPickerSlot: Int? = null
+    private var openPickerSignature: Int = 0
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
@@ -495,9 +648,32 @@ class XvDropDownReceiver(
         object : Runnable {
             override fun run() {
                 refreshMain()
+                // Keep an open channel picker current: if the channel set
+                // changed since it was built (Mumble dropped or reconnected
+                // mid-picker — common on a failover product), rebuild it so
+                // the operator isn't tapping a stale list. Cheap: only fires
+                // when the signature actually flips.
+                // In-call guard: showChannelPicker refuses to open during a
+                // call (toast + return), so a rebuild attempt would toast
+                // every tick for the whole call. Defer; the rebuild fires on
+                // the first tick after the call ends.
+                val slot = openPickerSlot
+                if (slot != null && !controller.isInCall() && channelPickerSignature() != openPickerSignature) {
+                    showChannelPicker(slot)
+                }
                 mainHandler.postDelayed(this, REFRESH_MS)
             }
         }
+
+    // Signature of everything the channel picker renders, so a change
+    // (server channels appearing/disappearing on drop/reconnect, or an
+    // offline/mesh channel added) is detectable without diffing views.
+    private fun channelPickerSignature(): Int {
+        var h = controller.availableChannels().joinToString(" ") { it.name }.hashCode()
+        h = 31 * h + (controller.connectedTakHost()?.hashCode() ?: 0)
+        h = 31 * h + controller.meshChannelCandidates().hashCode()
+        return h
+    }
 
     fun show() {
         mainHandler.post {
@@ -524,6 +700,7 @@ class XvDropDownReceiver(
     override fun disposeImpl() {
         stopRefreshLoop()
         mainView = null
+        openPickerSlot = null
     }
 
     override fun onReceive(
@@ -557,6 +734,8 @@ class XvDropDownReceiver(
     }
 
     private fun inflateMain(): View {
+        // Any path that builds the main view means no picker is on screen.
+        openPickerSlot = null
         val inflater = LayoutInflater.from(pluginContext)
         val v = inflater.inflate(R.layout.xv_main, null)
         v.findViewById<Button>(R.id.xv_btn_settings).setOnClickListener { showSettings() }
@@ -694,6 +873,28 @@ class XvDropDownReceiver(
             }
         v.findViewById<TextView>(R.id.xv_audio_route).text = "$routeGlyph $routeLabel"
 
+        // Mesh-voice status line. Hidden entirely in the common
+        // (mesh-off / no leg) case so it adds no clutter; when a leg is
+        // live it shows failover/bridge state, and renders a red
+        // "· CLEAR" when any leg is unencrypted so the operator can
+        // never transmit in the clear over the mesh unaware. This is the
+        // one on-screen signal that voice is still flowing when the
+        // connection line above reads "no TAK server".
+        val meshStatusView = v.findViewById<TextView>(R.id.xv_mesh_status)
+        val mesh = controller.meshStatus()
+        if (mesh == null) {
+            meshStatusView.visibility = View.GONE
+        } else {
+            meshStatusView.visibility = View.VISIBLE
+            meshStatusView.text = "🕸 ${mesh.label}"
+            meshStatusView.setTextColor(
+                pluginContext.resources.getColor(
+                    if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
+                    null,
+                ),
+            )
+        }
+
         // VS1 PTT card — channel name lives on the header above the
         // PTT button. RX speaker indicator is appended when peers are
         // active so the operator can tell from the same widget that
@@ -821,11 +1022,6 @@ class XvDropDownReceiver(
     // channel, and a "(none)" sentinel for the secondary slot so the
     // user can clear VS2 without leaving primary.
     private fun showChannelPicker(slot: Int) {
-        // Block channel switching while a private call is active —
-        // accidentally tapping a header during a call would leave the
-        // call's temp channel and silently drop the operator out.
-        // Telecom's call lifecycle is the source of truth; XvCallBridge
-        // surfaces it via Controller.isInCall.
         if (controller.isInCall()) {
             android.widget.Toast
                 .makeText(
@@ -843,97 +1039,308 @@ class XvDropDownReceiver(
             mainHandler.post { inflateMainAndShow() }
         }
 
-        val list = v.findViewById<android.widget.LinearLayout>(R.id.xv_picker_list)
-        list.removeAllViews()
-        val channels = controller.availableChannels()
-        val current =
-            if (slot == 0) {
-                controller.currentChannelName()
-            } else {
-                controller.secondaryChannelName()
+        val list = v.findViewById<android.widget.ExpandableListView>(R.id.xv_picker_list)
+
+        val allChannels = controller.availableChannels().map { it.name }.toMutableSet()
+        val serverGroups = controller.availableChannels().groupBy { controller.connectedTakHost() ?: "Offline / ad-hoc" }.toMutableMap()
+
+        // Add offline/mesh candidates
+        if (slot == 0 && controller.meshVoiceEnabled()) {
+            val serverCanon = allChannels.map { MulticastGroupDerivation.canonicalChannelName(it) }.toSet()
+            val offlineOnly = controller.meshChannelCandidates()
+                .filter { MulticastGroupDerivation.canonicalChannelName(it) !in serverCanon }
+            if (offlineOnly.isNotEmpty()) {
+                val existingOffline = serverGroups["Offline / ad-hoc"]?.map { it.name } ?: emptyList()
+                val newOffline = offlineOnly.filter { it !in existingOffline }
+                val offlineList = (serverGroups["Offline / ad-hoc"] ?: emptyList()).toMutableList()
+                newOffline.forEach {
+                    offlineList.add(
+                        com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo(
+                            -1,
+                            it,
+                            com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE
+                        )
+                    )
+                }
+                serverGroups["Offline / ad-hoc"] = offlineList
+            }
+        }
+
+        val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
+        val groupList = sortedGroups.map { it.key }
+        val childMap = sortedGroups.associate { it.key to it.value.map { ch -> ch.name }.sorted() }
+
+        val current = if (slot == 0) controller.currentChannelName() else controller.secondaryChannelName()
+        val otherSlotChannel = if (slot == 0) controller.secondaryChannelName() else controller.currentChannelName()
+        val otherSlotLabel = if (slot == 0) "VS2" else "VS1"
+        val currentSuppressed = !controller.canSpeakOnSlot(slot)
+
+        val adapter = object : android.widget.BaseExpandableListAdapter() {
+            override fun getGroupCount(): Int = groupList.size
+            override fun getChildrenCount(groupPosition: Int): Int = childMap[groupList[groupPosition]]?.size ?: 0
+            override fun getGroup(groupPosition: Int): Any = groupList[groupPosition]
+            override fun getChild(groupPosition: Int, childPosition: Int): Any = childMap[groupList[groupPosition]]!![childPosition]
+            override fun getGroupId(groupPosition: Int): Long = groupPosition.toLong()
+            override fun getChildId(groupPosition: Int, childPosition: Int): Long = childPosition.toLong()
+            override fun hasStableIds(): Boolean = false
+
+            override fun getGroupView(
+                groupPosition: Int,
+                isExpanded: Boolean,
+                convertView: View?,
+                parent: android.view.ViewGroup?,
+            ): View {
+                val groupName = getGroup(groupPosition) as String
+                val gv =
+                    convertView ?: android.view.LayoutInflater.from(pluginContext).inflate(R.layout.xv_share_picker_group, parent, false)
+                gv.findViewById<TextView>(R.id.xv_group_name).text = groupName
+                gv.findViewById<TextView>(R.id.xv_group_indicator).text = if (isExpanded) "▼" else "▶"
+                return gv
             }
 
-        // Secondary picker leads with "(none)" so VS2 can be cleared
-        // from the same screen.
-        if (slot == 1) {
-            list.addView(
-                buildChannelButton(
-                    label = "(none)",
-                    isCurrent = current.isNullOrBlank(),
-                    participation = Participation.PARTICIPATE,
-                ) {
-                    controller.setSecondaryChannel("")
-                    mainHandler.post { inflateMainAndShow() }
-                },
-            )
-        }
-        if (channels.isEmpty()) {
-            val tv =
-                TextView(pluginContext).apply {
-                    text = "No channels yet — Mumble must connect first."
-                    setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
-                    textSize = 13f
-                    setPadding(16, 24, 16, 24)
-                }
-            list.addView(tv)
-        } else {
-            // The currently-joined channel may have its true tier
-            // downgraded by OTS direction enforcement (suppress flag
-            // on our UserState) — PermissionQuery only sees ACL bits,
-            // not direction. Override to LISTEN if the runtime
-            // suppress signal says we can't speak. Only valid for
-            // the joined channel; other listed channels keep their
-            // ACL-derived tier until we'd actually join them.
-            val currentSuppressed = !controller.canSpeakOnSlot(slot)
-            // The other slot's channel — used to lock it out of THIS
-            // picker so VS1 and VS2 can never share a channel (would
-            // duplicate every voice frame).
-            val otherSlotChannel =
-                if (slot == 0) {
-                    controller.secondaryChannelName()
-                } else {
-                    controller.currentChannelName()
-                }
-            val otherSlotLabel = if (slot == 0) "VS2" else "VS1"
-            for (ch in channels) {
-                val isCurrent = ch.name.equals(current, ignoreCase = true)
-                val isOnOtherSlot =
-                    !otherSlotChannel.isNullOrBlank() &&
-                        ch.name.equals(otherSlotChannel, ignoreCase = true)
-                val effectiveTier =
-                    when {
-                        // Channel locked to the other slot → render as
-                        // unauthorized-style (greyed, disabled).
-                        isOnOtherSlot -> Participation.UNAUTHORIZED
-                        isCurrent && currentSuppressed && ch.participation == Participation.PARTICIPATE ->
-                            Participation.LISTEN
-                        else -> ch.participation
+            override fun getChildView(
+                groupPosition: Int,
+                childPosition: Int,
+                isLastChild: Boolean,
+                convertView: View?,
+                parent: android.view.ViewGroup?,
+            ): View {
+                val chName = getChild(groupPosition, childPosition) as String
+                val isCurrent = chName.equals(current, ignoreCase = true)
+                val isOnOtherSlot = !otherSlotChannel.isNullOrBlank() && chName.equals(otherSlotChannel, ignoreCase = true)
+
+                var chParticipation = com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE
+                for (ch in controller.availableChannels()) {
+                    if (ch.name == chName) {
+                        chParticipation = ch.participation
+                        break
                     }
-                val labelOverride =
-                    if (isOnOtherSlot) "${ch.name}   (in use by $otherSlotLabel)" else ch.name
-                list.addView(
-                    buildChannelButton(
-                        label = labelOverride,
-                        isCurrent = isCurrent,
-                        participation = effectiveTier,
-                    ) {
-                        if (effectiveTier == Participation.UNAUTHORIZED) {
-                            // No-op — UNAUTHORIZED, or locked by the other
-                            // slot. The button is disabled but a stray tap
-                            // through the disabled state still falls here.
-                            return@buildChannelButton
-                        }
-                        if (slot == 0) {
-                            controller.setPrimaryChannel(ch.name)
-                        } else {
-                            controller.setSecondaryChannel(ch.name)
-                        }
+                }
+
+                val effectiveTier = when {
+                    isOnOtherSlot -> com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.UNAUTHORIZED
+                    isCurrent &&
+                        currentSuppressed &&
+                        chParticipation == com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE ->
+                        com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN
+                    else -> chParticipation
+                }
+                val labelOverride = if (isOnOtherSlot) "$chName   (in use by $otherSlotLabel)" else chName
+
+                val container = android.widget.LinearLayout(pluginContext).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                    layoutParams = android.widget.AbsListView.LayoutParams(
+                        android.widget.AbsListView.LayoutParams.MATCH_PARENT,
+                        android.widget.AbsListView.LayoutParams.WRAP_CONTENT
+                    )
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                }
+
+                val buildParticipation = when (effectiveTier) {
+                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE ->
+                        Participation.PARTICIPATE
+                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN ->
+                        Participation.LISTEN
+                    com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.UNAUTHORIZED ->
+                        Participation.UNAUTHORIZED
+                    else -> Participation.UNKNOWN
+                }
+
+                val btn = buildChannelButton(
+                    label = labelOverride,
+                    isCurrent = isCurrent,
+                    participation = buildParticipation,
+                ) {
+                    if (buildParticipation != Participation.UNAUTHORIZED) {
+                        if (slot == 0) controller.setPrimaryChannel(chName) else controller.setSecondaryChannel(chName)
                         mainHandler.post { inflateMainAndShow() }
-                    },
+                    }
+                }
+                val btnParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                btn.layoutParams = btnParams
+                container.addView(btn)
+
+                val gear = android.widget.ImageButton(pluginContext).apply {
+                    setImageResource(android.R.drawable.ic_menu_manage)
+                    setBackgroundResource(android.R.color.transparent)
+                    val dp = (12 * pluginContext.resources.displayMetrics.density).toInt()
+                    setPadding(dp, dp, dp, dp)
+                    val p = android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                    p.gravity = android.view.Gravity.CENTER_VERTICAL
+                    layoutParams = p
+                    setOnClickListener {
+                        promptConfigureChannel(v, chName) {
+                            // nothing to do on UI refresh inside picker
+                        }
+                    }
+                }
+                container.addView(gear)
+
+                if (groupList[groupPosition] == "Offline / ad-hoc") {
+                    container.setOnLongClickListener {
+                        confirmForgetOfflineChannel(chName, slot)
+                        true
+                    }
+                }
+
+                return container
+            }
+
+            override fun isChildSelectable(groupPosition: Int, childPosition: Int): Boolean = true
+        }
+
+        if (slot == 1) {
+            val header = android.widget.LinearLayout(pluginContext).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                addView(
+                    buildChannelButton(
+                        label = "(none)",
+                        isCurrent = current.isNullOrBlank(),
+                        participation = Participation.PARTICIPATE
+                    ) {
+                        controller.setSecondaryChannel("")
+                        mainHandler.post { inflateMainAndShow() }
+                    }
                 )
             }
+            list.addHeaderView(header)
         }
+
+        list.setAdapter(adapter)
+
+        val connectedServer = controller.connectedTakHost()
+        groupList.forEachIndexed { index, groupName ->
+            if (groupName == connectedServer || groupList.size == 1) {
+                list.expandGroup(index)
+            }
+        }
+
+        openPickerSlot = slot
+        openPickerSignature = channelPickerSignature()
         showDropDown(v, FIVE_TWELFTHS_WIDTH, FULL_HEIGHT, FULL_WIDTH, HALF_HEIGHT, this)
+    }
+
+    private fun confirmForgetOfflineChannel(
+        name: String,
+        slot: Int,
+    ) {
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Forget “$name”?")
+            .setMessage("Removes this channel\'s saved settings and key from this device. It won\'t affect anyone else.")
+            .setPositiveButton("Forget") { _, _ ->
+                controller.forgetMeshChannel(name)
+                meshToast("Forgot “$name”.")
+                mainHandler.post { showChannelPicker(slot) }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptConfigureChannel(v: View, channel: String, onSaved: () -> Unit = { refreshMeshSection(v) }) {
+        val existingConfig =
+            controller.meshChannelConfig(channel) ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(channel)
+        val ctx = mapView.context
+        val view = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val density = ctx.resources.displayMetrics.density
+            val pad = (20 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val overrideText = android.widget.TextView(ctx).apply {
+            text = "Mesh Failover"
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+            textSize = 12f
+            val density = ctx.resources.displayMetrics.density
+            setPadding(0, (8 * density).toInt(), 0, (4 * density).toInt())
+        }
+        view.addView(overrideText)
+
+        val overrideSpinner = android.widget.Spinner(ctx).apply {
+            val adapter = android.widget.ArrayAdapter(
+                ctx,
+                android.R.layout.simple_spinner_item,
+                arrayOf("Use Global Setting", "Always On", "Always Off")
+            )
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            this.adapter = adapter
+            val modeIndex = when (existingConfig.mode) {
+                com.atakmap.android.xv.transport.multicast.MulticastMode.FAILOVER -> 0
+                com.atakmap.android.xv.transport.multicast.MulticastMode.ALWAYS -> 1
+                com.atakmap.android.xv.transport.multicast.MulticastMode.OFF -> 2
+            }
+            setSelection(modeIndex)
+        }
+        view.addView(overrideSpinner)
+
+        val patchText = android.widget.TextView(ctx).apply {
+            text = "External Patch (Vx)"
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+            textSize = 12f
+            val density = ctx.resources.displayMetrics.density
+            setPadding(0, (16 * density).toInt(), 0, (4 * density).toInt())
+        }
+        view.addView(patchText)
+
+        val patchGroup = android.widget.EditText(ctx).apply {
+            hint = "Group IP (e.g. 224.0.0.1)"
+            setSingleLine()
+            setText(existingConfig.patchGroup ?: "")
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        view.addView(patchGroup)
+
+        val patchPort = android.widget.EditText(ctx).apply {
+            hint = "Port (e.g. 5007)"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+            setText(existingConfig.patchPort?.toString() ?: "")
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        view.addView(patchPort)
+
+        android.app.AlertDialog.Builder(ctx)
+            .setTitle("Configure: $channel")
+            .setView(view)
+            .setPositiveButton("Save") { _, _ ->
+                val mode = when (overrideSpinner.selectedItemPosition) {
+                    0 -> com.atakmap.android.xv.transport.multicast.MulticastMode.FAILOVER
+                    1 -> com.atakmap.android.xv.transport.multicast.MulticastMode.ALWAYS
+                    else -> com.atakmap.android.xv.transport.multicast.MulticastMode.OFF
+                }
+                val pg = patchGroup.text.toString().trim().ifEmpty { null }
+                val pp = patchPort.text.toString().trim().ifEmpty { null }?.toIntOrNull()
+
+                if (pg != null && pp == null) {
+                    meshToast("Invalid patch port.")
+                    return@setPositiveButton
+                }
+
+                val newConfig = existingConfig.copy(
+                    mode = mode,
+                    patchGroup = pg,
+                    patchPort = pp
+                )
+
+                val err = controller.saveChannelConfig(newConfig)
+                if (err != null) {
+                    meshToast("Validation failed: $err")
+                } else {
+                    meshToast("Saved patch config.")
+                    onSaved()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // Channel Members picker — historical doc block from when this was
@@ -1194,7 +1601,7 @@ class XvDropDownReceiver(
 
         wireSettingsTabs(v)
         wireTxRxSection(v)
-        wireChannelSelectors(v)
+        wireMeshSection(v)
         wirePreferencesSection(v)
         wireBtOffBanner(v)
 
@@ -1452,26 +1859,34 @@ class XvDropDownReceiver(
         val tabTxRx = v.findViewById<Button>(R.id.xv_tab_txrx)
         val tabCalls = v.findViewById<Button>(R.id.xv_tab_calls)
         val tabPrefs = v.findViewById<Button>(R.id.xv_tab_prefs)
+        val tabMesh = v.findViewById<Button>(R.id.xv_tab_mesh)
         val sectionTxRx = v.findViewById<View>(R.id.xv_section_txrx)
         val sectionCalls = v.findViewById<View>(R.id.xv_section_calls)
         val sectionPrefs = v.findViewById<View>(R.id.xv_section_prefs)
+        val sectionMesh = v.findViewById<View>(R.id.xv_section_mesh)
         // List order MUST match the tab strip's visual order so
         // select(0) puts the first tab up. Operator-visible ordering
-        // is Devices (prefs) | TX/RX | Server (calls) — Devices leads
-        // because it carries the AINA / external-button / audio-device
-        // pickers operators touch every session. The XML id names
-        // still say "prefs" for backward compatibility with the
-        // findViewById calls above.
-        val tabs = listOf(tabPrefs, tabTxRx, tabCalls)
-        val sections = listOf(sectionPrefs, sectionTxRx, sectionCalls)
+        // is Devices (prefs) | TX/RX | Server (calls) | Mesh — Devices
+        // leads because it carries the AINA / external-button /
+        // audio-device pickers operators touch every session; Mesh
+        // (server-less voice + channel provisioning/sharing) sits last.
+        // The XML id names still say "prefs" for backward compatibility
+        // with the findViewById calls above.
+        val tabs = listOf(tabPrefs, tabTxRx, tabCalls, tabMesh)
+        val sections = listOf(sectionPrefs, sectionTxRx, sectionCalls, sectionMesh)
 
         fun select(idx: Int) {
             sections.forEachIndexed { i, s -> s.visibility = if (i == idx) View.VISIBLE else View.GONE }
             tabs.forEachIndexed { i, b -> b.alpha = if (i == idx) 1.0f else 0.55f }
         }
-        tabPrefs.setOnClickListener { select(0) }
-        tabTxRx.setOnClickListener { select(1) }
-        tabCalls.setOnClickListener { select(2) }
+        // Visual order is Devices | TX/RX | Server | Mesh. The XML ids
+        // (tabPrefs = Devices, tabCalls = Server) keep their historical
+        // names for on-disk back-compat — see the note above; the labels
+        // here disambiguate so the wiring isn't misread on the next edit.
+        tabPrefs.setOnClickListener { select(0) } // Devices tab
+        tabTxRx.setOnClickListener { select(1) } // TX/RX tab
+        tabCalls.setOnClickListener { select(2) } // Server tab
+        tabMesh.setOnClickListener { select(3) }
         select(0)
     }
 
@@ -1533,6 +1948,712 @@ class XvDropDownReceiver(
         val hotMicSw = v.findViewById<Switch>(R.id.xv_switch_hot_mic)
         hotMicSw.isChecked = controller.hotMicMode()
         hotMicSw.setOnCheckedChangeListener { _, on -> controller.setHotMicMode(on) }
+    }
+
+    // Mesh & Offline tab: server-less voice toggles + live status +
+    // offline channel list. Everything here works with no TAK server.
+    // Mesh voice + mission auto-channels moved off the TX/RX tab so the
+    // server-less feature set has one coherent home.
+    private fun wireMeshSection(v: View) {
+        val meshSw = v.findViewById<Switch>(R.id.xv_switch_mesh_voice)
+        meshSw.isChecked = controller.meshVoiceEnabled()
+        meshSw.setOnCheckedChangeListener { _, on ->
+            controller.setMeshVoiceEnabled(on)
+            refreshMeshSection(v)
+        }
+
+        val missionSw = v.findViewById<Switch>(R.id.xv_switch_mission_channels)
+        missionSw.isChecked = controller.missionChannelsEnabled()
+        missionSw.setOnCheckedChangeListener { _, on -> controller.setMissionChannelsEnabled(on) }
+
+        // Provisioning path 2: one-tap create. XV picks name + group +
+        // key; the operator configures nothing. Flips the mesh toggle on
+        // (the Controller does the same server-side), so reflect it here.
+        v.findViewById<Button>(R.id.xv_btn_mesh_provision).setOnClickListener {
+            val name = controller.provisionMeshChannel()
+            if (name != null) {
+                meshToast("Created channel “$name” — encrypted, ready. Tap Share to send it to your team.")
+                meshSw.isChecked = controller.meshVoiceEnabled()
+                refreshMeshSection(v)
+            } else {
+                meshToast("Couldn't create a channel.")
+            }
+        }
+
+        // Path 3: name it yourself and (optionally) pin for interop.
+        v.findViewById<Button>(R.id.xv_btn_mesh_configure).setOnClickListener {
+            showChannelConfigDialog(v)
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_share).setOnClickListener {
+            if (!controller.canShareChannelPlan()) {
+                meshToast("No channels to share yet — create one first.")
+            } else {
+                promptSelectChannelsThenShare()
+            }
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_import).setOnClickListener {
+            promptImportChannelPlan(v)
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_patch_save).setOnClickListener {
+            val group = v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_group).text.toString().trim()
+            val port = v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_port).text.toString().trim()
+            val err = controller.applyPatchToCurrentChannel(group, port)
+            if (err == null) {
+                meshToast("Patch applied to current channel.")
+                refreshMeshSection(v)
+            } else {
+                meshToast(err)
+            }
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_forget_all).setOnClickListener {
+            confirmForgetAllMeshChannels(v)
+        }
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_wipe).setOnClickListener {
+            promptWipeMeshKeys(v)
+        }
+
+        refreshMeshSection(v)
+    }
+
+    // Mass-clear confirm. One tap, one dialog — the fast way to empty a
+    // list cluttered with ad-hoc test channels. A destructive-but-common
+    // action, so a single confirm (not the double-slide the key wipe uses).
+    private fun confirmForgetAllMeshChannels(section: View) {
+        val n = controller.shareableChannels().size
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Forget all channels?")
+            .setMessage(
+                "Removes every stored mesh channel and key from this device. " +
+                    "Channels that live on a connected server come back when it re-lists them; " +
+                    "offline/ad-hoc channels are gone for good.",
+            ).setPositiveButton("Forget all") { _, _ ->
+                controller.forgetAllMeshChannels()
+                meshToast(if (n > 0) "Forgot all channels." else "Cleared the channel list.")
+                refreshMeshSection(section)
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Panic wipe, gated behind a *double* slide-to-confirm so it can't
+    // fire on a stray tap or a single accidental drag. The operator must
+    // drag the bar fully across twice; anything short snaps back. Only the
+    // second completed slide calls through to the destructive wipe.
+    private fun promptWipeMeshKeys(section: View) {
+        val ctx = mapView.context
+        val label =
+            TextView(ctx).apply {
+                text = "Slide to confirm (1 of 2)"
+                setTextColor(pluginContext.resources.getColor(R.color.xv_text, null))
+                textSize = 14f
+            }
+        val bar =
+            android.widget.SeekBar(ctx).apply {
+                max = 100
+                setPadding(paddingLeft, 32, paddingRight, 32)
+            }
+        val container =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(48, 24, 48, 8)
+                addView(label)
+                addView(bar)
+            }
+        val dialog =
+            android.app.AlertDialog
+                .Builder(ctx)
+                .setTitle("Wipe mesh keys?")
+                .setMessage("Erases every mesh channel key and setting from this device. This can't be undone.")
+                .setView(container)
+                .setNegativeButton("Cancel", null)
+                .create()
+
+        var stage = 0
+        bar.setOnSeekBarChangeListener(
+            object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    sb: android.widget.SeekBar,
+                    progress: Int,
+                    fromUser: Boolean,
+                ) {}
+
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
+
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar) {
+                    if (sb.progress < sb.max) {
+                        sb.progress = 0 // didn't reach the end — snap back
+                        return
+                    }
+                    stage++
+                    sb.progress = 0
+                    if (stage >= 2) {
+                        controller.wipeMeshKeys()
+                        meshToast("Mesh keys wiped from this device.")
+                        refreshMeshSection(section)
+                        dialog.dismiss()
+                    } else {
+                        label.text = "Slide again to confirm (2 of 2)"
+                    }
+                }
+            },
+        )
+        dialog.show()
+    }
+
+    // Selective share, step 1: pick which channels go into the plan.
+    // Sharing used to bundle every channel this device held a key for —
+    // clumsy and a leak risk. Now the operator checks exactly the
+    // channels to hand out; only those are carried. Defaults to all
+    // checked (the common "share what I just made" case) but every box is
+    // editable, and the plan is built from the final selection.
+    private fun promptSelectChannelsThenShare() {
+        val names = controller.shareableChannels()
+        if (names.isEmpty()) {
+            meshToast("No channels to share yet — create one first.")
+            return
+        }
+        // Single channel: nothing to choose — go straight to teammates.
+        if (names.size == 1) {
+            promptPickTeammatesThenShare(names)
+            return
+        }
+
+        val serverGroups = names.groupBy { controller.serverForChannel(it) ?: "Offline / ad-hoc" }
+        // Sort groups: servers first (alphabetical), then Offline/ad-hoc at the end
+        val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
+
+        val displayLabels = mutableListOf<String>()
+        val orderedNames = mutableListOf<String>()
+        for ((groupName, groupChannels) in sortedGroups) {
+            val prefix = if (groupName == "Offline / ad-hoc") "" else "$groupName / "
+            for (ch in groupChannels.sorted()) {
+                displayLabels.add("$prefix$ch")
+                orderedNames.add(ch)
+            }
+        }
+
+        val checked = BooleanArray(orderedNames.size) { true }
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Share which channels?")
+            .setMultiChoiceItems(displayLabels.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }.setPositiveButton("Next") { _, _ ->
+                val selected = orderedNames.filterIndexed { i, _ -> checked[i] }
+                if (selected.isEmpty()) {
+                    meshToast("Pick at least one channel to share.")
+                } else {
+                    promptPickTeammatesThenShare(selected)
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Pick who to share with, then push a CoT nudge — no passphrase, no
+    // string. Teammates come from the presence roster; "Everyone" broadcasts
+    // to the whole mission. The recipient gets a Join prompt; the endpoint
+    // derives locally and the key auto-exchanges. Falls back to the offline
+    // QR/carrier only if the CoT dispatch can't go out.
+    private fun promptPickTeammatesThenShare(selected: List<String>) {
+        val targets = controller.shareTargets() // uid → callsign
+        // Row 0 is "Everyone"; the rest are individual teammates.
+        val labels = (listOf("Everyone") + targets.map { it.second }).toTypedArray()
+        val checked = BooleanArray(labels.size) { false } // default: None checked
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Share to whom?")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+                // "Everyone" and specific picks are mutually exclusive-ish:
+                // choosing Everyone clears the individuals and vice-versa.
+                // Kept simple — Everyone wins if checked at send time.
+            }.setPositiveButton("Send") { _, _ ->
+                val everyone = checked.getOrElse(0) { false }
+                val targetUids =
+                    if (everyone) {
+                        emptyList()
+                    } else {
+                        targets.filterIndexed { i, _ -> checked.getOrElse(i + 1) { false } }.map { it.first }
+                    }
+                if (!everyone && targetUids.isEmpty()) {
+                    meshToast("Pick Everyone or at least one teammate.")
+                    return@setPositiveButton
+                }
+                if (controller.shareChannels(selected, targetUids)) {
+                    meshToast("Shared ${selected.size} channel(s).")
+                } else {
+                    // Couldn't dispatch (no server / offline) — offer the
+                    // in-person QR / carrier instead.
+                    meshToast("Couldn't share over the network — use offline QR.")
+                    promptOfflineShare(selected)
+                }
+            }.setNeutralButton("Offline / QR") { _, _ -> promptOfflineShare(selected) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Offline / other-platform fallback: the QR / carrier string. Only asks
+    // for a passphrase when a selected channel carries a key (keyless plans
+    // go clear). This is the exception, not the default share.
+    private fun promptOfflineShare(selected: List<String>) {
+        if (controller.channelPlanNeedsPassphrase(selected)) {
+            promptPassphraseThenShare(selected)
+        } else {
+            val carrier = controller.buildChannelPlanCarrier(null, selected)
+            if (carrier == null) meshToast("Nothing to share.") else showChannelPlanShareDialog(carrier)
+        }
+    }
+
+    // Sets a passphrase, builds the locked plan from [selected], and hands
+    // it to the Android share sheet (which surfaces Quick Share, messaging,
+    // email, file — every share target the device offers). The plan
+    // carries channel keys, so it is always passphrase-locked; the
+    // operator passes the passphrase to the team out-of-band.
+    private fun promptPassphraseThenShare(selected: List<String>) {
+        val input =
+            android.widget.EditText(mapView.context).apply {
+                hint = "Passphrase (your team enters this to import)"
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Share channel plan")
+            .setMessage("Set a passphrase to protect the channel keys. Share it with your team separately — they enter it when importing.")
+            .setView(input)
+            .setPositiveButton("Share") { _, _ ->
+                val pass = input.text?.toString().orEmpty()
+                if (pass.isBlank()) {
+                    meshToast("Passphrase can't be empty.")
+                    return@setPositiveButton
+                }
+                val carrier = controller.buildChannelPlanCarrier(pass.toCharArray(), selected)
+                if (carrier == null) {
+                    meshToast("Nothing to share.")
+                } else {
+                    showChannelPlanShareDialog(carrier)
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Shows the plan as a QR to scan in person, with a "Share as text"
+    // fall-through to the Android share sheet (Quick Share / messaging /
+    // email / file). QR rendering degrades to text-only if zxing isn't
+    // on the runtime classpath.
+    private fun showChannelPlanShareDialog(carrier: String) {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        fun dp(n: Int) = (n * density).toInt()
+        val builder = android.app.AlertDialog.Builder(ctx).setTitle("Share channel plan")
+        val bmp = qrBitmapOrNull(carrier, dp(260))
+        if (bmp != null) {
+            val image =
+                android.widget.ImageView(ctx).apply {
+                    setImageBitmap(bmp)
+                    adjustViewBounds = true
+                }
+            val caption =
+                TextView(ctx).apply {
+                    text = "Have your teammate scan this, then enter the passphrase to import. Or share it as text."
+                    setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                    textSize = 12f
+                    setPadding(dp(16), dp(8), dp(16), 0)
+                }
+            val container =
+                android.widget.LinearLayout(ctx).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
+                    gravity = android.view.Gravity.CENTER_HORIZONTAL
+                    setPadding(dp(16), dp(16), dp(16), 0)
+                    addView(image)
+                    addView(caption)
+                }
+            builder.setView(container)
+        } else {
+            builder.setMessage("Share this channel plan with your team. They'll enter the passphrase to import it.")
+        }
+        builder
+            .setPositiveButton("Share as text…") { _, _ -> shareText(carrier) }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    // BitMatrix → Bitmap. Returns null (caller falls back to text) if
+    // zxing is unavailable at runtime or encoding fails — QR never hard-
+    // fails the share flow.
+    private fun qrBitmapOrNull(
+        text: String,
+        sizePx: Int,
+    ): android.graphics.Bitmap? =
+        try {
+            if (com.atakmap.android.xv.provisioning.QrCarrier.wouldLikelyExceedQrCapacity(text)) {
+                null // too dense to scan reliably off a screen — use text
+            } else {
+                val matrix = com.atakmap.android.xv.provisioning.QrCarrier.encode(text, sizePx)
+                val w = matrix.width
+                val h = matrix.height
+                val pixels = IntArray(w * h)
+                for (y in 0 until h) {
+                    val row = y * w
+                    for (x in 0 until w) {
+                        pixels[row + x] = if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                    }
+                }
+                android.graphics.Bitmap
+                    .createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                    .apply { setPixels(pixels, 0, w, 0, 0, w, h) }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("XvMesh", "QR render unavailable, falling back to text: ${t.message}")
+            null
+        }
+
+    private fun shareText(text: String) {
+        try {
+            val send =
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "TAK-XVoice channel plan")
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+            val chooser =
+                Intent.createChooser(send, "Share channel plan").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            pluginContext.startActivity(chooser)
+        } catch (t: Throwable) {
+            meshToast("Couldn't open the share sheet: ${t.message}")
+        }
+    }
+
+    // Paste (or receive) a plan + optional passphrase, decode, install.
+    private fun promptImportChannelPlan(section: View) {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        val planField =
+            android.widget.EditText(ctx).apply {
+                hint = "Paste channel plan (XVCP…)"
+                setSingleLine(false)
+                maxLines = 4
+            }
+        val passField =
+            android.widget.EditText(ctx).apply {
+                hint = "Passphrase (if the plan is locked)"
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        val container =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                val pad = (16 * density).toInt()
+                setPadding(pad, pad / 2, pad, 0)
+                addView(planField)
+                addView(passField)
+            }
+        android.app.AlertDialog
+            .Builder(ctx)
+            .setTitle("Import channel plan")
+            .setView(container)
+            .setPositiveButton("Import") { _, _ ->
+                val text = planField.text?.toString().orEmpty().trim()
+                if (text.isEmpty()) {
+                    meshToast("Nothing to import.")
+                    return@setPositiveButton
+                }
+                val pass = passField.text?.toString().orEmpty().takeIf { it.isNotBlank() }?.toCharArray()
+                try {
+                    val summary = controller.importChannelPlanCarrier(text, pass)
+                    meshToast("Imported $summary")
+                    refreshMeshSection(section)
+                } catch (t: Throwable) {
+                    meshToast("Import failed: ${t.message}")
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun meshToast(msg: String) {
+        try {
+            android.widget.Toast
+                .makeText(mapView.context, msg, android.widget.Toast.LENGTH_LONG)
+                .show()
+        } catch (_: Throwable) {
+        }
+    }
+
+    // Provisioning path 3 form: name (required) + an optional interop
+    // block (pin group/port, wire format, crypto). Blank group/port keeps
+    // the automatic derivation, so "name it myself" needs no address
+    // entry; the interop fields exist only to match an external system.
+    private fun showChannelConfigDialog(section: View, existingName: String? = null) {
+        val existingConfig = existingName?.let { controller.meshChannelConfig(it) }
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        fun dp(n: Int) = (n * density).toInt()
+
+        fun caption(text: String) =
+            TextView(ctx).apply {
+                this.text = text
+                setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                textSize = 11f
+                setPadding(0, dp(12), 0, dp(2))
+            }
+
+        val nameField =
+            android.widget.EditText(ctx).apply {
+                hint = "Channel name (required)"
+                setText(existingConfig?.channelName ?: "")
+                if (existingName != null) isEnabled = false
+                setSingleLine(true)
+            }
+        val groupField =
+            android.widget.EditText(ctx).apply {
+                hint = "Multicast group (blank = automatic)"
+                setText(existingConfig?.pinnedGroup ?: existingConfig?.patchGroup ?: "")
+                setSingleLine(true)
+            }
+        val portField =
+            android.widget.EditText(ctx).apply {
+                hint = "Port (blank = automatic)"
+                setText(existingConfig?.pinnedPort?.toString() ?: existingConfig?.patchPort?.toString() ?: "")
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setSingleLine(true)
+            }
+        val cryptoSpinner =
+            Spinner(ctx).apply {
+                adapter =
+                    ArrayAdapter(
+                        ctx,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        listOf("Encrypted Only", "Prefer Encryption (VX interop)", "Cleartext (VX compat)"),
+                    )
+                val p = controller.channelCryptoPolicy(existingConfig?.channelName ?: "")
+                    ?: com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+                val idx = when (p) {
+                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY -> 0
+                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION -> 1
+                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT -> 2
+                }
+                setSelection(idx)
+            }
+
+        val container =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(dp(16), dp(8), dp(16), 0)
+                addView(nameField)
+                addView(
+                    caption(
+                        "Interoperability (optional) — pin a group/port to match an external " +
+                            "system like VX. Leave blank for automatic.",
+                    ),
+                )
+                addView(groupField)
+                addView(portField)
+                addView(caption("Security Policy"))
+                addView(cryptoSpinner)
+            }
+
+        android.app.AlertDialog
+            .Builder(ctx)
+            .setTitle("Configure a channel")
+            .setView(android.widget.ScrollView(ctx).apply { addView(container) })
+            .setPositiveButton("Save") { _, _ ->
+                val channelCryptoPolicy =
+                    when (cryptoSpinner.selectedItemPosition) {
+                        1 -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION
+                        2 -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT
+                        else -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+                    }
+                val err =
+                    controller.saveMeshChannel(
+                        name = nameField.text?.toString().orEmpty(),
+                        group = groupField.text?.toString(),
+                        port = portField.text?.toString(),
+                        channelCryptoPolicy = channelCryptoPolicy,
+                    )
+                if (err == null) {
+                    meshToast("Channel saved.")
+                    section.findViewById<Switch>(R.id.xv_switch_mesh_voice).isChecked = controller.meshVoiceEnabled()
+                    refreshMeshSection(section)
+                } else {
+                    meshToast(err)
+                }
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Repaints the live mesh status line + the offline channel list.
+    // Called on open and whenever the mesh toggle flips.
+    private fun refreshMeshSection(v: View) {
+        val statusView = v.findViewById<TextView>(R.id.xv_settings_mesh_status)
+        val mesh = controller.meshStatus()
+        if (mesh == null) {
+            statusView.text = if (controller.meshVoiceEnabled()) "Standing by - no channel joined yet" else "Mesh voice is off"
+            statusView.setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+        } else {
+            statusView.text = "🟢 ${mesh.label}"
+            statusView.setTextColor(
+                pluginContext.resources.getColor(
+                    if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
+                    null,
+                ),
+            )
+        }
+
+        val patchConfig = controller.meshActiveChannelPatchConfig()
+        v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_group).setText(patchConfig?.first ?: "")
+        v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_port).setText(patchConfig?.second ?: "")
+
+        val container = v.findViewById<android.widget.LinearLayout>(R.id.xv_mesh_channel_container)
+        container.removeAllViews()
+        val candidates = controller.meshChannelCandidates()
+
+        v.findViewById<Button>(R.id.xv_btn_mesh_forget_all).visibility =
+            if (candidates.isEmpty()) View.GONE else View.VISIBLE
+
+        if (candidates.isEmpty()) {
+            container.addView(
+                TextView(pluginContext).apply {
+                    text =
+                        if (controller.meshVoiceEnabled()) {
+                            "No channels yet - provision one below, or wait for a peer to advertise theirs."
+                        } else {
+                            "Turn on mesh voice to use channels without a server."
+                        }
+                    setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+                    textSize = 12f
+                    setPadding(4, 8, 4, 8)
+                },
+            )
+        } else {
+            val active = controller.meshActiveChannelCanonical()
+            val dp = pluginContext.resources.displayMetrics.density
+
+            // Group by host server based on currently known MumbleSession channels
+            val allChannels = controller.availableChannels().map { it.name }.toMutableSet()
+            val serverGroups = controller.availableChannels().groupBy { controller.connectedTakHost() ?: "Offline / ad-hoc" }.toMutableMap()
+            val serverCanon = allChannels.map { MulticastGroupDerivation.canonicalChannelName(it) }.toSet()
+
+            val offlineOnly = candidates.filter { MulticastGroupDerivation.canonicalChannelName(it) !in serverCanon }
+            if (offlineOnly.isNotEmpty()) {
+                val existingOffline = serverGroups["Offline / ad-hoc"]?.map { it.name } ?: emptyList()
+                val newOffline = offlineOnly.filter { it !in existingOffline }
+                val offlineList = (serverGroups["Offline / ad-hoc"] ?: emptyList()).toMutableList()
+                newOffline.forEach {
+                    offlineList.add(
+                        com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo(
+                            -1,
+                            it,
+                            com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE
+                        )
+                    )
+                }
+                serverGroups["Offline / ad-hoc"] = offlineList
+            }
+
+            val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
+            val groupList = sortedGroups.map { it.key }
+            val childMap = sortedGroups.associate { it.key to it.value.map { ch -> ch.name }.sorted() }
+
+            groupList.forEach { groupName ->
+                val channels = childMap[groupName] ?: emptyList()
+                if (channels.isNotEmpty()) {
+                    // Create group header
+                    val headerView = android.view.LayoutInflater.from(pluginContext).inflate(
+                        R.layout.xv_share_picker_group,
+                        container,
+                        false,
+                    ) as android.widget.LinearLayout
+                    val headerText = headerView.findViewById<TextView>(R.id.xv_group_name)
+                    val headerIndicator = headerView.findViewById<TextView>(R.id.xv_group_indicator)
+                    headerText.text = "$groupName (${channels.size})"
+                    headerIndicator.text = "▼"
+                    container.addView(headerView)
+
+                    val gridLayout = android.widget.GridLayout(pluginContext).apply {
+                        columnCount = 3
+                        layoutParams = android.widget.LinearLayout.LayoutParams(
+                            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            setMargins(0, 0, 0, (8 * dp).toInt())
+                        }
+                    }
+
+                    headerView.setOnClickListener {
+                        if (gridLayout.visibility == View.VISIBLE) {
+                            gridLayout.visibility = View.GONE
+                            headerIndicator.text = "▶"
+                        } else {
+                            gridLayout.visibility = View.VISIBLE
+                            headerIndicator.text = "▼"
+                        }
+                    }
+
+                    channels.forEach { name ->
+                        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+                        val chip = Button(pluginContext).apply {
+                            text = name
+                            isAllCaps = false
+                            textSize = 12f
+                            maxLines = 2
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                            setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
+                            background = pluginContext.resources.getDrawable(R.drawable.xv_button_bg, null)
+                            setTextColor(
+                                pluginContext.resources.getColor(
+                                    if (canonical == active) R.color.xv_accent else R.color.xv_text,
+                                    null,
+                                ),
+                            )
+
+                            val lp = android.widget.GridLayout.LayoutParams()
+                            lp.width = 0
+                            lp.height = android.widget.GridLayout.LayoutParams.WRAP_CONTENT
+                            lp.columnSpec = android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f)
+                            lp.setMargins((4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt())
+                            layoutParams = lp
+
+                            setOnClickListener {
+                                if (groupName ==
+                                    "Offline / ad-hoc"
+                                ) {
+                                    showChannelConfigDialog(v, name)
+                                } else {
+                                    promptConfigureChannel(v, name) { refreshMeshSection(v) }
+                                }
+                            }
+                            setOnLongClickListener {
+                                confirmForgetMeshChannel(v, name)
+                                true
+                            }
+                        }
+                        gridLayout.addView(chip)
+                    }
+                    container.addView(gridLayout)
+                }
+            }
+        }
+    }
+
+    private fun confirmForgetMeshChannel(
+        section: View,
+        name: String,
+    ) {
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Forget “$name”?")
+            .setMessage("Removes this channel's saved settings and key from this device. It won't affect anyone else.")
+            .setPositiveButton("Forget") { _, _ ->
+                controller.forgetMeshChannel(name)
+                meshToast("Forgot “$name”.")
+                refreshMeshSection(section)
+            }.setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun sliderTimeoutLabel(s: Int): String = if (s == 0) "off" else "$s s"
@@ -2430,21 +3551,33 @@ class XvDropDownReceiver(
         return if (proto.isNullOrBlank()) "$name — $state" else "$name ($proto) — $state"
     }
 
-    // wireChannelSelectors removed. VS1/VS2 channel selection lives on
-    // the main view's PTT cards (tap the channel name → picker overlay),
-    // not under Settings. Operator feedback (2026-05-11): "channels is
-    // still showing up in the menus and that is really more of the
-    // server config." The Server settings tab now only carries the TAK
-    // server selector + Mumble Connect/Disconnect.
-    private fun wireChannelSelectors(
-        @Suppress("UNUSED_PARAMETER") v: View,
-    ) {
-        // Intentionally empty — keep the wire-up point so showSettings()
-        // callers don't need restructuring during this transition.
-    }
+    // Channel selection lives on the main view's PTT cards (tap the
+    // channel name → picker overlay), not under Settings. Operator
+    // feedback (2026-05-11): "channels is still showing up in the menus
+    // and that is really more of the server config." The Server settings
+    // tab now only carries the TAK server selector + Mumble
+    // Connect/Disconnect. (The former no-op wireChannelSelectors() stub
+    // was removed once the transition settled.)
 
     private fun inflateMainAndShow() {
-        val v = inflateMain()
+        // Returning to main (Back from any overlay) clears any open-picker
+        // tracking so the refresh loop stops watching it. See #10.
+        openPickerSlot = null
+        // Reuse the cached main view instead of re-inflating on every Back.
+        // The main view's state is 100% controller-derived (no local
+        // mutable UI state worth preserving), so a repaint via refreshMain
+        // is equivalent to a fresh inflate — minus the layout inflate +
+        // listener re-wiring that dropped a frame on mid-tier rugged
+        // hardware. Fresh inflate only when there's no cached view (first
+        // show, or after disposeImpl nulled it).
+        val cached = mainView
+        val v =
+            if (cached != null) {
+                refreshMain()
+                cached
+            } else {
+                inflateMain()
+            }
         showDropDown(v, FIVE_TWELFTHS_WIDTH, FULL_HEIGHT, FULL_WIDTH, HALF_HEIGHT, this)
         startRefreshLoop()
     }

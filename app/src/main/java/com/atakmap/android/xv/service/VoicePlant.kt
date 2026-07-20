@@ -158,8 +158,19 @@ class VoicePlant(
             // correctly because they never registered — the grace
             // stamp only advances on our OWN teardown.
             val nowMs = android.os.SystemClock.elapsedRealtime()
+            // Third "ours" signal alongside the live call + teardown
+            // grace: recent RX playback. Mesh failover / bridge relay
+            // streams RX for minutes with no operator TX; that
+            // playback holds MODE_IN_COMMUNICATION well past the
+            // Telecom end-debounce, and reading it as an external
+            // VoIP call blocked legitimate PTT (2026-07-15 field
+            // repro). See RECENT_OWN_RX_GRACE_MS for the trade-off.
+            val recentOwnRx =
+                lastRxPlaybackElapsedMs > 0L &&
+                    nowMs - lastRxPlaybackElapsedMs <= RECENT_OWN_RX_GRACE_MS
             val xvOwnCallOrGrace =
                 xvHasActiveTelecomCallProvider() ||
+                    recentOwnRx ||
                     com.atakmap.android.xv.telecom.ActiveCallRegistry
                         .withinRecentCallGrace(
                             nowMs = nowMs,
@@ -2053,6 +2064,7 @@ class VoicePlant(
             }
         if (pcm.isNotEmpty()) {
             audioPlayback.playPcm(pcm)
+            lastRxPlaybackElapsedMs = android.os.SystemClock.elapsedRealtime()
         }
     }
 
@@ -2159,5 +2171,28 @@ class VoicePlant(
         // and needs to say what to do, not just what happened.
         internal const val CELLULAR_BLOCK_TOAST_MSG =
             "Cellular call active — hang up before XV PTT"
+
+        // elapsedRealtime of the last RX frame the plant rendered.
+        // Companion-level (not instance) because the cellular-gate
+        // provider is a constructor-default lambda, which cannot read
+        // instance state; there is one plant per process. Feeds the
+        // gate's "is this comm-mode OURS?" disambiguation: sustained
+        // RX playback (mesh failover / bridge relay delivers voice for
+        // minutes with no operator TX) holds MODE_IN_COMMUNICATION
+        // long after our own Telecom call's end-debounce teardown, and
+        // without this signal the gate read that as an external VoIP
+        // call and blocked PTT (field repro 2026-07-15 14:19, tablet
+        // bridging: block hit 10 s after teardown, xvHoldsSco=false on
+        // the speaker route so the SCO suppression couldn't catch it).
+        @Volatile
+        internal var lastRxPlaybackElapsedMs: Long = 0L
+
+        // How recently RX must have played for comm-mode to count as
+        // ours. Covers inter-burst gaps; after this much true RX
+        // silence the mode should have relaxed to NORMAL anyway. Same
+        // accepted trade-off as the SCO suppression: an external call
+        // concurrent with active XV RX slips the fidget-guard — rare,
+        // and blocking legitimate tactical PTT is the worse failure.
+        internal const val RECENT_OWN_RX_GRACE_MS: Long = 5_000L
     }
 }

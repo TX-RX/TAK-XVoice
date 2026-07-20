@@ -85,6 +85,18 @@
             android:textSize="13sp"
             android:textAllCaps="false"
             android:background="@drawable/xv_button_bg"/>
+
+        <Button
+            android:id="@+id/xv_tab_mesh"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:text="Mesh"
+            android:textColor="@color/xv_text"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:background="@drawable/xv_button_bg"/>
     </LinearLayout>
 
     <ScrollView
@@ -816,6 +828,319 @@
                         android:text="Open Accessibility settings"
                         android:layout_marginTop="8dp"/>
                 </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"/>
+            </LinearLayout>
+
+            <!-- ============================================================ -->
+            <!-- Section 4: Mesh & Offline. Everything server-less lives      -->
+            <!-- here so the other tabs stay about hardware + the live        -->
+            <!-- server. Channels are provisioned by NAME (the multicast      -->
+            <!-- group/port derive deterministically — no manual IP/port      -->
+            <!-- pinning), then shared as a comms plan (QR / NFC / data       -->
+            <!-- package) or prepped ahead of time.                           -->
+            <!-- ============================================================ -->
+            <LinearLayout
+                android:id="@+id/xv_section_mesh"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Global Default"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+                    
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="4dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Mesh voice (multicast failover)"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_mesh_voice"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="When the voice server is unreachable but devices still share a Wi-Fi or mesh network, voice fails over to encrypted IP multicast automatically — same PTT, no reconfiguration. Legs only run on Wi-Fi/Ethernet, never cellular."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="6dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp"
+                    android:background="@drawable/xv_card_bg"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Mission auto-channels"
+                        android:textColor="@color/xv_text"
+                        android:textSize="14sp"/>
+
+                    <Switch
+                        android:id="@+id/xv_switch_mission_channels"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"/>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Your active ATAK Data Sync mission drives the primary voice channel: XV derives the channel name from the mission and joins it, so the whole mission team lands on one voice channel with no manual coordination."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="6dp"/>
+
+                <!-- Live mesh state (mirrors the main-panel status line). -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Status"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:id="@+id/xv_settings_mesh_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Mesh voice is off"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="14sp"
+                    android:fontFamily="monospace"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- Channels known offline (last-joined + peer-advertised).
+                     Tapping one binds the mesh leg to it. Populated in
+                     wireMeshSection. These same channels also appear in the
+                     main channel selector now — this list is the offline
+                     management view (long-press or "Forget all" to prune). -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Offline channels"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Also shown in the main channel selector. Long-press a channel to forget it."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="2dp"/>
+
+                <LinearLayout
+                    android:id="@+id/xv_mesh_channel_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_marginTop="4dp"/>
+
+                <!-- Fast mass-clear. Long-press a single row to forget one;
+                     this clears the whole list at once. Shown only when
+                     there's something to clear (toggled in code). -->
+                <Button
+                    android:id="@+id/xv_btn_mesh_forget_all"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:layout_marginTop="4dp"
+                    android:text="Forget all"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="12sp"
+                    android:textAllCaps="false"
+                    android:background="@android:color/transparent"/>
+
+                <!-- Provision + share. A channel is provisioned by NAME
+                     (the multicast group/port derive automatically — no
+                     IP or port to enter); sharing hands the whole channel
+                     set + keys to peers as a passphrase-locked plan so a
+                     fully offline team converges with no manual pinning. -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Provision &amp; share"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Create a channel and XV picks everything — name, multicast group, and encryption key — so there's nothing to configure. Share the plan and everyone's device joins the same channels offline; import one you were sent."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <Button
+                    android:id="@+id/xv_btn_mesh_provision"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Create a channel"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <Button
+                    android:id="@+id/xv_btn_mesh_configure"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Configure manually / interop…"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <Button
+                    android:id="@+id/xv_btn_mesh_share"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Share channel plan…"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <Button
+                    android:id="@+id/xv_btn_mesh_import"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Import channel plan…"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="External Patch (OpenManet)"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Bridge the current channel to a secondary cleartext group (e.g. 224.0.0.1:5007)."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp">
+
+                    <EditText
+                        android:id="@+id/xv_edit_patch_group"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:hint="Group IP"
+                        android:textSize="14sp"
+                        android:background="@drawable/xv_card_bg"
+                        android:paddingHorizontal="12dp"
+                        android:layout_marginEnd="4dp"
+                        android:singleLine="true"/>
+
+                    <EditText
+                        android:id="@+id/xv_edit_patch_port"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:hint="Port"
+                        android:inputType="number"
+                        android:textSize="14sp"
+                        android:background="@drawable/xv_card_bg"
+                        android:paddingHorizontal="12dp"
+                        android:layout_marginStart="4dp"
+                        android:singleLine="true"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/xv_btn_patch_save"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Apply Patch to Current Channel"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
+                <!-- Panic wipe. Destructive + local-only: shreds every
+                     stored channel key + config and the Keystore key that
+                     seals them, without a full ATAK data clear. Gated in
+                     code behind a double slide-to-confirm. -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Danger zone"
+                    android:textColor="@color/xv_err"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="24dp"/>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Immediately erase every mesh channel key and setting from this device. Use if the device may be lost or compromised. This can't be undone."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="4dp"/>
+
+                <Button
+                    android:id="@+id/xv_btn_mesh_wipe"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Wipe mesh keys…"
+                    android:textColor="@color/xv_err"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
 
                 <View
                     android:layout_width="match_parent"

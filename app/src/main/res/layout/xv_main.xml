@@ -147,6 +147,24 @@
             android:paddingEnd="2dp"/>
     </LinearLayout>
 
+    <!-- Mesh-voice status line. GONE unless a multicast leg is live;
+         shows failover/bridge state and a red "· CLEAR" when any leg is
+         unencrypted. Set from refreshMain via controller.meshStatus(). -->
+    <TextView
+        android:id="@+id/xv_mesh_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:text="🕸 MESH READY"
+        android:textColor="@color/xv_accent"
+        android:textSize="12sp"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:layout_marginTop="4dp"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"/>
+
     <!-- VS1 PTT card: header (tap to pick channel) + PTT body. -->
     <LinearLayout
         android:id="@+id/xv_ptt_card_1"

@@ -1,6 +1,7 @@
 package com.atakmap.android.xv.presence
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Cache of XV peer presence info, keyed by ATAK device UID. Thread-safe;
@@ -20,8 +21,22 @@ class XvPresenceRegistry(
 ) {
     private val byUid = ConcurrentHashMap<String, XvPresence>()
 
+    // Observers notified after every upsert (both normal presence and bridge
+    // state). CopyOnWriteArrayList: reads are lock-free, writes (add/remove)
+    // are rare. Callbacks run on whatever thread called upsert/upsertBridgeState.
+    private val listeners = CopyOnWriteArrayList<(XvPresence) -> Unit>()
+
+    fun addListener(fn: (XvPresence) -> Unit) {
+        listeners.add(fn)
+    }
+
+    fun removeListener(fn: (XvPresence) -> Unit) {
+        listeners.remove(fn)
+    }
+
     fun upsert(p: XvPresence) {
         byUid[p.deviceUid] = p
+        listeners.forEach { it(p) }
     }
 
     fun get(uid: String): XvPresence? = byUid[uid]
@@ -50,6 +65,28 @@ class XvPresenceRegistry(
     fun remove(uid: String): XvPresence? = byUid.remove(uid)
 
     fun clear() = byUid.clear()
+
+    /**
+     * Update only the bridge-election fields from a local `<__xv_bridge>` CoT
+     * event. Does nothing if the peer isn't already in the registry (bridge
+     * CoT may arrive before the full presence CoT on first contact; we skip
+     * rather than create a skeleton entry with unknown capabilities).
+     */
+    fun upsertBridgeState(
+        uid: String,
+        mumbleConnected: Boolean,
+        isBridging: Boolean,
+        nowMs: Long,
+    ) {
+        val updated = byUid.computeIfPresent(uid) { _, existing ->
+            existing.copy(
+                mumbleConnected = mumbleConnected,
+                isBridging = isBridging,
+                bridgeLastSeenMs = nowMs,
+            )
+        }
+        updated?.let { listeners.forEach { cb -> cb(it) } }
+    }
 
     /**
      * Drop entries we haven't heard from within [staleAfterMs]. Called

@@ -90,6 +90,8 @@ object ControlPacket {
         KeyOffer(0x02),
         CertReq(0x03),
         CertReply(0x04),
+        PeerBeacon(0x05),
+        SpeakerName(0x06),
         ;
 
         companion object {
@@ -125,6 +127,8 @@ object ControlPacket {
                 Type.KeyOffer -> decodeKeyOffer(buf)
                 Type.CertReq -> decodeCertReq(buf)
                 Type.CertReply -> decodeCertReply(buf)
+                Type.PeerBeacon -> decodePeerBeacon(buf)
+                Type.SpeakerName -> decodeSpeakerName(buf)
             }
         } catch (_: Throwable) {
             null
@@ -139,6 +143,8 @@ object ControlPacket {
                 is Message.KeyOffer -> encodeKeyOffer(msg)
                 is Message.CertReq -> encodeCertReq(msg)
                 is Message.CertReply -> encodeCertReply(msg)
+                is Message.PeerBeacon -> encodePeerBeacon(msg)
+                is Message.SpeakerName -> encodeSpeakerName(msg)
             }
         val out = ByteArray(HEADER_LEN + body.size)
         out[0] = MAGIC_X
@@ -216,6 +222,97 @@ object ControlPacket {
         buf.put(msg.certDer)
         return buf.array()
     }
+
+    private fun decodeSpeakerName(buf: ByteBuffer): Message.SpeakerName {
+        val channelId = buf.int
+        val speakerKey = readLengthPrefixedString(buf)
+        val name = readLengthPrefixedString(buf)
+        return Message.SpeakerName(channelId, speakerKey, name)
+    }
+
+    private fun encodeSpeakerName(msg: Message.SpeakerName): ByteArray {
+        val keyBytes = msg.speakerKey.toByteArray(Charsets.UTF_8)
+        val nameBytes = msg.name.toByteArray(Charsets.UTF_8)
+        val buf =
+            ByteBuffer
+                .allocate(4 + 4 + keyBytes.size + 4 + nameBytes.size)
+                .order(ByteOrder.BIG_ENDIAN)
+        buf.putInt(msg.channelId)
+        buf.putInt(keyBytes.size)
+        buf.put(keyBytes)
+        buf.putInt(nameBytes.size)
+        buf.put(nameBytes)
+        return buf.array()
+    }
+
+    private fun decodePeerBeacon(buf: ByteBuffer): Message.PeerBeacon {
+        val uid = readLengthPrefixedString(buf)
+        val callsign = readLengthPrefixedString(buf)
+        val flags = buf.get().toInt() and 0xFF
+        val channelCount = buf.int
+        require(channelCount in 0..MAX_BEACON_CHANNELS) {
+            "beacon channel count $channelCount out of bounds (0..$MAX_BEACON_CHANNELS)"
+        }
+        val channels =
+            (0 until channelCount).map {
+                val name = readLengthPrefixedString(buf)
+                val group = readLengthPrefixedString(buf)
+                val port = buf.int
+                val keyEpoch = buf.int
+                val keyFp = buf.int
+                Message.PeerBeacon.Channel(name, group, port, keyEpoch, keyFp)
+            }
+        return Message.PeerBeacon(
+            uid = uid,
+            callsign = callsign,
+            mumbleConnected = (flags and FLAG_MUMBLE_CONNECTED) != 0,
+            bridging = (flags and FLAG_BRIDGING) != 0,
+            channels = channels,
+        )
+    }
+
+    private fun encodePeerBeacon(msg: Message.PeerBeacon): ByteArray {
+        val uidBytes = msg.uid.toByteArray(Charsets.UTF_8)
+        val callsignBytes = msg.callsign.toByteArray(Charsets.UTF_8)
+        val channelBytes =
+            msg.channels.map { ch ->
+                Triple(
+                    ch.name.toByteArray(Charsets.UTF_8),
+                    ch.group.toByteArray(Charsets.UTF_8),
+                    ch,
+                )
+            }
+        val size =
+            4 + uidBytes.size + 4 + callsignBytes.size + 1 + 4 +
+                channelBytes.sumOf { (n, g, _) -> 4 + n.size + 4 + g.size + 12 }
+        val buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN)
+        buf.putInt(uidBytes.size)
+        buf.put(uidBytes)
+        buf.putInt(callsignBytes.size)
+        buf.put(callsignBytes)
+        var flags = 0
+        if (msg.mumbleConnected) flags = flags or FLAG_MUMBLE_CONNECTED
+        if (msg.bridging) flags = flags or FLAG_BRIDGING
+        buf.put(flags.toByte())
+        buf.putInt(channelBytes.size)
+        channelBytes.forEach { (n, g, ch) ->
+            buf.putInt(n.size)
+            buf.put(n)
+            buf.putInt(g.size)
+            buf.put(g)
+            buf.putInt(ch.port)
+            buf.putInt(ch.keyEpoch)
+            buf.putInt(ch.keyFp)
+        }
+        return buf.array()
+    }
+
+    private const val FLAG_MUMBLE_CONNECTED = 0x01
+    private const val FLAG_BRIDGING = 0x02
+
+    // A beacon advertising more channels than an operator could
+    // plausibly have joined is malformed input, not a big deployment.
+    private const val MAX_BEACON_CHANNELS = 64
 
     private fun readLengthPrefixedString(buf: ByteBuffer): String {
         val bytes = readLengthPrefixedBytes(buf)
@@ -309,6 +406,73 @@ object ControlPacket {
             }
 
             override fun hashCode(): Int = certDer.contentHashCode()
+        }
+
+        /**
+         * "The speaker whose frames carry [speakerKey] on this channel
+         * is called [name]." Sent by a bridge on each relayed burst
+         * start: relayed frames carry the ORIGINAL speaker's SSRC, but
+         * a non-XV Mumble client has no CoT presence and no beacon, so
+         * mesh-only receivers would otherwise show a bare SSRC where a
+         * name belongs. Cleartext like beacons — display names only.
+         */
+        data class SpeakerName(
+            val channelId: Int,
+            val speakerKey: String,
+            val name: String,
+        ) : Message() {
+            override val type = Type.SpeakerName
+        }
+
+        /**
+         * Periodic peer announcement, doing double duty:
+         *
+         *   1. Offline discovery — [channels] advertises the multicast
+         *      channels this peer has live (name + endpoint) so a peer
+         *      with NO server profile and NO comms plan can still find
+         *      the net. Broadcast on the well-known rendezvous group
+         *      as well as each joined channel group.
+         *   2. Bridge election input — [mumbleConnected] + [bridging]
+         *      tell [BridgeElection] who can reach the server and who
+         *      currently claims the relay role.
+         *
+         * Beacons are cleartext by design: they carry no keys and no
+         * traffic, and an offline joiner by definition can't decrypt
+         * yet. Group/channel names are operator-chosen labels only.
+         */
+        data class PeerBeacon(
+            val uid: String,
+            val callsign: String,
+            val mumbleConnected: Boolean,
+            val bridging: Boolean,
+            val channels: List<Channel>,
+        ) : Message() {
+            override val type = Type.PeerBeacon
+
+            /**
+             * @property keyEpoch the sender's current key epoch on this
+             *   channel, or [ChannelKeyRegistry.NO_EPOCH] (-1) when they
+             *   hold no key. Feeds the key election: a keyless joiner
+             *   learns whom to ask, and simultaneous keyless starts
+             *   converge on one generator instead of splitting the key.
+             * @property keyFp short fingerprint of the sender's current
+             *   key bytes (see MeshVoiceManager.keyFingerprint), or 0
+             *   when keyless. Epoch equality does NOT imply key
+             *   equality — two devices that bootstrapped simultaneously
+             *   (or two merging partitions) can both sit at epoch 0
+             *   with different keys and drop 100% of each other's
+             *   voice as BAD_TAG (observed on-device 2026-07-15). A
+             *   fingerprint mismatch at the same epoch is that split-
+             *   brain signal; the lowest-uid holder rotates forward to
+             *   resolve it.
+             */
+            data class Channel(
+                val name: String,
+                val group: String,
+                val port: Int,
+                val keyEpoch: Int = ChannelKeyRegistry.NO_EPOCH,
+                val keyFp: Int = 0,
+            )
         }
     }
 }

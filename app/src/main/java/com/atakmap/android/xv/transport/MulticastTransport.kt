@@ -4,30 +4,60 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
-import com.atakmap.android.xv.audio.AudioPlayback
-import com.atakmap.android.xv.audio.OpusDecoder
+import com.atakmap.android.xv.transport.multicast.ControlPacket
+import com.atakmap.android.xv.transport.multicast.MulticastWireCodec
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.MulticastSocket
 import java.net.NetworkInterface
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
- * UDP multicast voice transport. Joins a multicast group, decodes raw
- * Opus frames carried in the datagram payload, pushes PCM to [playback].
+ * UDP multicast voice transport — one instance per (channel, group,
+ * port) leg. Frames are framed/unframed by an injected
+ * [MulticastWireCodec] pair, so this class is wire-format-agnostic:
+ * XV-native (RTP + optional ChaCha20-Poly1305) and OpenMANET-compat
+ * (raw Opus) legs differ only in the codecs the factory hands over.
  *
- * Wire format note: this implementation assumes each datagram is exactly
- * one Opus payload with no framing prefix. If we discover at runtime that
- * the existing fleet uses a different framing, this is the spot to add a
- * header parser; see project_xv_interop_scope.md for the interop scope.
+ * RX: datagrams are classified by [rxCodec] into voice (forwarded as
+ * raw Opus via [onIncomingOpus], matching the Mumble transport's
+ * pattern — decode + playback happen service-side over AIDL), control
+ * packets (forwarded via [onControlMessage] for key election / bridge
+ * election / discovery), or drops (counted per reason).
+ *
+ * TX: [sendFrame] runs the Opus payload through [txCodec] and sends
+ * the resulting datagram to the group. A null encode (e.g. crypto
+ * policy REQUIRED with no key yet) drops the frame and counts it.
+ * [beginVoiceBurst] resets the codec's burst-relative sequence on the
+ * PTT-down edge — same edge the Mumble leg resets on, which is what
+ * makes cross-leg RX dedup line up.
+ *
+ * Loopback: our own TX datagrams may be delivered back to us (the
+ * OS-level IP_MULTICAST_LOOP suppression is unreliable across Android
+ * vendors), so RX drops any voice frame whose speaker key equals
+ * [localSpeakerKey] before it reaches the caller.
  */
 @SuppressLint("MissingPermission")
 class MulticastTransport(
     override val config: TransportConfig.Multicast,
-    private val context: Context,
-    private val playback: AudioPlayback,
-    private val opusDecoderFactory: () -> OpusDecoder,
+    private val context: Context?,
+    private val txCodec: MulticastWireCodec,
+    private val rxCodec: MulticastWireCodec,
+    /** Our own RX-side speaker key (e.g. `ssrc:<hex8>`); frames matching it are looped-back TX and get dropped. */
+    private val localSpeakerKey: String? = null,
+    /**
+     * One received voice frame: raw Opus + stable speaker key +
+     * burst-relative sequence (null on interop legs) + the datagram's
+     * source host. The source host feeds dedup: during a bridge handoff
+     * two bridges can relay the SAME server speaker (same SSRC,
+     * independent sequences) for a few seconds, and only the source
+     * address tells the copies apart.
+     */
+    private val onIncomingOpus: ((opus: ByteArray, speakerKey: String, seqInBurst: Int?, sourceHost: String) -> Unit)? = null,
+    /** One received XVMC control-plane message. */
+    private val onControlMessage: ((msg: ControlPacket.Message, sourceHost: String) -> Unit)? = null,
     // Test seam — production callers leave this at the default, which
     // builds a real [MulticastSocket] bound to the config port. The
     // unit suite replaces this with a stub-socket factory so the swap
@@ -44,14 +74,43 @@ class MulticastTransport(
     @Volatile
     private var socket: MulticastSocket? = null
 
-    @Volatile
-    private var multicastLock: WifiManager.MulticastLock? = null
-
     private var listener: TransportListener? = null
 
-    // One decoder per peer (identified by source address). Multicast
-    // framing has no session id; we synthesize one from packet.address.
-    private val decoders = mutableMapOf<String, OpusDecoder>()
+    @Volatile
+    private var groupSocketAddress: InetSocketAddress? = null
+
+    /** Frames dropped by TX policy (null encode). Diagnostics only. */
+    val txDroppedByPolicy = AtomicLong(0)
+
+    /** RX datagrams dropped, all reasons combined. Diagnostics only. */
+    val rxDropped = AtomicLong(0)
+
+    /**
+     * RX drops that were peers' ENCRYPTED frames we hold no key for —
+     * the operator-actionable "deaf until keyed" state. Subset of
+     * [rxDropped]; feeds the KEY NEEDED status surface.
+     */
+    val rxEncryptedNoKey = AtomicLong(0)
+
+    /** Datagrams successfully handed to the socket. Diagnostics only. */
+    val txSent = AtomicLong(0)
+
+    /** Socket sends that threw. Diagnostics only. */
+    val txSendFailed = AtomicLong(0)
+
+    // ALL socket sends go through this single thread. Callers arrive
+    // from three places — binder threads (voice TX), the RX thread
+    // (bridge relay), and the main-thread mesh tick (beacons, key
+    // election) — and Android throws NetworkOnMainThreadException on
+    // any main-thread send. That exception carries a null message and
+    // was swallowed here as "multicast send failed: null", which
+    // silently killed the entire mesh control plane in the 2026-07-15
+    // field test: no beacons, no key exchange, split-brain channel
+    // keys, every encrypted voice frame dropped as BAD_TAG.
+    private val txExecutor =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "XvMulticastTx-${config.port}")
+        }
 
     override val isConnected: Boolean
         get() = connected
@@ -66,11 +125,26 @@ class MulticastTransport(
 
     private fun runReceiveLoop() {
         val l = listener ?: return
+        // The multicast lock and socket are OWNED by this loop invocation
+        // and torn down through this invocation's own finally — never via
+        // a shared field. A network-swap starts a fresh loop before this
+        // one exits; if cleanup read shared state it would release the new
+        // loop's lock / null its socket (field is a global suppress toggle
+        // under setReferenceCounted(false), so a stray release kills RX for
+        // the session). Per-invocation ownership makes the overlap safe.
+        var lock: WifiManager.MulticastLock? = null
+        var sock: MulticastSocket? = null
         try {
-            acquireMulticastLock()
-            val sock = socketFactory(config.port)
+            lock = acquireMulticastLock()
+            sock = socketFactory(config.port)
             socket = sock
             val group = InetAddress.getByName(config.groupAddress)
+            groupSocketAddress = InetSocketAddress(group, config.port)
+            try {
+                sock.timeToLive = MULTICAST_TTL
+            } catch (t: Throwable) {
+                Log.w(TAG, "setting multicast TTL failed (using OS default): ${t.message}")
+            }
             val intf =
                 config.networkInterfaceName?.let { NetworkInterface.getByName(it) }
                     ?: defaultMulticastInterface()
@@ -88,6 +162,16 @@ class MulticastTransport(
             val buf = ByteArray(MAX_DATAGRAM_BYTES)
             val packet = DatagramPacket(buf, buf.size)
 
+            val localSpeakerKeys = mutableSetOf<String>()
+            if (localSpeakerKey != null) localSpeakerKeys.add(localSpeakerKey)
+            runCatching {
+                NetworkInterface.getNetworkInterfaces()?.iterator()?.forEach { intf ->
+                    intf.inetAddresses.iterator().forEach { addr ->
+                        addr.hostAddress?.let { localSpeakerKeys.add("ip:$it") }
+                    }
+                }
+            }
+
             while (connected && !Thread.currentThread().isInterrupted) {
                 packet.length = buf.size
                 try {
@@ -96,32 +180,45 @@ class MulticastTransport(
                     // Socket closed during disconnect; exit cleanly.
                     break
                 }
-                val peerId = packet.address?.hostAddress ?: "unknown"
-                val opusPayload = packet.data.copyOfRange(0, packet.length)
-                if (opusPayload.isEmpty()) continue
-
-                val decoder = decoders.getOrPut(peerId) { opusDecoderFactory() }
-                val pcm =
-                    try {
-                        decoder.decode(opusPayload)
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "decode failed from $peerId: ${e.message}")
-                        continue
+                val sourceHost = packet.address?.hostAddress ?: "unknown"
+                val datagram = packet.data.copyOfRange(0, packet.length)
+                when (val r = rxCodec.decodeRx(datagram, sourceHost)) {
+                    is MulticastWireCodec.RxResult.Voice -> {
+                        if (localSpeakerKeys.contains(r.speakerKey)) {
+                            // Our own TX looped back by the OS — not a peer.
+                            continue
+                        }
+                        onIncomingOpus?.invoke(r.opus, r.speakerKey, r.seqInBurst, sourceHost)
+                        l.onVoiceFrame(
+                            VoiceFrame(
+                                opusPayload = r.opus,
+                                senderId = r.speakerKey,
+                                monotonicTimestampMs = System.nanoTime() / 1_000_000,
+                            ),
+                        )
+                        if (talkingPeers.add(r.speakerKey)) {
+                            l.onPeerStartedTalking(r.speakerKey)
+                        }
+                        // stoppedTalking is best-effort: raw multicast has
+                        // no "frame N is the last" signal. The playback
+                        // side's silence timer is the truth here.
                     }
-                playback.playPcm(pcm)
-                l.onVoiceFrame(
-                    VoiceFrame(
-                        opusPayload = opusPayload,
-                        senderId = peerId,
-                        monotonicTimestampMs = System.nanoTime() / 1_000_000,
-                    ),
-                )
-                if (talkingPeers.add(peerId)) {
-                    l.onPeerStartedTalking(peerId)
+                    is MulticastWireCodec.RxResult.Control -> {
+                        onControlMessage?.invoke(r.message, sourceHost)
+                    }
+                    is MulticastWireCodec.RxResult.Dropped -> {
+                        rxDropped.incrementAndGet()
+                        if (r.reason == MulticastWireCodec.DropReason.ENCRYPTED_NO_KEY) {
+                            rxEncryptedNoKey.incrementAndGet()
+                        }
+                        // Per-reason counts would spam at line rate; one
+                        // aggregate counter + occasional sampled log is
+                        // enough to notice a misconfigured peer.
+                        if (rxDropped.get() % DROP_LOG_SAMPLE == 1L) {
+                            Log.d(TAG, "RX drop (${r.reason}) from $sourceHost — total ${rxDropped.get()}")
+                        }
+                    }
                 }
-                // talkingPeers stoppedTalking is best-effort: we don't
-                // have a "frame N is the last" signal in raw multicast.
-                // The audio playback's silence timer is the truth here.
             }
         } catch (t: Throwable) {
             if (connected) {
@@ -129,29 +226,89 @@ class MulticastTransport(
                 l.onConnectionFailed(t)
             }
         } finally {
-            cleanup()
+            cleanup(lock, sock)
         }
+    }
+
+    /**
+     * Reset burst-relative TX state (RTP sequence, marker bit) on the
+     * PTT-down edge. Mirrors MumbleTransport.beginVoiceBurst so both
+     * legs' sequence numbers stay aligned for cross-leg RX dedup.
+     */
+    fun beginVoiceBurst() {
+        txCodec.beginBurst()
     }
 
     override fun sendFrame(frame: VoiceFrame) {
         if (!connected) return
-        // TX is Phase 2 work. Audit L9: previously logged Log.w each
-        // call ("ignoring"), which was misleading — at ~100 frames/sec
-        // during PTT it suggested transient drops rather than an
-        // unimplemented surface. Log Log.e ONCE per session so the
-        // operator's debug capture surfaces "you tried to TX on a
-        // multicast transport and nothing went out" loudly, then drop
-        // silently. Real fix is to expose canTransmit() on
-        // VoiceTransport and have PttDispatcher bonk before keying.
-        if (txWarnLogged.compareAndSet(false, true)) {
-            Log.e(TAG, "sendFrame — multicast TX is unimplemented (Phase 2); subsequent frames silently dropped")
+        // Multicast legs are bound to the primary channel; VS2 traffic
+        // (slot 1) stays Mumble-only.
+        if (frame.targetSlot != 0) return
+        val datagram = txCodec.encodeTx(frame.opusPayload)
+        if (datagram == null) {
+            txDroppedByPolicy.incrementAndGet()
+            return
+        }
+        sendRaw(datagram)
+    }
+
+    /**
+     * Send pre-framed bytes to the group. Used for control-plane
+     * messages ([sendControl]) and by the bridge relay path, whose
+     * per-speaker codecs frame outside this class so relayed frames
+     * carry the ORIGINAL speaker's SSRC rather than ours.
+     */
+    fun sendRaw(datagram: ByteArray) {
+        try {
+            txExecutor.execute { sendOnTxThread(datagram) }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Racing a disconnect; the leg is going away. Drop.
         }
     }
 
-    private val txWarnLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    private fun sendOnTxThread(datagram: ByteArray) {
+        // Skip once torn down: disconnect() flips this false before closing
+        // the socket, so a task still draining the executor doesn't send on
+        // a closed socket and bump txSendFailed with a phantom failure.
+        if (!connected) return
+        val sock = socket ?: return
+        val target = groupSocketAddress ?: return
+        try {
+            sock.send(DatagramPacket(datagram, datagram.size, target))
+            txSent.incrementAndGet()
+        } catch (t: Throwable) {
+            // Send failures during interface flaps are expected; the
+            // swap path rebuilds the socket. Don't tear down for them
+            // — but log the exception CLASS, not just the message:
+            // the message can be null (NetworkOnMainThreadException
+            // was exactly that) and a nameless failure line hid a
+            // dead control plane for a full test session.
+            val n = txSendFailed.incrementAndGet()
+            if (n % SEND_FAIL_LOG_SAMPLE == 1L) {
+                Log.w(TAG, "multicast send failed ($n total): $t")
+            }
+        }
+    }
+
+    /** One-line TX/RX health for MESH_STATUS diagnostics. */
+    fun diagnosticsLine(): String =
+        "tx=${txSent.get()} txFail=${txSendFailed.get()} " +
+            "txPolicyDrop=${txDroppedByPolicy.get()} rxDrop=${rxDropped.get()} " +
+            "rxNoKey=${rxEncryptedNoKey.get()}"
+
+    /** Send one XVMC control-plane message to the group. */
+    fun sendControl(msg: ControlPacket.Message) {
+        if (!connected) return
+        sendRaw(ControlPacket.encode(msg))
+    }
 
     override fun disconnect() {
         connected = false
+        // shutdownNow (not shutdown): drop queued sends rather than let
+        // them run against the socket we're about to close. Combined with
+        // the connected-guard in sendOnTxThread, this keeps teardown from
+        // dirtying txSendFailed with phantom failures.
+        txExecutor.shutdownNow()
         socket?.close()
         receiveThread?.interrupt()
         receiveThread = null
@@ -204,32 +361,34 @@ class MulticastTransport(
             }
     }
 
-    private fun cleanup() {
-        decoders.values.forEach { runCatching { it.close() } }
-        decoders.clear()
+    private fun cleanup(
+        lock: WifiManager.MulticastLock?,
+        sock: MulticastSocket?,
+    ) {
         try {
-            socket?.close()
+            sock?.close()
         } catch (_: Throwable) {
         }
-        socket = null
-        releaseMulticastLock()
+        // Only clear the shared field if it still points at OUR socket — a
+        // concurrent network-swap may already have published a new one, and
+        // nulling that would break TX for the fresh loop.
+        if (socket === sock) socket = null
+        releaseMulticastLock(lock)
     }
 
-    private fun acquireMulticastLock() {
-        val wifi = context.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
-        multicastLock =
-            wifi.createMulticastLock("xv-multicast").apply {
-                setReferenceCounted(false)
-                acquire()
-            }
+    private fun acquireMulticastLock(): WifiManager.MulticastLock? {
+        val wifi = context?.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return null
+        return wifi.createMulticastLock("xv-multicast").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
     }
 
-    private fun releaseMulticastLock() {
+    private fun releaseMulticastLock(lock: WifiManager.MulticastLock?) {
         try {
-            multicastLock?.release()
+            lock?.release()
         } catch (_: Throwable) {
         }
-        multicastLock = null
     }
 
     /**
@@ -250,7 +409,19 @@ class MulticastTransport(
         private const val TAG = "XvMulticast"
 
         // Largest Opus payload we'd expect over Ethernet-like MTU. 1500
-        // bytes is conservative; voice frames are typically <200 bytes.
+        // bytes is conservative; voice frames are typically <200 bytes
+        // even with the RTP + AEAD overhead.
         private const val MAX_DATAGRAM_BYTES = 1500
+
+        // 239/8 is org-local scope; TTL 8 lets frames cross a few mesh
+        // hops (OpenMANET nodes route multicast) without leaking far.
+        private const val MULTICAST_TTL = 8
+
+        private const val DROP_LOG_SAMPLE = 200L
+
+        // First failure always logs (n % SAMPLE == 1), then every
+        // SAMPLEth. Beacons send every 5 s, so a fully-dead TX path
+        // still surfaces within seconds and re-logs every few minutes.
+        private const val SEND_FAIL_LOG_SAMPLE = 50L
     }
 }

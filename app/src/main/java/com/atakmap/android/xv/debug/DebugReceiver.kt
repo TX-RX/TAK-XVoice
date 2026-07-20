@@ -9,6 +9,24 @@ import android.util.Log
 //
 //   START_MULTICAST  --es group "239.0.1.1" --ei port 6001 [--es label "..."]
 //   STOP_MULTICAST
+//   MESH_VOICE --es enabled "true|false"
+//     Master mesh-voice (multicast) toggle — same pref as the settings
+//     switch. Persisted; the mesh manager re-reads it on its ~1 Hz
+//     tick, so legs come up/down within a second, no reconnect needed.
+//   MESH_STATUS
+//     Logs mesh-voice state: enabled flag, active legs with resolved
+//     group:port endpoints, failover TX state, bridge role, and any
+//     channels discovered via peer beacons.
+//   MESH_PLAN_EXPORT [--es passphrase "..."]
+//     Logs the current channel set (primary + persisted directory,
+//     with any stored per-channel configs) as a comms-plan carrier
+//     string — cleartext XVCP1 by default, passphrase-locked XVCP2
+//     when a passphrase is given. Paste into MESH_PLAN_IMPORT on a
+//     peer to provision it without a server.
+//   MESH_PLAN_IMPORT --es plan "<carrier text>" [--es passphrase "..."]
+//     Imports a comms-plan carrier: persists each channel's config,
+//     installs any pre-shared keys into the mesh key registries, and
+//     lands on the plan's first channel when none is selected yet.
 //   AUDIO_STATE
 //   AINA_LIST_BONDED
 //     Logs all paired Bluetooth devices (name + MAC + type) so the user
@@ -99,6 +117,41 @@ class DebugReceiver : BroadcastReceiver() {
             ACTION_STOP_MULTICAST -> {
                 Log.i(TAG, "STOP_MULTICAST")
                 handler.stopMulticast()
+            }
+
+            ACTION_MESH_VOICE -> {
+                val raw = intent.getStringExtra("enabled")?.lowercase()
+                val enabled =
+                    when (raw) {
+                        "true", "1", "on", "yes" -> true
+                        "false", "0", "off", "no" -> false
+                        else -> {
+                            Log.w(TAG, "MESH_VOICE: bad/missing --es enabled '$raw' (use true|false)")
+                            return
+                        }
+                    }
+                Log.i(TAG, "MESH_VOICE enabled=$enabled")
+                handler.setMeshVoiceEnabled(enabled)
+            }
+
+            ACTION_MESH_STATUS -> {
+                Log.i(TAG, "MESH_STATUS")
+                handler.dumpMeshStatus()
+            }
+
+            ACTION_MESH_PLAN_EXPORT -> {
+                Log.i(TAG, "MESH_PLAN_EXPORT")
+                handler.exportCommsPlan(intent.getStringExtra("passphrase"))
+            }
+
+            ACTION_MESH_PLAN_IMPORT -> {
+                val plan = intent.getStringExtra("plan")
+                if (plan.isNullOrBlank()) {
+                    Log.w(TAG, "MESH_PLAN_IMPORT needs --es plan \"<carrier text>\"")
+                    return
+                }
+                Log.i(TAG, "MESH_PLAN_IMPORT (${plan.length} chars)")
+                handler.importCommsPlan(plan, intent.getStringExtra("passphrase"))
             }
 
             ACTION_AUDIO_STATE -> {
@@ -233,6 +286,26 @@ class DebugReceiver : BroadcastReceiver() {
 
         fun stopMulticast()
 
+        // Persist the mesh-voice master toggle (same pref as the
+        // settings switch). Legs reconcile on the manager's next tick.
+        fun setMeshVoiceEnabled(enabled: Boolean)
+
+        // Log mesh-voice state: enabled, legs + endpoints, failover
+        // TX state, bridge role, discovered channels.
+        fun dumpMeshStatus()
+
+        // Log the current channel set as a comms-plan carrier string
+        // (cleartext, or KDF-locked when a passphrase is given).
+        fun exportCommsPlan(passphrase: String?)
+
+        // Import a comms-plan carrier: persist channel configs,
+        // install pre-shared keys, land on the first channel when
+        // none is selected.
+        fun importCommsPlan(
+            planText: String,
+            passphrase: String?,
+        )
+
         fun describeAudioState(): String
 
         fun connectAina(
@@ -304,6 +377,10 @@ class DebugReceiver : BroadcastReceiver() {
 
         const val ACTION_START_MULTICAST = "com.atakmap.android.xv.debug.START_MULTICAST"
         const val ACTION_STOP_MULTICAST = "com.atakmap.android.xv.debug.STOP_MULTICAST"
+        const val ACTION_MESH_VOICE = "com.atakmap.android.xv.debug.MESH_VOICE"
+        const val ACTION_MESH_STATUS = "com.atakmap.android.xv.debug.MESH_STATUS"
+        const val ACTION_MESH_PLAN_EXPORT = "com.atakmap.android.xv.debug.MESH_PLAN_EXPORT"
+        const val ACTION_MESH_PLAN_IMPORT = "com.atakmap.android.xv.debug.MESH_PLAN_IMPORT"
         const val ACTION_AUDIO_STATE = "com.atakmap.android.xv.debug.AUDIO_STATE"
         const val ACTION_AINA_CONNECT = "com.atakmap.android.xv.debug.AINA_CONNECT"
         const val ACTION_AINA_DISCONNECT = "com.atakmap.android.xv.debug.AINA_DISCONNECT"

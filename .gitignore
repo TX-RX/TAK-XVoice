@@ -58,6 +58,11 @@ Thumbs.db
 # don't end in .log (e.g. dumpsys snapshots, raw audio captures, JSON
 # diagnostics). Field-capture material; never committed.
 /logs/
+# Root-level logcat dumps written by agent/adb sessions (e.g.
+# logcat_<serial>.txt). These may contain device identifiers, server
+# hostnames, and operator callsigns. Always excluded; move them to
+# .logs/ for local retention.
+/logcat_*.txt
 hs_err_pid*
 # Scratch dir for logcat dumps + ad-hoc diagnostics (created by
 # agent sessions to keep large/noisy artifacts out of the project

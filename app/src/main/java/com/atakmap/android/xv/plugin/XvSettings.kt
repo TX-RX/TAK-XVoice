@@ -2,6 +2,8 @@ package com.atakmap.android.xv.plugin
 
 import android.content.SharedPreferences
 import com.atakmap.android.xv.audio.TptTone
+import com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
 
 // Persistent settings for the XV plugin. Wraps a SharedPreferences
 // provider so call sites read "settings.persistedX()" / "settings.persistX()"
@@ -298,6 +300,216 @@ class XvSettings(
         prefs()?.edit()?.putString(PREF_PRIMARY_CHANNEL, name)?.apply()
     }
 
+    // Snapshot of the server's channel directory, refreshed while
+    // Mumble is connected (1 Hz tick, write-on-change). This is what
+    // makes registration configure EVERY channel for offline use: when
+    // the server later becomes unreachable, the picker and the mesh
+    // failover layer still know the full channel set — not just the
+    // last-joined one.
+    fun persistedKnownChannels(): List<String> = prefs()?.getStringSet(PREF_KNOWN_CHANNELS, null)?.sorted().orEmpty()
+
+    fun persistKnownChannels(names: Collection<String>) {
+        prefs()?.edit()?.putStringSet(PREF_KNOWN_CHANNELS, names.toSet())?.apply()
+    }
+
+    // Remove a single channel from the known-channel directory (by
+    // canonical name, so a display-spelling difference still matches).
+    // "Forget" needs this: without it the directory keeps re-listing a
+    // channel the operator removed. A live server channel legitimately
+    // reappears on the next directory snapshot; an ad-hoc/offline one
+    // stays gone.
+    fun removeKnownChannel(name: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_KNOWN_CHANNELS, emptySet())
+                ?.toMutableSet()
+                ?: return
+        val before = existing.size
+        existing.removeAll { MulticastGroupDerivation.canonicalChannelName(it) == canonical }
+        if (existing.size != before) {
+            prefs()?.edit()?.putStringSet(PREF_KNOWN_CHANNELS, existing)?.apply()
+        }
+        removeChannelServer(name)
+    }
+
+    // Wipe the whole known-channel directory + every per-channel
+    // multicast override — the storage half of "forget all channels".
+    // The master toggles and keys are handled by the caller.
+    fun clearKnownChannels() {
+        prefs()?.edit()?.remove(PREF_KNOWN_CHANNELS)?.remove(PREF_CHANNEL_SERVER)?.apply()
+    }
+
+    // Originating-server directory: canonical channel name → server host.
+    // Channel identity is really (server, channel) — the same name on two
+    // servers is two different multicast channels — but the known-channel
+    // set is a flat name list, so this parallel map records which server a
+    // channel was last seen on for the grouped/hierarchical picker.
+    // Stored as a Set of "<host> <canonical>" entries — host FIRST because a
+    // hostname has no spaces, so the first space splits cleanly even when
+    // the channel name contains spaces. Ad-hoc / peer-discovered channels
+    // have no entry (unknown server).
+    fun channelServer(name: String): String? {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        return prefs()
+            ?.getStringSet(PREF_CHANNEL_SERVER, emptySet())
+            ?.firstOrNull { it.substringAfter(' ', "") == canonical }
+            ?.substringBefore(' ')
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    fun persistChannelServer(
+        name: String,
+        host: String,
+    ) {
+        if (host.isBlank()) return
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        if (canonical.isBlank()) return
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_SERVER, emptySet())
+                ?.toMutableSet()
+                ?: mutableSetOf()
+        existing.removeAll { it.substringAfter(' ', "") == canonical }
+        existing.add("$host $canonical")
+        prefs()?.edit()?.putStringSet(PREF_CHANNEL_SERVER, existing)?.apply()
+    }
+
+    fun removeChannelServer(name: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_SERVER, emptySet())
+                ?.toMutableSet()
+                ?: return
+        if (existing.removeAll { it.substringAfter(' ', "") == canonical }) {
+            prefs()?.edit()?.putStringSet(PREF_CHANNEL_SERVER, existing)?.apply()
+        }
+    }
+
+    fun clearAllChannelMulticastConfigs() {
+        prefs()?.edit()?.remove(PREF_CHANNEL_MULTICAST)?.apply()
+    }
+
+    // Global mesh-voice (multicast) master toggle. When ON, every
+    // joined Mumble channel gets an auto-derived multicast failover
+    // leg (FAILOVER mode, XV-native encrypted) unless a per-channel
+    // config below overrides it. Default OFF for the first release
+    // carrying the feature — operators opt in deliberately while the
+    // failover path soaks; flipping the default is a one-line change.
+    fun persistedMeshVoiceEnabled(): Boolean = prefs()?.getBoolean(PREF_MESH_VOICE_ENABLED, false) ?: false
+
+    fun persistMeshVoiceEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_MESH_VOICE_ENABLED, enabled)?.apply()
+    }
+
+    // Mission auto-channels master toggle. When ON, the operator's active
+    // ATAK Data Sync mission drives the primary voice channel: XV derives
+    // a deterministic channel name from the mission, creates it on the
+    // server if the server allows and it doesn't exist, and joins it — so
+    // a whole mission team lands on one voice channel with no manual
+    // coordination (and, with mesh voice on, its failover leg follows for
+    // free). Default OFF; opt-in like mesh voice. See
+    // MissionChannelProvisioner for the reconciliation policy.
+    fun persistedMissionChannelsEnabled(): Boolean = prefs()?.getBoolean(PREF_MISSION_CHANNELS_ENABLED, false) ?: false
+
+    fun persistMissionChannelsEnabled(enabled: Boolean) {
+        prefs()?.edit()?.putBoolean(PREF_MISSION_CHANNELS_ENABLED, enabled)?.apply()
+    }
+
+    // Per-channel multicast overrides, stored as a Set<String> of
+    // canonical-JSON ChannelMulticastConfig entries (one JSON object
+    // per element — same shape the comms-plan bundle embeds). Absence
+    // of an entry for a channel means "use the auto-derived default",
+    // NOT "multicast off"; see ChannelMulticastConfig.defaultFor.
+    // Entries that fail to parse (e.g. written by a newer XV with an
+    // enum this build doesn't know) are skipped, degrading that
+    // channel to the default rather than failing channel setup.
+    fun channelMulticastConfigs(): List<ChannelMulticastConfig> {
+        val raw = prefs()?.getStringSet(PREF_CHANNEL_MULTICAST, emptySet()) ?: emptySet()
+        return raw
+            .mapNotNull { ChannelMulticastConfig.fromJson(it) }
+            .sortedBy { it.channelName }
+    }
+
+    fun channelMulticastConfigFor(channelName: String): ChannelMulticastConfig? {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        return channelMulticastConfigs().firstOrNull { it.channelName == canonical }
+    }
+
+    // Upsert by canonical channel name: at most one override per
+    // channel, and a re-save replaces the prior one.
+    fun persistChannelMulticastConfig(cfg: ChannelMulticastConfig) {
+        val canonical = cfg.copy(channelName = MulticastGroupDerivation.canonicalChannelName(cfg.channelName))
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_MULTICAST, emptySet())
+                ?.toMutableSet()
+                ?: mutableSetOf()
+        existing.removeAll { ChannelMulticastConfig.fromJson(it)?.channelName == canonical.channelName }
+        existing.add(canonical.toJson())
+        prefs()?.edit()?.putStringSet(PREF_CHANNEL_MULTICAST, existing)?.apply()
+    }
+
+    fun removeChannelMulticastConfig(channelName: String) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        val existing =
+            prefs()
+                ?.getStringSet(PREF_CHANNEL_MULTICAST, emptySet())
+                ?.toMutableSet()
+                ?: return
+        val before = existing.size
+        existing.removeAll { ChannelMulticastConfig.fromJson(it)?.channelName == canonical }
+        if (existing.size != before) {
+            prefs()?.edit()?.putStringSet(PREF_CHANNEL_MULTICAST, existing)?.apply()
+        }
+    }
+
+    fun channelCryptoPolicyFor(channelName: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        val name = prefs()?.getString("xv_crypto_policy_$canonical", null)
+        return try {
+            if (name != null) {
+                com.atakmap.android.xv.presence.ChannelCryptoPolicy.valueOf(name)
+            } else {
+                com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+            }
+        } catch (_: Exception) {
+            com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+        }
+    }
+
+    fun persistChannelCryptoPolicy(channelName: String, policy: com.atakmap.android.xv.presence.ChannelCryptoPolicy) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        prefs()?.edit()?.putString("xv_crypto_policy_$canonical", policy.name)?.apply()
+    }
+
+    // Sealed per-channel key vault. The bytes stored here are the output
+    // of KeystoreSecretBox.seal(MeshKeyVault.serialize(...)) — i.e. GCM
+    // ciphertext of the binary key blob, never the keys themselves. We
+    // Base64 it only because SharedPreferences stores strings; the
+    // confidentiality lives in the Keystore-held AES key, not here.
+    // java.util.Base64 (API 26+, matches minSdk) keeps this unit-testable
+    // off-device, unlike android.util.Base64's stubbed test double.
+    fun persistSealedMeshKeyVault(sealed: ByteArray?) {
+        prefs()?.edit()?.apply {
+            if (sealed == null || sealed.isEmpty()) {
+                remove(PREF_MESH_KEY_VAULT)
+            } else {
+                putString(PREF_MESH_KEY_VAULT, java.util.Base64.getEncoder().encodeToString(sealed))
+            }
+        }?.apply()
+    }
+
+    fun sealedMeshKeyVault(): ByteArray? {
+        val enc = prefs()?.getString(PREF_MESH_KEY_VAULT, null)?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            java.util.Base64.getDecoder().decode(enc)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
     companion object {
         // SharedPreferences file name. Lives under the plugin's own
         // Context so we don't pollute ATAK's prefs file.
@@ -357,6 +569,26 @@ class XvSettings(
         // Last-joined primary channel. Used for auto-rejoin override
         // on reconnect.
         private const val PREF_PRIMARY_CHANNEL = "primary_channel"
+
+        // Mesh-voice (multicast) master toggle + per-channel overrides.
+        // See persistedMeshVoiceEnabled / channelMulticastConfigs.
+        private const val PREF_MESH_VOICE_ENABLED = "mesh_voice_enabled"
+        private const val PREF_KNOWN_CHANNELS = "known_channels"
+        private const val PREF_CHANNEL_MULTICAST = "channel_multicast_configs"
+
+        // Parallel "<host> <canonical>" directory tagging each known channel
+        // with the server it was last seen on. See channelServer.
+        private const val PREF_CHANNEL_SERVER = "channel_server_map"
+
+        // Keystore-sealed per-channel key vault (Base64 of GCM
+        // ciphertext). See persistSealedMeshKeyVault. Lives in the
+        // plugin's own prefs file under ATAK's data dir, so ATAK
+        // "Clear data" wipes it alongside the configs.
+        private const val PREF_MESH_KEY_VAULT = "mesh_key_vault_sealed"
+
+        // Mission auto-channels master toggle. See
+        // persistedMissionChannelsEnabled.
+        private const val PREF_MISSION_CHANNELS_ENABLED = "mission_channels_enabled"
 
         // PTT-timeout slider clamp. Bottom prevents an operator from
         // setting a timeout so short the warning chirp + cutoff tone

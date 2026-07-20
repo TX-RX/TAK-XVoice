@@ -5,8 +5,10 @@
 
     <!-- Audio + Bluetooth — wired up so Phase 1 (Mumble RX) and Phase 2
          (PTT TX with proper SCO gating) can request what they need. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- LAN multicast voice (issue: Wi-Fi multicast drops by default
          unless we hold a MulticastLock; see MulticastTransport). -->
