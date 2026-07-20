@@ -767,6 +767,8 @@ class XvMapComponent : AbstractMapComponent() {
     private var presenceRegistry: XvPresenceRegistry? = null
     private var presencePublisher: XvCotPublisher? = null
     private var presenceListener: XvCotListener? = null
+    private var bridgeCotPublisher: com.atakmap.android.xv.presence.XvBridgeCotPublisher? = null
+    private var interopNotificationManager: com.atakmap.android.xv.interop.InteropNotificationManager? = null
 
     override fun onCreate(
         context: Context,
@@ -3021,13 +3023,15 @@ class XvMapComponent : AbstractMapComponent() {
                 return null
             }
 
+            override fun channelCryptoPolicy(name: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy? =
+                settings.channelCryptoPolicyFor(name)
+
             override fun saveMeshChannel(
                 name: String,
                 group: String?,
                 port: String?,
-                wireFormat: com.atakmap.android.xv.transport.multicast.WireFormat,
-                cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
-            ): String? = saveMeshChannelInternal(name, group, port, wireFormat, cryptoPolicy)
+                channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
+            ): String? = saveMeshChannelInternal(name, group, port, channelCryptoPolicy)
 
             override fun applyPatchToCurrentChannel(group: String, port: String): String? {
                 val channel = meshActiveChannelCanonical() ?: return "No active mesh channel."
@@ -3143,6 +3147,24 @@ class XvMapComponent : AbstractMapComponent() {
         val registry = XvPresenceRegistry()
         presenceRegistry = registry
 
+        val ctx = heldPluginContext
+        if (ctx != null) {
+            interopNotificationManager = com.atakmap.android.xv.interop.InteropNotificationManager(
+                pluginContext = ctx,
+                registry = registry,
+                cryptoPolicyForChannel = { settings.channelCryptoPolicyFor(it) },
+                onChannelDowngrade = { channel ->
+                    val existing = settings.channelMulticastConfigFor(channel)
+                        ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(channel)
+                    val downgraded = com.atakmap.android.xv.interop.InteropNotificationManager.cleartextConfigFor(existing)
+                    settings.persistChannelMulticastConfig(downgraded)
+                    settings.persistChannelCryptoPolicy(channel, com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT)
+                    dropDown?.refreshNow()
+                }
+            )
+            interopNotificationManager?.start()
+        }
+
         // Cert fingerprint is best-effort: only available once a TAK
         // server is enrolled. We attempt a lookup against the connected
         // server (if any); null is fine — the CoT detail just won't carry
@@ -3207,6 +3229,17 @@ class XvMapComponent : AbstractMapComponent() {
         }
         stopMeshVoice()
         val ctx = heldPluginContext
+
+        val pub = com.atakmap.android.xv.presence.XvBridgeCotPublisher(deviceUid)
+        pub.setCallsignSupplier {
+            try {
+                com.atakmap.android.maps.MapView.getMapView()?.deviceCallsign
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        pub.start()
+        bridgeCotPublisher = pub
         val takHost =
             try {
                 TakServerDiscovery.pick(null)?.host
@@ -3369,6 +3402,7 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 },
                 logWarn = { msg -> Log.w(TAG, msg) },
+                bridgeCotPublisher = bridgeCotPublisher,
             )
         meshVoiceManager = manager
         // Re-install persisted per-channel keys (encrypted at rest) before
@@ -3840,9 +3874,25 @@ class XvMapComponent : AbstractMapComponent() {
         name: String,
         group: String?,
         port: String?,
-        wireFormat: com.atakmap.android.xv.transport.multicast.WireFormat,
-        cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
+        channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
     ): String? {
+        val (wireFormat, cryptoPolicy) = when (channelCryptoPolicy) {
+            com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY ->
+                Pair(
+                    com.atakmap.android.xv.transport.multicast.WireFormat.XV_NATIVE,
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED
+                )
+            com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION ->
+                Pair(
+                    com.atakmap.android.xv.transport.multicast.WireFormat.XV_NATIVE,
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED
+                )
+            com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT ->
+                Pair(
+                    com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT,
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT
+                )
+        }
         val result =
             com.atakmap.android.xv.provisioning.MeshChannelSpec.build(
                 name = name,
@@ -3853,6 +3903,7 @@ class XvMapComponent : AbstractMapComponent() {
             )
         val config = result.config ?: return result.error ?: "Invalid channel configuration."
         settings.persistChannelMulticastConfig(config)
+        settings.persistChannelCryptoPolicy(name, channelCryptoPolicy)
         settings.persistMeshVoiceEnabled(true)
         val key =
             if (result.autoKey) {
@@ -4045,6 +4096,8 @@ class XvMapComponent : AbstractMapComponent() {
             }
         }
         meshVoiceManager = null
+        bridgeCotPublisher?.stop()
+        interopNotificationManager?.stop()
         missionChannelProvisioner?.reset()
         missionChannelProvisioner = null
     }

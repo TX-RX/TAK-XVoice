@@ -51,12 +51,38 @@ class InteropNotificationManager(
         handlePresenceUpdate(presence)
     }
 
+    private val actionReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val channel = intent.getStringExtra(EXTRA_CHANNEL_NAME) ?: return
+            val uid = intent.getStringExtra(EXTRA_PEER_UID) ?: return
+            when (intent.action) {
+                ACTION_ACCEPT -> onAccept(channel, uid)
+                ACTION_REJECT -> onReject(channel, uid)
+            }
+        }
+    }
+
     fun start() {
         ensureNotificationChannel()
         registry.addListener(presenceListener)
+        val filter = android.content.IntentFilter().apply {
+            addAction(ACTION_ACCEPT)
+            addAction(ACTION_REJECT)
+        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            pluginContext,
+            actionReceiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     fun stop() {
+        try {
+            pluginContext.unregisterReceiver(actionReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Ignored if not registered
+        }
         registry.removeListener(presenceListener)
         cancelAll()
     }

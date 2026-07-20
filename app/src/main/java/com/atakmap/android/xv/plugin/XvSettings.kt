@@ -465,6 +465,25 @@ class XvSettings(
         }
     }
 
+    fun channelCryptoPolicyFor(channelName: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        val name = prefs()?.getString("xv_crypto_policy_$canonical", null)
+        return try {
+            if (name != null) {
+                com.atakmap.android.xv.presence.ChannelCryptoPolicy.valueOf(name)
+            } else {
+                com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+            }
+        } catch (_: Exception) {
+            com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+        }
+    }
+
+    fun persistChannelCryptoPolicy(channelName: String, policy: com.atakmap.android.xv.presence.ChannelCryptoPolicy) {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        prefs()?.edit()?.putString("xv_crypto_policy_$canonical", policy.name)?.apply()
+    }
+
     // Sealed per-channel key vault. The bytes stored here are the output
     // of KeystoreSecretBox.seal(MeshKeyVault.serialize(...)) — i.e. GCM
     // ciphertext of the binary key blob, never the keys themselves. We

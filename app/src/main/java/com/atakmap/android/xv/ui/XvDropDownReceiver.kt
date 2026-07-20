@@ -26,9 +26,7 @@ import com.atakmap.android.xv.R
 import com.atakmap.android.xv.aina.AinaDeviceInfo
 import com.atakmap.android.xv.audio.OutputRoute
 import com.atakmap.android.xv.audio.TptTone
-import com.atakmap.android.xv.transport.multicast.CryptoPolicy
 import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
-import com.atakmap.android.xv.transport.multicast.WireFormat
 import com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation
 
 // Main XV control panel. Inspired by FlexRadio + modern SDR UIs:
@@ -471,12 +469,12 @@ class XvDropDownReceiver(
         // validation error.
         fun meshChannelConfig(name: String): com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig?
         fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String?
+        fun channelCryptoPolicy(name: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy?
         fun saveMeshChannel(
             name: String,
             group: String?,
             port: String?,
-            wireFormat: com.atakmap.android.xv.transport.multicast.WireFormat,
-            cryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
+            channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
         ): String? = "not supported"
 
         fun applyPatchToCurrentChannel(group: String, port: String): String?
@@ -2424,32 +2422,20 @@ class XvDropDownReceiver(
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
                 setSingleLine(true)
             }
-        val wireSpinner =
-            Spinner(ctx).apply {
-                adapter =
-                    ArrayAdapter(
-                        ctx,
-                        android.R.layout.simple_spinner_dropdown_item,
-                        listOf("XV native (encrypted)", "VX compatible (cleartext)"),
-                    )
-                val isVx =
-                    (existingConfig?.wireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT) ||
-                        (existingConfig?.patchWireFormat == com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT)
-                setSelection(if (isVx) 1 else 0)
-            }
         val cryptoSpinner =
             Spinner(ctx).apply {
                 adapter =
                     ArrayAdapter(
                         ctx,
                         android.R.layout.simple_spinner_dropdown_item,
-                        listOf("Encrypted — preferred", "Encrypted — required", "Cleartext"),
+                        listOf("Encrypted Only", "Prefer Encryption (VX interop)", "Cleartext (VX compat)"),
                     )
-                val p = existingConfig?.cryptoPolicy ?: existingConfig?.patchCryptoPolicy
+                val p = controller.channelCryptoPolicy(existingConfig?.channelName ?: "")
+                    ?: com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
                 val idx = when (p) {
-                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED -> 1
-                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT -> 2
-                    else -> 0
+                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY -> 0
+                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION -> 1
+                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT -> 2
                 }
                 setSelection(idx)
             }
@@ -2467,9 +2453,7 @@ class XvDropDownReceiver(
                 )
                 addView(groupField)
                 addView(portField)
-                addView(caption("Wire format"))
-                addView(wireSpinner)
-                addView(caption("Encryption"))
+                addView(caption("Security Policy"))
                 addView(cryptoSpinner)
             }
 
@@ -2478,21 +2462,18 @@ class XvDropDownReceiver(
             .setTitle("Configure a channel")
             .setView(android.widget.ScrollView(ctx).apply { addView(container) })
             .setPositiveButton("Save") { _, _ ->
-                val wireFormat =
-                    if (wireSpinner.selectedItemPosition == 1) WireFormat.VX_COMPAT else WireFormat.XV_NATIVE
-                val cryptoPolicy =
+                val channelCryptoPolicy =
                     when (cryptoSpinner.selectedItemPosition) {
-                        1 -> CryptoPolicy.REQUIRED
-                        2 -> CryptoPolicy.CLEARTEXT
-                        else -> CryptoPolicy.PREFERRED
+                        1 -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION
+                        2 -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT
+                        else -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
                     }
                 val err =
                     controller.saveMeshChannel(
                         name = nameField.text?.toString().orEmpty(),
                         group = groupField.text?.toString(),
                         port = portField.text?.toString(),
-                        wireFormat = wireFormat,
-                        cryptoPolicy = cryptoPolicy,
+                        channelCryptoPolicy = channelCryptoPolicy,
                     )
                 if (err == null) {
                     meshToast("Channel saved.")

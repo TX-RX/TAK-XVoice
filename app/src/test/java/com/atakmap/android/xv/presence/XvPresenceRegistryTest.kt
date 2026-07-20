@@ -192,4 +192,38 @@ class XvPresenceRegistryTest {
         // 16 minutes ago should be stale.
         assertFalse(r.isFresh("ANDROID-aaa", nowMs = 16 * 60_000L))
     }
+
+    @Test
+    fun `"upsertBridgeState updates only bridge fields without clobbering full presence`() {
+        val r = XvPresenceRegistry()
+        val p = presence("ANDROID-bridge1", 1_000L, callsign = "Bridge 1")
+        r.upsert(p)
+
+        var notifyCount = 0
+        r.addListener { notifyCount++ }
+
+        r.upsertBridgeState("ANDROID-bridge1", true, true, 2_000L)
+
+        val updated = r.get("ANDROID-bridge1")
+        checkNotNull(updated)
+
+        // Assert old fields unchanged
+        assert(updated.callsign == "Bridge 1")
+        assert(updated.lastSeenMs == 1_000L) // Normal presence timestamp unchanged
+
+        // Assert bridge fields updated
+        assert(updated.mumbleConnected == true)
+        assert(updated.isBridging == true)
+        assert(updated.bridgeLastSeenMs == 2_000L)
+        assert(notifyCount == 1) // Listener should fire on bridge upsert
+    }
+
+    @Test
+    fun `"upsertBridgeState does not create stub presence if missing`() {
+        val r = XvPresenceRegistry()
+        r.upsertBridgeState("ANDROID-bridge2", false, true, 3_000L)
+
+        val created = r.get("ANDROID-bridge2")
+        assert(created == null)
+    }
 }
