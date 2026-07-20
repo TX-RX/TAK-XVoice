@@ -2460,10 +2460,10 @@ class XvDropDownReceiver(
         val statusView = v.findViewById<TextView>(R.id.xv_settings_mesh_status)
         val mesh = controller.meshStatus()
         if (mesh == null) {
-            statusView.text = if (controller.meshVoiceEnabled()) "Standing by — no channel joined yet" else "Mesh voice is off"
+            statusView.text = if (controller.meshVoiceEnabled()) "Standing by - no channel joined yet" else "Mesh voice is off"
             statusView.setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
         } else {
-            statusView.text = "🕸 ${mesh.label}"
+            statusView.text = "🟢 ${mesh.label}"
             statusView.setTextColor(
                 pluginContext.resources.getColor(
                     if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
@@ -2476,18 +2476,19 @@ class XvDropDownReceiver(
         v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_group).setText(patchConfig?.first ?: "")
         v.findViewById<android.widget.EditText>(R.id.xv_edit_patch_port).setText(patchConfig?.second ?: "")
 
-        val list = v.findViewById<android.widget.GridLayout>(R.id.xv_mesh_channel_list)
-        list.removeAllViews()
+        val container = v.findViewById<android.widget.LinearLayout>(R.id.xv_mesh_channel_container)
+        container.removeAllViews()
         val candidates = controller.meshChannelCandidates()
-        // "Forget all" only makes sense when there's a list to clear.
+
         v.findViewById<Button>(R.id.xv_btn_mesh_forget_all).visibility =
             if (candidates.isEmpty()) View.GONE else View.VISIBLE
+
         if (candidates.isEmpty()) {
-            list.addView(
+            container.addView(
                 TextView(pluginContext).apply {
                     text =
                         if (controller.meshVoiceEnabled()) {
-                            "No channels yet — provision one below, or wait for a peer to advertise theirs."
+                            "No channels yet - provision one below, or wait for a peer to advertise theirs."
                         } else {
                             "Turn on mesh voice to use channels without a server."
                         }
@@ -2498,31 +2499,105 @@ class XvDropDownReceiver(
             )
         } else {
             val active = controller.meshActiveChannelCanonical()
-            candidates.forEach { name ->
-                val canonical = MulticastGroupDerivation.canonicalChannelName(name)
-                val dp = pluginContext.resources.displayMetrics.density
+            val dp = pluginContext.resources.displayMetrics.density
 
-                val chip = Button(pluginContext).apply {
-                    text = "⚙ $name"
-                    isAllCaps = false
-                    textSize = 12f
-                    setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
-                    background = pluginContext.resources.getDrawable(R.drawable.xv_button_bg, null)
-                    setTextColor(pluginContext.resources.getColor(if (canonical == active) R.color.xv_accent else R.color.xv_text, null))
-                    val lp = android.widget.GridLayout.LayoutParams()
-                    lp.width = android.widget.GridLayout.LayoutParams.WRAP_CONTENT
-                    lp.height = android.widget.GridLayout.LayoutParams.WRAP_CONTENT
-                    lp.setMargins(0, 0, (8 * dp).toInt(), (8 * dp).toInt())
-                    layoutParams = lp
-                    setOnClickListener {
-                        promptConfigureChannel(v, name) { refreshMeshSection(v) }
-                    }
-                    setOnLongClickListener {
-                        confirmForgetMeshChannel(v, name)
-                        true
-                    }
+            // Group by host server based on currently known MumbleSession channels
+            val allChannels = controller.availableChannels().map { it.name }.toMutableSet()
+            val serverGroups = controller.availableChannels().groupBy { controller.connectedTakHost() ?: "Offline / ad-hoc" }.toMutableMap()
+            val serverCanon = allChannels.map { MulticastGroupDerivation.canonicalChannelName(it) }.toSet()
+
+            val offlineOnly = candidates.filter { MulticastGroupDerivation.canonicalChannelName(it) !in serverCanon }
+            if (offlineOnly.isNotEmpty()) {
+                val existingOffline = serverGroups["Offline / ad-hoc"]?.map { it.name } ?: emptyList()
+                val newOffline = offlineOnly.filter { it !in existingOffline }
+                val offlineList = (serverGroups["Offline / ad-hoc"] ?: emptyList()).toMutableList()
+                newOffline.forEach {
+                    offlineList.add(
+                        com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo(
+                            -1,
+                            it,
+                            com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.PARTICIPATE
+                        )
+                    )
                 }
-                list.addView(chip)
+                serverGroups["Offline / ad-hoc"] = offlineList
+            }
+
+            val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
+            val groupList = sortedGroups.map { it.key }
+            val childMap = sortedGroups.associate { it.key to it.value.map { ch -> ch.name }.sorted() }
+
+            groupList.forEach { groupName ->
+                val channels = childMap[groupName] ?: emptyList()
+                if (channels.isNotEmpty()) {
+                    // Create group header
+                    val headerView = android.view.LayoutInflater.from(pluginContext).inflate(
+                        R.layout.xv_share_picker_group,
+                        container,
+                        false,
+                    ) as android.widget.LinearLayout
+                    val headerText = headerView.findViewById<TextView>(R.id.xv_group_name)
+                    val headerIndicator = headerView.findViewById<TextView>(R.id.xv_group_indicator)
+                    headerText.text = "$groupName (${channels.size})"
+                    headerIndicator.text = "▼"
+                    container.addView(headerView)
+
+                    val gridLayout = android.widget.GridLayout(pluginContext).apply {
+                        columnCount = 3
+                        layoutParams = android.widget.LinearLayout.LayoutParams(
+                            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            setMargins(0, 0, 0, (8 * dp).toInt())
+                        }
+                    }
+
+                    headerView.setOnClickListener {
+                        if (gridLayout.visibility == View.VISIBLE) {
+                            gridLayout.visibility = View.GONE
+                            headerIndicator.text = "▶"
+                        } else {
+                            gridLayout.visibility = View.VISIBLE
+                            headerIndicator.text = "▼"
+                        }
+                    }
+
+                    channels.forEach { name ->
+                        val canonical = MulticastGroupDerivation.canonicalChannelName(name)
+                        val chip = Button(pluginContext).apply {
+                            text = name
+                            isAllCaps = false
+                            textSize = 12f
+                            maxLines = 2
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                            setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
+                            background = pluginContext.resources.getDrawable(R.drawable.xv_button_bg, null)
+                            setTextColor(
+                                pluginContext.resources.getColor(
+                                    if (canonical == active) R.color.xv_accent else R.color.xv_text,
+                                    null,
+                                ),
+                            )
+
+                            val lp = android.widget.GridLayout.LayoutParams()
+                            lp.width = 0
+                            lp.height = android.widget.GridLayout.LayoutParams.WRAP_CONTENT
+                            lp.columnSpec = android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f)
+                            lp.setMargins((4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt())
+                            layoutParams = lp
+
+                            setOnClickListener {
+                                promptConfigureChannel(v, name) { refreshMeshSection(v) }
+                            }
+                            setOnLongClickListener {
+                                confirmForgetMeshChannel(v, name)
+                                true
+                            }
+                        }
+                        gridLayout.addView(chip)
+                    }
+                    container.addView(gridLayout)
+                }
             }
         }
     }

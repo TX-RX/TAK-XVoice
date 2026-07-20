@@ -849,6 +849,16 @@
                 android:orientation="vertical"
                 android:visibility="gone">
 
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Global Default"
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.1"
+                    android:layout_marginTop="20dp"/>
+                    
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -955,11 +965,11 @@
                     android:textSize="11sp"
                     android:layout_marginTop="2dp"/>
 
-                <GridLayout
-                    android:id="@+id/xv_mesh_channel_list"
+                <LinearLayout
+                    android:id="@+id/xv_mesh_channel_container"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:columnCount="2"
+                    android:orientation="vertical"
                     android:layout_marginTop="4dp"/>
 
                 <!-- Fast mass-clear. Long-press a single row to forget one;
