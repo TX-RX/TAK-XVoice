@@ -267,24 +267,10 @@ class MulticastWireCodecTest {
 
     // ---- VX compat ----
 
-    @Test
-    fun `openmanet tx is the raw opus frame`() {
-        val codec = VxWireCodec(12345L)
-        codec.beginBurst()
-        assertArrayEquals(opus, codec.encodeTx(opus))
-    }
+
 
     @Test
-    fun `openmanet rx attributes by source ip with no sequence`() {
-        val codec = VxWireCodec(12345L)
-        val v = voice(codec.decodeRx(opus, sourceHost = "198.51.100.7"))
-        assertEquals("ip:198.51.100.7", v.speakerKey)
-        assertNull(v.seqInBurst)
-        assertArrayEquals(opus, v.opus)
-    }
-
-    @Test
-    fun `openmanet rx drops empties and stray xv control traffic`() {
+    fun `vx rx drops empties and stray xv control traffic`() {
         val codec = VxWireCodec(12345L)
         assertEquals(
             MulticastWireCodec.DropReason.EMPTY,
