@@ -469,12 +469,12 @@ class XvDropDownReceiver(
         // validation error.
         fun meshChannelConfig(name: String): com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig?
         fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String?
-        fun channelCryptoPolicy(name: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy?
+        fun channelCryptoPolicy(name: String): com.atakmap.android.xv.transport.multicast.CryptoPolicy?
         fun saveMeshChannel(
             name: String,
             group: String?,
             port: String?,
-            channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
+            channelCryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
         ): String? = "not supported"
 
         fun applyPatchToCurrentChannel(group: String, port: String): String?
@@ -541,19 +541,26 @@ class XvDropDownReceiver(
         val isPreferred: Boolean,
     )
 
+    enum class ConnectionSource {
+        SERVER,
+        LOCAL_MESH,
+        BOTH
+    }
+
     /** Display row for the Channel Members picker. One per Mumble user
      *  currently on the slot's joined channel. Non-XV peers (Mumla, VX
      *  clients without a `<__xv>` advertisement) have isXvPeer=false,
      *  deviceUid=null, availableJumpChannels=emptyList — the UI greys
      *  the row and disables tap-to-map / move-to-channel for those. */
     data class ChannelMember(
-        val mumbleSessionId: Int,
+        val mumbleSessionId: Int?,
         val callsign: String,
         val slot: Int,
         val isXvPeer: Boolean,
         val deviceUid: String?,
         val talkingNow: Boolean,
         val availableJumpChannels: List<JumpChannel>,
+        val connectionSource: ConnectionSource = ConnectionSource.SERVER,
     )
 
     /** A channel a peer is on AND that we have PARTICIPATE permission
@@ -564,6 +571,7 @@ class XvDropDownReceiver(
     data class JumpChannel(
         val channelId: Int,
         val channelName: String,
+        val description: String? = null,
     )
 
     /** Bundle returned by [Listener.channelMembersBySlot] /
@@ -1003,10 +1011,27 @@ class XvDropDownReceiver(
         // joins/leaves show without any operator action. Shows 0
         // when the slot isn't connected; the button stays clickable
         // (operator gets the "empty" picker view).
-        val vs1Members = controller.channelMembersForSlot(0)?.members?.size ?: 0
-        v.findViewById<Button>(R.id.xv_btn_members_1).text = "👥 $vs1Members"
-        val vs2Members = controller.channelMembersForSlot(1)?.members?.size ?: 0
-        v.findViewById<Button>(R.id.xv_btn_members_2).text = "👥 $vs2Members"
+        val vs1MembersList = controller.channelMembersForSlot(0)?.members ?: emptyList()
+        val vs1Server = vs1MembersList.count {
+            it.connectionSource == ConnectionSource.SERVER ||
+                it.connectionSource == ConnectionSource.BOTH
+        }
+        val vs1Local = vs1MembersList.count {
+            it.connectionSource == ConnectionSource.LOCAL_MESH ||
+                it.connectionSource == ConnectionSource.BOTH
+        }
+        v.findViewById<Button>(R.id.xv_btn_members_1).text = "👥 ☁️$vs1Server 📻$vs1Local"
+
+        val vs2MembersList = controller.channelMembersForSlot(1)?.members ?: emptyList()
+        val vs2Server = vs2MembersList.count {
+            it.connectionSource == ConnectionSource.SERVER ||
+                it.connectionSource == ConnectionSource.BOTH
+        }
+        val vs2Local = vs2MembersList.count {
+            it.connectionSource == ConnectionSource.LOCAL_MESH ||
+                it.connectionSource == ConnectionSource.BOTH
+        }
+        v.findViewById<Button>(R.id.xv_btn_members_2).text = "👥 ☁️$vs2Server 📻$vs2Local"
     }
 
     private fun showSettings() {
@@ -1423,7 +1448,15 @@ class XvDropDownReceiver(
             return
         }
         colRoot.visibility = View.VISIBLE
-        headerView.text = "$slotLabel · ${data.channelName} (${data.members.size})"
+        val serverCount = data.members.count {
+            it.connectionSource == ConnectionSource.SERVER ||
+                it.connectionSource == ConnectionSource.BOTH
+        }
+        val localCount = data.members.count {
+            it.connectionSource == ConnectionSource.LOCAL_MESH ||
+                it.connectionSource == ConnectionSource.BOTH
+        }
+        headerView.text = "$slotLabel · ${data.channelName} (☁️$serverCount 📻$localCount)"
         listView.removeAllViews()
         if (data.members.isEmpty()) {
             val tv =
@@ -1450,7 +1483,12 @@ class XvDropDownReceiver(
         val btn = Button(pluginContext)
         val talkingDot = if (member.talkingNow) "$RX_DOT " else "    "
         val tag = if (member.isXvPeer) "" else "   (non-XV)"
-        btn.text = "$talkingDot${member.callsign}$tag"
+        val sourceIcon = when (member.connectionSource) {
+            ConnectionSource.SERVER -> "☁️ "
+            ConnectionSource.LOCAL_MESH -> "📻 "
+            ConnectionSource.BOTH -> "☁️📻 "
+        }
+        btn.text = "$talkingDot$sourceIcon${member.callsign}$tag"
         btn.textSize = 14f
         btn.isAllCaps = false
         btn.gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
@@ -1509,12 +1547,13 @@ class XvDropDownReceiver(
             // picks which slot to move. Channel name surfaces in the
             // action label so the operator doesn't have to remember
             // peer-channel-mapping at a glance.
+            val nameDisplay = if (jc.description != null) "${jc.channelName} (${jc.description})" else jc.channelName
             actions +=
-                "Move VS1 → ${jc.channelName}" to {
+                "Move VS1 → $nameDisplay" to {
                     controller.setPrimaryChannel(jc.channelName)
                 }
             actions +=
-                "Move VS2 → ${jc.channelName}" to {
+                "Move VS2 → $nameDisplay" to {
                     controller.setSecondaryChannel(jc.channelName)
                 }
         }
@@ -2431,11 +2470,11 @@ class XvDropDownReceiver(
                         listOf("Encrypted Only", "Prefer Encryption (VX interop)", "Cleartext (VX compat)"),
                     )
                 val p = controller.channelCryptoPolicy(existingConfig?.channelName ?: "")
-                    ?: com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+                    ?: com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED
                 val idx = when (p) {
-                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY -> 0
-                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION -> 1
-                    com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT -> 2
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED -> 0
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED -> 1
+                    com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT -> 2
                 }
                 setSelection(idx)
             }
@@ -2464,9 +2503,9 @@ class XvDropDownReceiver(
             .setPositiveButton("Save") { _, _ ->
                 val channelCryptoPolicy =
                     when (cryptoSpinner.selectedItemPosition) {
-                        1 -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION
-                        2 -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT
-                        else -> com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+                        1 -> com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED
+                        2 -> com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT
+                        else -> com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED
                     }
                 val err =
                     controller.saveMeshChannel(

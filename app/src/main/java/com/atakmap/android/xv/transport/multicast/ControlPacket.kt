@@ -260,7 +260,11 @@ object ControlPacket {
                 val port = buf.int
                 val keyEpoch = buf.int
                 val keyFp = buf.int
-                Message.PeerBeacon.Channel(name, group, port, keyEpoch, keyFp)
+                val cryptoPolicy = buf.get().toInt() and 0xFF
+                val wireFormat = buf.get().toInt() and 0xFF
+                val patchGroup = readLengthPrefixedString(buf)
+                val patchPort = buf.int
+                Message.PeerBeacon.Channel(name, group, port, keyEpoch, keyFp, cryptoPolicy, wireFormat, patchGroup, patchPort)
             }
         return Message.PeerBeacon(
             uid = uid,
@@ -279,12 +283,12 @@ object ControlPacket {
                 Triple(
                     ch.name.toByteArray(Charsets.UTF_8),
                     ch.group.toByteArray(Charsets.UTF_8),
-                    ch,
+                    Pair(ch.patchGroup.toByteArray(Charsets.UTF_8), ch),
                 )
             }
         val size =
             4 + uidBytes.size + 4 + callsignBytes.size + 1 + 4 +
-                channelBytes.sumOf { (n, g, _) -> 4 + n.size + 4 + g.size + 12 }
+                channelBytes.sumOf { (n, g, pair) -> 4 + n.size + 4 + g.size + 12 + 1 + 1 + 4 + pair.first.size + 4 }
         val buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN)
         buf.putInt(uidBytes.size)
         buf.put(uidBytes)
@@ -295,7 +299,9 @@ object ControlPacket {
         if (msg.bridging) flags = flags or FLAG_BRIDGING
         buf.put(flags.toByte())
         buf.putInt(channelBytes.size)
-        channelBytes.forEach { (n, g, ch) ->
+        channelBytes.forEach { (n, g, pair) ->
+            val pg = pair.first
+            val ch = pair.second
             buf.putInt(n.size)
             buf.put(n)
             buf.putInt(g.size)
@@ -303,6 +309,11 @@ object ControlPacket {
             buf.putInt(ch.port)
             buf.putInt(ch.keyEpoch)
             buf.putInt(ch.keyFp)
+            buf.put(ch.cryptoPolicy.toByte())
+            buf.put(ch.wireFormat.toByte())
+            buf.putInt(pg.size)
+            buf.put(pg)
+            buf.putInt(ch.patchPort)
         }
         return buf.array()
     }
@@ -472,6 +483,10 @@ object ControlPacket {
                 val port: Int,
                 val keyEpoch: Int = ChannelKeyRegistry.NO_EPOCH,
                 val keyFp: Int = 0,
+                val cryptoPolicy: Int = 0,
+                val wireFormat: Int = 0,
+                val patchGroup: String = "",
+                val patchPort: Int = 0,
             )
         }
     }

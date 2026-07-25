@@ -8,8 +8,8 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 import com.atakmap.android.xv.R
-import com.atakmap.android.xv.presence.ChannelCryptoPolicy
 import com.atakmap.android.xv.presence.XvPresence
 import com.atakmap.android.xv.presence.XvPresenceRegistry
 import com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
@@ -18,12 +18,12 @@ import com.atakmap.android.xv.transport.multicast.WireFormat
 
 /**
  * Watches [XvPresenceRegistry] for legacy VX users appearing on a channel
- * that is configured with [ChannelCryptoPolicy.PREFER_ENCRYPTION].
+ * that is configured with [CryptoPolicy.PREFERRED].
  *
  * When a VX peer is detected (XV peer without an enrolled cert / no direct-call
  * capability), a **persistent** notification is shown with two actions:
  *
- *  - **Accept** — downgrades the channel to [ChannelCryptoPolicy.CLEARTEXT],
+ *  - **Accept** — downgrades the channel to [CryptoPolicy.CLEARTEXT],
  *    which sets [CryptoPolicy.CLEARTEXT] + [WireFormat.VX_COMPAT] on the leg.
  *  - **Reject** — dismisses the notification and records the peer's UID in a
  *    local deny-set for the duration of the session (no persist; resets at restart).
@@ -37,8 +37,9 @@ import com.atakmap.android.xv.transport.multicast.WireFormat
  */
 class InteropNotificationManager(
     private val pluginContext: Context,
+    private val atakContext: Context,
     private val registry: XvPresenceRegistry,
-    private val cryptoPolicyForChannel: (String) -> ChannelCryptoPolicy,
+    private val cryptoPolicyForChannel: (String) -> CryptoPolicy,
     private val onChannelDowngrade: (channelName: String) -> Unit,
 ) {
     /** UIDs the operator has explicitly rejected for this session. */
@@ -92,7 +93,7 @@ class InteropNotificationManager(
     fun onAccept(channelName: String, peerUid: String) {
         val notifId = activeNotificationIds.remove(peerUid)
         if (notifId != null) {
-            NotificationManagerCompat.from(pluginContext).cancel(notifId)
+            NotificationManagerCompat.from(atakContext).cancel(notifId)
         }
         Log.i(TAG, "operator accepted VX interop on channel=$channelName peer=$peerUid")
         onChannelDowngrade(channelName)
@@ -104,7 +105,7 @@ class InteropNotificationManager(
         rejected.add(peerUid)
         val notifId = activeNotificationIds.remove(peerUid)
         if (notifId != null) {
-            NotificationManagerCompat.from(pluginContext).cancel(notifId)
+            NotificationManagerCompat.from(atakContext).cancel(notifId)
         }
         Log.i(TAG, "operator rejected VX interop on channel=$channelName peer=$peerUid")
     }
@@ -126,7 +127,7 @@ class InteropNotificationManager(
         // Find the first channel this peer is on where we use PREFER_ENCRYPTION.
         val targetChannel = presence.channels
             .map { it.name }
-            .firstOrNull { cryptoPolicyForChannel(it) == ChannelCryptoPolicy.PREFER_ENCRYPTION }
+            .firstOrNull { cryptoPolicyForChannel(it) == CryptoPolicy.PREFERRED }
             ?: return
 
         showNotification(presence, targetChannel)
@@ -139,8 +140,8 @@ class InteropNotificationManager(
         val acceptIntent = makeActionIntent(ACTION_ACCEPT, channelName, presence.deviceUid)
         val rejectIntent = makeActionIntent(ACTION_REJECT, channelName, presence.deviceUid)
 
-        val notification = NotificationCompat.Builder(pluginContext, CHANNEL_ID)
-            .setSmallIcon(R.drawable.xv_tool_icon)
+        val notification = NotificationCompat.Builder(atakContext, CHANNEL_ID)
+            .setSmallIcon(IconCompat.createWithResource(pluginContext, R.drawable.xv_tool_icon))
             .setContentTitle("Unencrypted user detected")
             .setContentText("$displayName is on channel \"$channelName\" without encryption.")
             .setStyle(
@@ -177,7 +178,7 @@ class InteropNotificationManager(
             .build()
 
         activeNotificationIds[presence.deviceUid] = notifId
-        NotificationManagerCompat.from(pluginContext).notify(notifId, notification)
+        NotificationManagerCompat.from(atakContext).notify(notifId, notification)
         Log.i(TAG, "showed interop notification for uid=${presence.deviceUid} channel=$channelName")
     }
 
@@ -189,7 +190,7 @@ class InteropNotificationManager(
         }
 
     private fun ensureNotificationChannel() {
-        val nm = pluginContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val nm = atakContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             val ch = NotificationChannel(
                 CHANNEL_ID,
@@ -203,7 +204,7 @@ class InteropNotificationManager(
     }
 
     private fun cancelAll() {
-        val nm = NotificationManagerCompat.from(pluginContext)
+        val nm = NotificationManagerCompat.from(atakContext)
         activeNotificationIds.values.forEach { nm.cancel(it) }
         activeNotificationIds.clear()
     }

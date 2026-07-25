@@ -163,7 +163,9 @@ class XvCotListener(
                     val name = ch.getAttribute("name") ?: continue
                     val id = ch.getAttribute("id")?.toIntOrNull() ?: continue
                     val ke = ch.getAttribute("keyEpoch")?.toIntOrNull() ?: 0
-                    channels.add(XvChannel(name, id, ke))
+                    val group = ch.getAttribute("group")
+                    val port = ch.getAttribute("port")?.toIntOrNull()
+                    channels.add(XvChannel(name, id, ke, group, port))
                 }
             }
         } catch (t: Throwable) {

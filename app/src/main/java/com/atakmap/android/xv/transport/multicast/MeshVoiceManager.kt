@@ -95,6 +95,8 @@ class MeshVoiceManager(
      * tests that don't exercise CoT dispatch.
      */
     private val bridgeCotPublisher: com.atakmap.android.xv.presence.XvBridgeCotPublisher? = null,
+    /** Feature 1: Expose peer beacons to the presence registry. */
+    val onPeerBeacon: (ControlPacket.Message.PeerBeacon) -> Unit = {},
 ) : MeshLegSink {
     // ---- leg + channel state ----
 
@@ -641,19 +643,6 @@ class MeshVoiceManager(
         relayToServerLastMs.entries.removeAll { now - it.value > RELAY_IDLE_TTL_MS }
     }
 
-    /**
-     * Direct election-observation seam (tests; beacon-equivalent
-     * injections). Production feeds the election only from mesh
-     * beacons — see the note above [tick] on why CoT must not.
-     */
-    @Synchronized
-    fun observePeerConnectivity(
-        uid: String,
-        mumbleConnected: Boolean,
-    ) {
-        bridgeElection.observePeer(uid, mumbleConnected, nowMs())
-    }
-
     // ---- comms plan + PSK ----
 
     /**
@@ -985,7 +974,14 @@ class MeshVoiceManager(
     private fun handleBeacon(msg: ControlPacket.Message.PeerBeacon) {
         if (msg.uid == ourUid) return
         val now = nowMs()
-        // Bridge election is now fed exclusively by CoT via observePeerConnectivity (Task 3)
+
+        onPeerBeacon(msg)
+
+        bridgeElection.observePeer(
+            uid = msg.uid,
+            mumbleConnected = msg.mumbleConnected,
+            nowMs = now,
+        )
         // Callsign directory for talker attribution — covers mesh-only
         // peers whose CoT presence hasn't reached us. Beacons default
         // the callsign to the uid; only store real display names.
@@ -1176,12 +1172,17 @@ class MeshVoiceManager(
     private fun broadcastBeacons() {
         val channelInfos =
             legs.map { (name, leg) ->
+                val config = configForChannel(name)
                 ControlPacket.Message.PeerBeacon.Channel(
                     name = name,
                     group = leg.endpoint.groupAddress,
                     port = leg.endpoint.port,
                     keyEpoch = registryFor(name).currentEpoch(),
                     keyFp = currentKeys[name]?.let { ourKeyFingerprint(name, it) } ?: 0,
+                    cryptoPolicy = config.cryptoPolicy.ordinal,
+                    wireFormat = config.wireFormat.ordinal,
+                    patchGroup = config.patchGroup ?: "",
+                    patchPort = config.patchPort ?: 0,
                 )
             }
         val beacon =

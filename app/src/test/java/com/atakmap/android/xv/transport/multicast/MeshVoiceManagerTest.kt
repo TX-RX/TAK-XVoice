@@ -334,9 +334,24 @@ class MeshVoiceManagerTest {
 
     // ---- bridge election + relay ----
 
+    private fun Harness.observePeerConnectivity(uid: String, mumbleConnected: Boolean) {
+        manager.onControl(
+            MeshVoiceManager.RENDEZVOUS_CHANNEL,
+            ControlPacket.Message.PeerBeacon(
+                uid = uid,
+                callsign = uid,
+                mumbleConnected = mumbleConnected,
+                bridging = false,
+                channels = emptyList()
+            ),
+            sourceHost = "127.0.0.1",
+            isPatchLeg = false
+        )
+    }
+
     private fun Harness.makeUsBridge() {
         joinAndTick()
-        manager.observePeerConnectivity("uid-zzz-offline", mumbleConnected = false)
+        observePeerConnectivity("uid-zzz-offline", mumbleConnected = false)
         now += 1_000
         manager.tick()
     }
@@ -353,8 +368,8 @@ class MeshVoiceManagerTest {
     fun `bridge defers to a lower connected uid seen via presence`() {
         val h = Harness()
         h.joinAndTick()
-        h.manager.observePeerConnectivity("uid-zzz-offline", mumbleConnected = false)
-        h.manager.observePeerConnectivity("uid-aaa", true)
+        h.observePeerConnectivity("uid-zzz-offline", mumbleConnected = false)
+        h.observePeerConnectivity("uid-aaa", true)
         h.now += 1_000
         h.manager.tick()
         assertFalse(h.manager.isBridging())
@@ -396,7 +411,7 @@ class MeshVoiceManagerTest {
         // A lower connected uid appears via beacon → we defer, losing the
         // bridge role, and must drop the per-speaker relay codecs so they
         // don't linger until a possible re-acquire.
-        h.manager.observePeerConnectivity("uid-aaa", true)
+        h.observePeerConnectivity("uid-aaa", true)
         h.now += 1_000
         h.manager.tick()
         assertFalse(h.manager.isBridging())

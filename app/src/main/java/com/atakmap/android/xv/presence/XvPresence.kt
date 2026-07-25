@@ -29,12 +29,21 @@ data class XvPresence(
     val mumbleConnected: Boolean? = null,
     val isBridging: Boolean? = null,
     val bridgeLastSeenMs: Long? = null,
+    val source: PresenceSource = PresenceSource.COT,
 )
+
+enum class PresenceSource {
+    COT,
+    MESH,
+    SELF,
+}
 
 data class XvChannel(
     val name: String,
     val id: Int,
     val keyEpoch: Int = 0,
+    val group: String? = null,
+    val port: Int? = null,
 )
 
 /**
@@ -53,8 +62,3 @@ data class XvChannel(
  *                        when they try to decode our beacon frames as
  *                        audio). Bridge election uses local-only CoT.
  */
-enum class ChannelCryptoPolicy {
-    ENCRYPTED_ONLY,
-    PREFER_ENCRYPTION,
-    CLEARTEXT,
-}

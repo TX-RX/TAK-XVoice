@@ -465,21 +465,21 @@ class XvSettings(
         }
     }
 
-    fun channelCryptoPolicyFor(channelName: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy {
+    fun channelCryptoPolicyFor(channelName: String): com.atakmap.android.xv.transport.multicast.CryptoPolicy {
         val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
         val name = prefs()?.getString("xv_crypto_policy_$canonical", null)
         return try {
             if (name != null) {
-                com.atakmap.android.xv.presence.ChannelCryptoPolicy.valueOf(name)
+                com.atakmap.android.xv.transport.multicast.CryptoPolicy.valueOf(name)
             } else {
-                com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+                com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED
             }
         } catch (_: Exception) {
-            com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY
+            com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED
         }
     }
 
-    fun persistChannelCryptoPolicy(channelName: String, policy: com.atakmap.android.xv.presence.ChannelCryptoPolicy) {
+    fun persistCryptoPolicy(channelName: String, policy: com.atakmap.android.xv.transport.multicast.CryptoPolicy) {
         val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
         prefs()?.edit()?.putString("xv_crypto_policy_$canonical", policy.name)?.apply()
     }

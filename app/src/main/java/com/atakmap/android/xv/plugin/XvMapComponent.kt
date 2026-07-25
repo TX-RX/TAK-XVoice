@@ -1824,10 +1824,9 @@ class XvMapComponent : AbstractMapComponent() {
         // both. Drop entries that haven't published a session id yet
         // (their CoT presence reached us before they finished
         // connecting to Mumble — happens at startup).
+        val allPresence = presenceRegistry?.all().orEmpty()
         val bySession: Map<Int, com.atakmap.android.xv.presence.XvPresence> =
-            presenceRegistry
-                ?.all()
-                .orEmpty()
+            allPresence
                 .filter { it.mumbleSession != null }
                 .associateBy { it.mumbleSession!! }
         // Local PARTICIPATE filter for jump-channel suggestions. Only
@@ -1853,37 +1852,81 @@ class XvMapComponent : AbstractMapComponent() {
         // non-XV peer). Also covers VS2 where the publisher only carries
         // the primary session id and a registry hit would miss.
         val ourSessionForSlot = transport.ourSessionIdForSlot(slot)
-        val rows =
+        val handledUids = mutableSetOf<String>()
+        val ourUid = com.atakmap.android.xv.transport.mumble.MumbleAuth.deviceUid()
+
+        val serverRows =
             members.map { m ->
                 val presence = bySession[m.sessionId]
                 val isUs = ourSessionForSlot != null && m.sessionId == ourSessionForSlot
                 val isXv = presence != null || isUs
+                val deviceUid = presence?.deviceUid ?: if (isUs) ourUid else null
+                if (deviceUid != null) {
+                    handledUids.add(deviceUid)
+                }
+
                 val jumps =
                     presence
                         ?.channels
                         .orEmpty()
                         .filter { it.id !in localChannelIds && canParticipate(it.id) }
-                        .map { XvDropDownReceiver.JumpChannel(it.id, it.name) }
+                        .map {
+                            val desc = if (it.group != null && it.port != null) "${it.group}:${it.port}" else null
+                            XvDropDownReceiver.JumpChannel(it.id, it.name, desc)
+                        }
+
+                val source = if (deviceUid != null) {
+                    val p = presenceRegistry?.get(deviceUid)
+                    if (p != null && p.channels.any { it.name == joinedCh.name }) {
+                        XvDropDownReceiver.ConnectionSource.BOTH
+                    } else {
+                        XvDropDownReceiver.ConnectionSource.SERVER
+                    }
+                } else {
+                    XvDropDownReceiver.ConnectionSource.SERVER
+                }
+
                 XvDropDownReceiver.ChannelMember(
                     mumbleSessionId = m.sessionId,
                     callsign = m.callsign,
                     slot = slot,
                     isXvPeer = isXv,
-                    deviceUid =
-                    presence?.deviceUid
-                        ?: if (isUs) {
-                            com.atakmap.android.xv.transport.mumble.MumbleAuth.deviceUid()
-                        } else {
-                            null
-                        },
+                    deviceUid = deviceUid,
                     talkingNow = m.isTalking,
                     availableJumpChannels = jumps,
+                    connectionSource = source,
                 )
             }
+
+        val localRows = allPresence.filter { p ->
+            p.deviceUid != ourUid &&
+                p.deviceUid !in handledUids &&
+                p.channels.any { it.name == joinedCh.name }
+        }.map { p ->
+            val jumps = p.channels
+                .filter { it.id !in localChannelIds && canParticipate(it.id) }
+                .map {
+                    val desc = if (it.group != null && it.port != null) "${it.group}:${it.port}" else null
+                    XvDropDownReceiver.JumpChannel(it.id, it.name, desc)
+                }
+            XvDropDownReceiver.ChannelMember(
+                mumbleSessionId = null,
+                callsign = p.callsign ?: p.deviceUid.take(12),
+                slot = slot,
+                isXvPeer = true,
+                deviceUid = p.deviceUid,
+                talkingNow = false,
+                availableJumpChannels = jumps,
+                connectionSource = XvDropDownReceiver.ConnectionSource.LOCAL_MESH,
+            )
+        }
+
+        val allRows = serverRows + localRows
+
         return XvDropDownReceiver.SlotMembers(
             slot = slot,
             channelName = joinedCh.name,
-            members = rows,
+            members = allRows,
         )
     }
 
@@ -3023,14 +3066,14 @@ class XvMapComponent : AbstractMapComponent() {
                 return null
             }
 
-            override fun channelCryptoPolicy(name: String): com.atakmap.android.xv.presence.ChannelCryptoPolicy? =
+            override fun channelCryptoPolicy(name: String): com.atakmap.android.xv.transport.multicast.CryptoPolicy? =
                 settings.channelCryptoPolicyFor(name)
 
             override fun saveMeshChannel(
                 name: String,
                 group: String?,
                 port: String?,
-                channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
+                channelCryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
             ): String? = saveMeshChannelInternal(name, group, port, channelCryptoPolicy)
 
             override fun applyPatchToCurrentChannel(group: String, port: String): String? {
@@ -3151,6 +3194,7 @@ class XvMapComponent : AbstractMapComponent() {
         if (ctx != null) {
             interopNotificationManager = com.atakmap.android.xv.interop.InteropNotificationManager(
                 pluginContext = ctx,
+                atakContext = heldMapView?.context ?: ctx,
                 registry = registry,
                 cryptoPolicyForChannel = { settings.channelCryptoPolicyFor(it) },
                 onChannelDowngrade = { channel ->
@@ -3158,7 +3202,7 @@ class XvMapComponent : AbstractMapComponent() {
                         ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(channel)
                     val downgraded = com.atakmap.android.xv.interop.InteropNotificationManager.cleartextConfigFor(existing)
                     settings.persistChannelMulticastConfig(downgraded)
-                    settings.persistChannelCryptoPolicy(channel, com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT)
+                    settings.persistCryptoPolicy(channel, com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT)
                     dropDown?.refreshNow()
                 }
             )
@@ -3403,11 +3447,36 @@ class XvMapComponent : AbstractMapComponent() {
                 },
                 logWarn = { msg -> Log.w(TAG, msg) },
                 bridgeCotPublisher = bridgeCotPublisher,
+                onPeerBeacon = { msg ->
+                    presenceRegistry?.upsert(
+                        com.atakmap.android.xv.presence.XvPresence(
+                            deviceUid = msg.uid,
+                            version = "Mesh Peer",
+                            capabilities = emptySet(),
+                            certFingerprint = null,
+                            server = null,
+                            channels = msg.channels.map {
+                                com.atakmap.android.xv.presence.XvChannel(
+                                    name = it.name,
+                                    id = 0,
+                                    keyEpoch = it.keyEpoch,
+                                    group = it.group,
+                                    port = it.port
+                                )
+                            },
+                            lastSeenMs = System.currentTimeMillis(),
+                            mumbleSession = null,
+                            callsign = msg.callsign,
+                            mumbleConnected = msg.mumbleConnected,
+                            isBridging = msg.bridging,
+                            bridgeLastSeenMs = System.currentTimeMillis(),
+                            source = com.atakmap.android.xv.presence.PresenceSource.MESH,
+                        )
+                    )
+                },
             )
         meshVoiceManager = manager
-        presenceRegistry?.addListener { p ->
-            manager.observePeerConnectivity(p.deviceUid, p.mumbleConnected == true)
-        }
+
         // Re-install persisted per-channel keys (encrypted at rest) before
         // seeding, so a channel provisioned/imported in a prior session is
         // keyed and shareable again the moment mesh comes up.
@@ -3877,20 +3946,20 @@ class XvMapComponent : AbstractMapComponent() {
         name: String,
         group: String?,
         port: String?,
-        channelCryptoPolicy: com.atakmap.android.xv.presence.ChannelCryptoPolicy,
+        channelCryptoPolicy: com.atakmap.android.xv.transport.multicast.CryptoPolicy,
     ): String? {
         val (wireFormat, cryptoPolicy) = when (channelCryptoPolicy) {
-            com.atakmap.android.xv.presence.ChannelCryptoPolicy.ENCRYPTED_ONLY ->
+            com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED ->
                 Pair(
                     com.atakmap.android.xv.transport.multicast.WireFormat.XV_NATIVE,
                     com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED
                 )
-            com.atakmap.android.xv.presence.ChannelCryptoPolicy.PREFER_ENCRYPTION ->
+            com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED ->
                 Pair(
                     com.atakmap.android.xv.transport.multicast.WireFormat.XV_NATIVE,
                     com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED
                 )
-            com.atakmap.android.xv.presence.ChannelCryptoPolicy.CLEARTEXT ->
+            com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT ->
                 Pair(
                     com.atakmap.android.xv.transport.multicast.WireFormat.VX_COMPAT,
                     com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT
@@ -3906,7 +3975,7 @@ class XvMapComponent : AbstractMapComponent() {
             )
         val config = result.config ?: return result.error ?: "Invalid channel configuration."
         settings.persistChannelMulticastConfig(config)
-        settings.persistChannelCryptoPolicy(name, channelCryptoPolicy)
+        settings.persistCryptoPolicy(name, channelCryptoPolicy)
         settings.persistMeshVoiceEnabled(true)
         val key =
             if (result.autoKey) {
@@ -5699,7 +5768,25 @@ class XvMapComponent : AbstractMapComponent() {
                             }
                         }
                     }
-                    joinedChannelsBySlot[slot] = XvChannel(name, channelId)
+                    val mc =
+                        settings.channelMulticastConfigFor(name)
+                            ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(name)
+                    val host =
+                        activeMumbleHost
+                            ?: try {
+                                com.atakmap.android.xv.transport.mumble.TakServerDiscovery.pickPreferred(
+                                    settings.persistedPreferredTakHost()
+                                )?.host
+                            } catch (
+                                _: Throwable
+                            ) {
+                                null
+                            }
+                            ?: "offline"
+                    val endpoint = mc.resolveEndpoint(com.atakmap.android.xv.transport.multicast.ServerIdentity.fromHostname(host))
+                    val meshGrp = endpoint.groupAddress
+                    val meshPort = endpoint.port
+                    joinedChannelsBySlot[slot] = XvChannel(name, channelId, group = meshGrp, port = meshPort)
                     // Primary-channel change → reconcile the mesh leg
                     // onto the new channel's derived/pinned group.
                     if (slot == 0 && !name.isNullOrBlank()) {

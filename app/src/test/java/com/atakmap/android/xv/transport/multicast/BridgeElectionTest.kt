@@ -66,4 +66,19 @@ class BridgeElectionTest {
         e.observePeer("bbb", mumbleConnected = true, nowMs = 2_000)
         assertFalse(e.evaluate(nowMs = 2_100, ourMumbleConnected = true))
     }
+
+    @Test
+    fun `multi-network islands elect bridges independently`() {
+        val e = BridgeElection(ourUid = "mmm")
+        // We hear a disconnected peer on our island (zzz) via multicast beacon.
+        e.observePeer("zzz", mumbleConnected = false, nowMs = 1_000)
+
+        // We DO NOT hear 'aaa' (a lower-UID connected peer) because they are on a
+        // separate mesh island and we no longer feed CoT (which crosses boundaries)
+        // into the election.
+
+        // Since we are the lowest UID on OUR island that has server connectivity,
+        // we should elect ourselves and activate the bridge.
+        assertTrue(e.evaluate(nowMs = 1_100, ourMumbleConnected = true))
+    }
 }
