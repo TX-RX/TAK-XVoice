@@ -97,6 +97,12 @@ class MeshVoiceManager(
     private val bridgeCotPublisher: com.atakmap.android.xv.presence.XvBridgeCotPublisher? = null,
     /** Feature 1: Expose peer beacons to the presence registry. */
     val onPeerBeacon: (ControlPacket.Message.PeerBeacon) -> Unit = {},
+    /**
+     * Key-lifecycle ceiling (#92 / #95). Read as a provider so an
+     * operator setting change takes effect without rebuilding the
+     * manager. Default is the 5-day policy.
+     */
+    private val keyLifecyclePolicy: () -> KeyLifecyclePolicy = { KeyLifecyclePolicy.DEFAULT },
 ) : MeshLegSink {
     // ---- leg + channel state ----
 
@@ -159,6 +165,11 @@ class MeshVoiceManager(
     private var meshTxActive = false
     private var lastBeaconAtMs = Long.MIN_VALUE
     private var lastUnresolvedRelayWarnMs = Long.MIN_VALUE
+
+    // Last time OUR mic put a frame on the air (PTT-down or per-frame TX).
+    // The age-based key rotation waits for a gap after this before it
+    // rotates, so a forced rotation can never land mid-burst (#92 / #95).
+    private var lastLocalTxMs = Long.MIN_VALUE
 
     // Last time we observed the server actually delivering (a voice frame
     // or a ping-ack liveness feed) — NOT just "socket connected". The
@@ -306,6 +317,7 @@ class MeshVoiceManager(
     /** PTT-down edge: reset burst state on every mesh leg. */
     @Synchronized
     fun beginTxBurst() {
+        lastLocalTxMs = nowMs()
         legs.values.forEach { it.beginVoiceBurst() }
     }
 
@@ -321,6 +333,7 @@ class MeshVoiceManager(
     ) {
         if (targetSlot != 0) return
         if (legs.isEmpty()) return
+        lastLocalTxMs = nowMs()
         failoverPolicy.observeTxFrame(nowMs())
         legs.values.forEach { leg ->
             val txNow =
@@ -607,10 +620,11 @@ class MeshVoiceManager(
         }
 
         // Key elections.
-        legs.forEach { (channel, leg) -> tickKeyElection(channel, leg) }
+        legs.forEach { (channel, leg) -> tickKeyElection(channel, leg, now) }
 
-        // Bridge election (primary channel scope). CoT presence feeds
-        // arrive via observePeerConnectivity; beacons via handleBeacon.
+        // Bridge election (primary channel scope). Fed exclusively by
+        // mesh beacons via handleBeacon — see the note above [tick] on
+        // why CoT presence must not feed it.
         val wasBridging = bridging
         bridging = legs.isNotEmpty() && bridgeElection.evaluate(now, mumbleConnected())
         if (bridging != wasBridging) {
@@ -657,7 +671,7 @@ class MeshVoiceManager(
         key: ByteArray,
     ) {
         val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
-        if (registryFor(canonical).install(PSK_EPOCH, key)) {
+        if (registryFor(canonical).install(PSK_EPOCH, key, nowMs())) {
             currentKeys[canonical] = key
         }
     }
@@ -913,10 +927,30 @@ class MeshVoiceManager(
     private fun tickKeyElection(
         channel: String,
         leg: MeshLeg,
+        now: Long,
     ) {
         if (leg.config.cryptoPolicy == CryptoPolicy.CLEARTEXT) return
         val registry = registryFor(channel)
         val election = elections[channel] ?: return
+
+        // Age ceiling (#92 / #95): a key that has lived past the
+        // lifecycle window is force-rotated so no mesh secret outlives
+        // the cap. We wait for a TX-idle gap so the rotation can never
+        // clip a burst — trivially satisfied since the window (days) is
+        // vastly larger than any burst. Only the lowest-uid holder
+        // rotates (onKeyExpired); everyone else adopts via KEY_REQ.
+        // Checked before the normal election tick so an expired key is
+        // replaced rather than merely re-requested.
+        if (registry.hasKey() &&
+            registry.isCurrentKeyExpired(now, keyLifecyclePolicy().maxKeyAgeMs) &&
+            isTxIdle(now)
+        ) {
+            if (election.onKeyExpired() is KeyElection.Action.RotateKey) {
+                rotateKey(channel, leg, (registry.currentEpoch() + 1) and 0xFF)
+                return
+            }
+        }
+
         when (val action = election.tick()) {
             is KeyElection.Action.RequestKey -> {
                 leg.safeSendControl(
@@ -940,13 +974,20 @@ class MeshVoiceManager(
                     keyBootstrapTicks[channel] = ticksWaited
                     if (ticksWaited > KEY_BOOTSTRAP_WAIT_TICKS && mayBootstrapKey(channel)) {
                         val fresh = generateKey()
-                        registry.install(0, fresh)
+                        registry.install(0, fresh, now)
                         currentKeys[channel] = fresh
                     }
                 }
             }
         }
     }
+
+    /** True when our mic has been idle long enough that a forced key
+     *  rotation won't clip a burst. The [Long.MIN_VALUE] sentinel (never
+     *  transmitted) is treated as idle directly — subtracting it would
+     *  overflow and, worse, read as "not idle", blocking rotation on a
+     *  device that has only ever listened. */
+    private fun isTxIdle(now: Long): Boolean = lastLocalTxMs == Long.MIN_VALUE || now - lastLocalTxMs >= KEY_ROTATE_IDLE_GAP_MS
 
     private fun rotateKey(
         channel: String,
@@ -955,9 +996,15 @@ class MeshVoiceManager(
     ) {
         val registry = registryFor(channel)
         val fresh = generateKey()
-        registry.install(nextEpoch, fresh)
+        // Stamp the install time so the fresh epoch starts its own 5-day
+        // lifecycle clock (#92 / #95) — otherwise an auto-rotate would
+        // fire again on the very next tick.
+        registry.install(nextEpoch, fresh, nowMs())
         currentKeys[channel] = fresh
-        // Offer the new key to every peer whose cert we hold.
+        // Offer the new key to every peer whose cert we hold. Cert-less
+        // guests are stranded here BY DESIGN — rotation is how a device
+        // is evicted: rotate, and only re-share to identities you still
+        // trust (#92 / #95).
         peerCerts.forEach { (uid, certDer) ->
             val wrapped = wrapKeyFor(certDer, fresh) ?: return@forEach
             leg.safeSendControl(
@@ -969,6 +1016,68 @@ class MeshVoiceManager(
                 ),
             )
         }
+    }
+
+    // ---- operator-initiated rotation / revocation (#92 / #95) ----
+
+    /**
+     * Operator "Rotate key now" for a channel. Generates a fresh epoch
+     * and offers it to every cert-holding peer; cert-less guests fall
+     * off by design. This is the remediation button — a device lost, a
+     * passphrase overheard: rotate and they are cut off at the next
+     * epoch. No-op (returns false) on a cleartext channel or one with
+     * no live leg.
+     *
+     * @return true if a rotation was issued.
+     */
+    @Synchronized
+    fun rotateChannelKeyNow(channelName: String): Boolean {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        val leg = legs[canonical] ?: return false
+        if (leg.config.cryptoPolicy == CryptoPolicy.CLEARTEXT) return false
+        val registry = registryFor(canonical)
+        val next = if (registry.hasKey()) (registry.currentEpoch() + 1) and 0xFF else 0
+        rotateKey(canonical, leg, next)
+        return true
+    }
+
+    /**
+     * Revoke [revokedUids] from a channel and rotate so they lose
+     * access. Their cert is dropped BEFORE the rotation so the fresh key
+     * is never wrapped to them; without that ordering their next KEY_REQ
+     * would simply re-key them, and rotation would not be revocation.
+     * They are also dropped from the elections so they stop counting as
+     * key-holders.
+     *
+     * When [hard] is true this is a confirmed-compromise revoke: the
+     * previous-epoch grace slot is dropped immediately so the burned key
+     * stops decrypting at once. Brief audio loss for a lagging peer
+     * beats leaving a live compromised key readable for the grace
+     * window. A soft revoke keeps the grace window (no mid-burst clip
+     * for honest peers).
+     *
+     * @return true if a rotation was issued.
+     */
+    @Synchronized
+    fun revokeAndRotate(
+        channelName: String,
+        revokedUids: Set<String>,
+        hard: Boolean,
+    ): Boolean {
+        val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
+        val leg = legs[canonical] ?: return false
+        if (leg.config.cryptoPolicy == CryptoPolicy.CLEARTEXT) return false
+        // Drop identities first so rotateKey can't offer them the new key.
+        revokedUids.forEach { uid ->
+            peerCerts.remove(uid)
+            elections[canonical]?.observePeerDeparted(uid)
+            bridgeElection.observePeerDeparted(uid)
+        }
+        val registry = registryFor(canonical)
+        val next = if (registry.hasKey()) (registry.currentEpoch() + 1) and 0xFF else 0
+        rotateKey(canonical, leg, next)
+        if (hard) registry.dropPrevious()
+        return true
     }
 
     private fun handleBeacon(msg: ControlPacket.Message.PeerBeacon) {
@@ -1279,6 +1388,14 @@ class MeshVoiceManager(
 
         /** Ticks (~seconds) to wait for a key offer before self-generating. */
         const val KEY_BOOTSTRAP_WAIT_TICKS = 2
+
+        /**
+         * TX-idle gap required before an age-expired key is force-rotated
+         * (#92 / #95), so a rotation never lands mid-burst. Small — the
+         * lifecycle window is measured in days, so any natural pause
+         * between transmissions clears it.
+         */
+        const val KEY_ROTATE_IDLE_GAP_MS: Long = 2_000
 
         const val DISCOVERED_STALE_MS: Long = 60_000
 
