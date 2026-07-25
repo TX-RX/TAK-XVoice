@@ -1537,6 +1537,35 @@ class XvDropDownReceiver(
         return btn
     }
 
+    fun jumpToPeer(uid: String) {
+        val byslot = controller.channelMembersBySlot()
+        val members = mutableListOf<ChannelMember>()
+        byslot.values.forEach { members.addAll(it.members) }
+        val member = members.find { it.deviceUid == uid } ?: return
+
+        if (member.availableJumpChannels.isEmpty()) {
+            android.widget.Toast.makeText(
+                pluginContext,
+                "No channels available to join for ${member.callsign}",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        
+        if (member.availableJumpChannels.size == 1) {
+            val jc = member.availableJumpChannels[0]
+            val nameDisplay = if (jc.description != null) "${jc.channelName} (${jc.description})" else jc.channelName
+            android.widget.Toast.makeText(
+                pluginContext,
+                "Joining $nameDisplay...",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+            controller.setPrimaryChannel(jc.channelName)
+        } else {
+            showJumpChannelSheet(member)
+        }
+    }
+
     /** Long-press follow-up. Lists "Move VS1 → [channel]" / "Move VS2 →
      *  [channel]" for every channel the peer is on that the local
      *  operator has PARTICIPATE permission on. Tap to issue the join. */

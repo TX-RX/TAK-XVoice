@@ -513,6 +513,7 @@ class XvMapComponent : AbstractMapComponent() {
     private val selfSuppressedBySlot = java.util.concurrent.ConcurrentHashMap<Int, Boolean>()
     private var debugReceiver: DebugReceiver? = null
     private var showReceiver: BroadcastReceiver? = null
+    private var menuHandler: com.atakmap.android.xv.ui.XvMapMenuHandler? = null
     private var missionReceiver: BroadcastReceiver? = null
 
     // BluetoothAdapter STATE_ON receiver — re-runs the auto-connect
@@ -1389,8 +1390,21 @@ class XvMapComponent : AbstractMapComponent() {
                     i: Intent,
                 ) {
                     dd.show()
+                    val joinUid = i.getStringExtra("JOIN_PEER_UID")
+                    if (joinUid != null) {
+                        dd.jumpToPeer(joinUid)
+                    }
                 }
             }
+        
+        try {
+            presenceRegistry?.let {
+                menuHandler = com.atakmap.android.xv.ui.XvMapMenuHandler(pluginContext, it)
+                com.atakmap.android.menu.MapMenuReceiver.getInstance().registerMapMenuHandler(menuHandler)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to register MapMenuHandler", t)
+        }
         AtakBroadcast.getInstance().registerReceiver(
             showReceiver,
             AtakBroadcast.DocumentedIntentFilter(XvTool.SHOW_XV, "Show XV's main panel"),
@@ -1753,6 +1767,13 @@ class XvMapComponent : AbstractMapComponent() {
         aclReconnectReceiver = null
         showReceiver = null
         debugReceiver = null
+        
+        try {
+            menuHandler?.let { com.atakmap.android.menu.MapMenuReceiver.getInstance().unregisterMapMenuHandler(it) }
+            menuHandler = null
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to unregister MapMenuHandler", t)
+        }
         // End any active Telecom call + unregister our PhoneAccount
         // before audio teardown — Telecom needs to release focus +
         // route ownership while audio plumbing is still around.
