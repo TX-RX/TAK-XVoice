@@ -18,7 +18,7 @@ class XvMapMenuHandler(
     override fun updateMenu(item: MapItem?, menuWidget: MapMenuWidget?) {
         if (item == null || menuWidget == null) return
         val uid = item.uid ?: return
-        
+
         // Find presence
         val presence = registry.get(uid)
         if (presence == null || presence.channels.isEmpty()) return
@@ -26,12 +26,12 @@ class XvMapMenuHandler(
         try {
             val btn = MapMenuButtonWidget(ctx)
             btn.text = "Join Channel"
-            
+
             btn.onButtonClickHandler = object : gov.tak.api.widgets.IMapMenuButtonWidget.OnButtonClickHandler {
                 override fun isSupported(obj: Any?): Boolean = true
                 override fun performAction(obj: Any?) {
                     Log.i(TAG, "Join channel button clicked for uid $uid")
-                    
+
                     val i = Intent(XvTool.SHOW_XV)
                     i.putExtra("JOIN_PEER_UID", uid)
                     com.atakmap.android.ipc.AtakBroadcast.getInstance().sendBroadcast(i)

@@ -1551,7 +1551,7 @@ class XvDropDownReceiver(
             ).show()
             return
         }
-        
+
         if (member.availableJumpChannels.size == 1) {
             val jc = member.availableJumpChannels[0]
             val nameDisplay = if (jc.description != null) "${jc.channelName} (${jc.description})" else jc.channelName

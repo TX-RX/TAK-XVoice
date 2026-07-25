@@ -1396,7 +1396,7 @@ class XvMapComponent : AbstractMapComponent() {
                     }
                 }
             }
-        
+
         try {
             presenceRegistry?.let {
                 menuHandler = com.atakmap.android.xv.ui.XvMapMenuHandler(pluginContext, it)
@@ -1767,7 +1767,7 @@ class XvMapComponent : AbstractMapComponent() {
         aclReconnectReceiver = null
         showReceiver = null
         debugReceiver = null
-        
+
         try {
             menuHandler?.let { com.atakmap.android.menu.MapMenuReceiver.getInstance().unregisterMapMenuHandler(it) }
             menuHandler = null
