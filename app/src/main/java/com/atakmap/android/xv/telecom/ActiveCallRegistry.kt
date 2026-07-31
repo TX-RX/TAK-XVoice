@@ -26,7 +26,7 @@ internal object ActiveCallRegistry {
      * rationale. Sized to cover the observed ~1.4 s window on Pixel 9
      * Pro / API 35 during which `AudioManager.getMode()` still reports
      * `MODE_IN_COMMUNICATION` after the call ends, plus a safety
-     * margin for slower devices (Samsung Tab5, Sonim ruggedized).
+     * margin for slower devices (Samsung Tab5, ruggedized Android).
      */
     const val RECENT_OWN_CALL_GRACE_MS: Long = 3_000L
 

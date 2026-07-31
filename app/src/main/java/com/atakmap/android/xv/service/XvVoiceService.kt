@@ -90,43 +90,6 @@ class XvVoiceService : Service() {
         }
     }
 
-    /**
-     * In-process dispatch for the Sonim PTT key (KEYCODE_PTT / 228)
-     * background path. Called by
-     * [com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.onKeyEvent]
-     * when the accessibility service catches keyCode 228 on Sonim
-     * hardware — needed because Sonim's SonimSdkPolicy.isMCPTTApp
-     * check returns false for ATAK (ATAK doesn't declare the MCPTT
-     * intent-filter), so the PTT key is delivered ONLY as a KeyEvent
-     * to the top activity, not as a broadcast. That means
-     * [com.atakmap.android.xv.ptt.SonimPttForegroundReader] catches
-     * it while ATAK is foregrounded but nothing catches it while
-     * ATAK is backgrounded or the screen is off. The accessibility
-     * service's `flagRequestFilterKeyEvents` capability receives
-     * hardware key events system-wide regardless of focus / screen
-     * state, closing that gap.
-     *
-     * Same source tag [PttSource.SONIM_PTT] as the foreground and
-     * broadcast paths so the dispatcher OR-gate collapses duplicate
-     * edges when multiple paths fire for a single press.
-     */
-    private fun dispatchSonimPttEdgeInProcess(isDown: Boolean) {
-        val p = plant
-        if (p == null) {
-            Log.d(TAG, "Sonim PTT edge (a11y, isDown=$isDown) dropped — plant not constructed")
-            return
-        }
-        try {
-            if (isDown) {
-                p.pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
-            } else {
-                p.pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "dispatchSonimPttEdgeInProcess(isDown=$isDown) threw", t)
-        }
-    }
-
     // Caller-UID allowlist for the AIDL surface. Resolved once at
     // onCreate. Any binder call from a UID outside this set throws
     // SecurityException — see assertAuthorizedCaller(). Without this
@@ -165,7 +128,7 @@ class XvVoiceService : Service() {
         // Ship-blocking bug (issue #66 item #1): purge any stale self-
         // managed calls Telecom is still holding under XV's PhoneAccount
         // from a previous process instance. Field-observed 2026-07-11
-        // TPP validation on Pixel 9 Pro (API 35) and Sonim XP9900:
+        // TPP validation on Pixel 9 Pro (API 35):
         // `dumpsys telecom | grep "SelfMgd Call"` showed XV calls
         // stacking TC@86..TC@95 with the last entry still ACTIVE
         // 138+ s after the 8 s [TELECOM_END_DEBOUNCE_MS] should have
@@ -2161,61 +2124,6 @@ class XvVoiceService : Service() {
                 }
             }
 
-            override fun setSonimPttButtonEnabled(enabled: Boolean) {
-                assertAuthorizedCaller()
-                if (enabled) {
-                    plant().startSonimPttButton()
-                } else {
-                    plant().stopSonimPttButton()
-                }
-            }
-
-            override fun isSonimPttButtonRunning(): Boolean {
-                assertAuthorizedCaller()
-                return plant().isSonimPttButtonRunning()
-            }
-
-            override fun setSonimEmergencyButtonEnabled(enabled: Boolean) {
-                assertAuthorizedCaller()
-                if (enabled) {
-                    plant().startSonimEmergencyButton()
-                } else {
-                    plant().stopSonimEmergencyButton()
-                }
-            }
-
-            override fun isSonimEmergencyButtonRunning(): Boolean {
-                assertAuthorizedCaller()
-                return plant().isSonimEmergencyButtonRunning()
-            }
-
-            // Foreground-KeyEvent fallback edge dispatch. The plugin's
-            // SonimPttForegroundReader / SonimEmergencyForegroundReader
-            // own the OnKeyListener attached to the MapView (the
-            // KeyEvent path only reaches the top activity); each
-            // filtered edge is forwarded here so the service's
-            // PttDispatcher — the single source of truth for TX state
-            // — sees the source-tagged edge in the correct process.
-            // The dispatcher's OR-gate dedupes when the broadcast path
-            // also fires for the same press.
-            override fun notifySonimPttEdge(isDown: Boolean) {
-                assertAuthorizedCaller()
-                if (isDown) {
-                    plant().pttDown(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
-                } else {
-                    plant().pttUp(0, com.atakmap.android.xv.audio.PttSource.SONIM_PTT)
-                }
-            }
-
-            override fun notifySonimEmergencyEdge(isDown: Boolean) {
-                assertAuthorizedCaller()
-                // SOS button is an emergency-alert trigger, not PTT —
-                // route through the same shim the broadcast path uses
-                // (VoicePlant.onSonimEmergencyEdge → callbacks.onEmergencyButton
-                // → EmergencyController → ATAK Alert Tool). Matches AINA PTTE.
-                plant().onSonimEmergencyEdge(isDown)
-            }
-
             override fun setMumbleSessionState(connectedAndInChannel: Boolean) {
                 assertAuthorizedCaller()
                 plant().setMumbleSessionLive(connectedAndInChannel)
@@ -2363,24 +2271,6 @@ class XvVoiceService : Service() {
             svc.dispatchSamsungActiveKeyEdgeInProcess(isDown)
         }
 
-        /**
-         * In-process delivery seam for the Sonim PTT key (KEYCODE_PTT
-         * / 228) background PTT path. Called by
-         * [com.atakmap.android.xv.ptt.SamsungActiveKeyAccessibilityService.onKeyEvent]
-         * when the accessibility service catches keyCode 228 on
-         * Sonim hardware. Mirrors [deliverSamsungActiveKeyEdge] —
-         * see [dispatchSonimPttEdgeInProcess] for the routing
-         * rationale.
-         */
-        fun deliverSonimPttEdge(isDown: Boolean) {
-            val svc = activeInstance
-            if (svc == null) {
-                Log.d(TAG, "deliverSonimPttEdge(isDown=$isDown) — no running voice service; dropping")
-                return
-            }
-            svc.dispatchSonimPttEdgeInProcess(isDown)
-        }
-
         // AIDL contract version. Bump on every breaking schema change
         // (method removed, signature changed, semantics changed).
         // Plugin reads this via IXvVoice.getApiVersion() at bind time
@@ -2410,14 +2300,6 @@ class XvVoiceService : Service() {
         // that doesn't emit HARD_KEY_REPORT. Older plugins built
         // against v4 simply won't call it — the broadcast path is
         // still their only Samsung Active Key route.
-        // Additive-since-v4 (no version bump): the Sonim ruggedized-
-        // device hardware button surface — setSonimPttButtonEnabled /
-        // setSonimEmergencyButtonEnabled / isSonimPttButtonRunning /
-        // isSonimEmergencyButtonRunning for lifecycle, and
-        // notifySonimPttEdge / notifySonimEmergencyEdge for the
-        // foreground-KeyEvent fallback path. Older plugins built
-        // against v4 without these hooks — the Sonim buttons simply
-        // won't fire PTT for them, but everything else works unchanged.
         private const val AIDL_API_VERSION = 4
 
         // Channel ids for the incoming-ring + active-call CallStyle

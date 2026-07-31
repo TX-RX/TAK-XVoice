@@ -23,7 +23,7 @@ import org.junit.Test
  *  - Field operators experience: PTT press → no TX → toast → confusion.
  *
  * Observed 2026-07-11 during TPP validation on Pixel 9 Pro (API 35)
- * and Sonim XP9900 with `dumpsys telecom` showing calls stacked TC@86
+ * with `dumpsys telecom` showing calls stacked TC@86
  * through TC@95 with the last still ACTIVE 138+ s past the 8 s
  * [XvVoiceService.TELECOM_END_DEBOUNCE_MS] teardown timer.
  *

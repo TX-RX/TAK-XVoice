@@ -87,8 +87,8 @@ fun shouldGateForCellularCall(
 ): PttGate =
     when (callState) {
         // All PTT sources get blocked — phone calls are #1 priority.
-        // Hardware AINA button, Pryme puck, Samsung Active Key, Sonim
-        // PTT / Emergency, on-screen, DEBUG intent — every one of them.
+        // Hardware AINA button, Pryme puck, Samsung Active Key,
+        // on-screen, DEBUG intent — every one of them.
         TelephonyManager.CALL_STATE_OFFHOOK -> PttGate.BLOCK_CELLULAR_CALL
         TelephonyManager.CALL_STATE_RINGING -> PttGate.BLOCK_CELLULAR_RINGING
         else -> PttGate.ALLOW
@@ -230,13 +230,9 @@ fun cellularCallStateFromAudioMode(
                 // MODE_IN_COMMUNICATION" mapping is a false positive
                 // on hardware where MODE_IN_COMMUNICATION is a
                 // steady-state artefact rather than a real call
-                // indicator. Field-observed 2026-07-14 on Sonim XP10
-                // (AT&T carrier XP9900, Android 12): the resident
-                // AT&T EPTT + Dispatch Hub apps hold
-                // MODE_IN_COMMUNICATION continuously for minutes,
-                // producing an unbroken stream of "Cellular call
-                // active" blocks that don't correspond to any actual
-                // call. Callers pass suppressInCommunicationDefensiveBlock=true
+                // indicator on devices where a background MCPTT stack
+                // holds MODE_IN_COMMUNICATION continuously.
+                // Callers pass suppressInCommunicationDefensiveBlock=true
                 // for known-false-positive device classes.
                 //
                 // Real cellular calls (MODE_IN_CALL, above) and

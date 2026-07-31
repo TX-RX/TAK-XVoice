@@ -75,10 +75,9 @@ data class ColdStartMitigationPolicy(
 //     no continuous white noise on the speakermic.
 //   - On shutdown / channelClosed(): tear AudioCapture down, restore
 //     setMicrophoneMute(false).
-// File-backed diagnostic trail for the TX path. The Sonim XP9900's
-// logcat filtering swallows XV app-tag lines entirely (2026-07-17
-// bench: three TX rounds with zero XvTx lines in logcat while the
-// bursts demonstrably ran), so the burst-milestone events below are
+// File-backed diagnostic trail for the TX path. Some devices apply
+// aggressive logcat filtering that swallows XV app-tag lines entirely,
+// so the burst-milestone events below are
 // mirrored into DiagnosticLogger's per-day files — retrievable on any
 // device via `adb pull .../files/xv-logs` regardless of logcat policy.
 // DiagnosticLogger.event is a same-process no-throw no-op before
