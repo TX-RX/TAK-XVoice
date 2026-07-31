@@ -2273,12 +2273,12 @@ class XvDropDownReceiver(
         val n = controller.shareableChannels().size
         android.app.AlertDialog
             .Builder(mapView.context)
-            .setTitle("Forget all channels?")
+            .setTitle(if (n > 0) "Forget all $n channel(s)?" else "Clear the channel list?")
             .setMessage(
                 "Removes every stored mesh channel and key from this device. " +
                     "Channels that live on a connected server come back when it re-lists them; " +
                     "offline/ad-hoc channels are gone for good.",
-            ).setPositiveButton("Forget all") { _, _ ->
+            ).setPositiveButton(if (n > 0) "Forget all $n" else "Clear") { _, _ ->
                 controller.forgetAllMeshChannels()
                 meshToast(if (n > 0) "Forgot all channels." else "Cleared the channel list.")
                 refreshMeshSection(section)
@@ -2461,9 +2461,13 @@ class XvDropDownReceiver(
     // carries channel keys, so it is always passphrase-locked; the
     // operator passes the passphrase to the team out-of-band.
     private fun promptPassphraseThenShare(selected: List<String>) {
+        // The passphrase is the only thing protecting channel KEYS in transit;
+        // a 3-character passphrase is a false sense of security. Require a
+        // modest minimum so a locked plan isn't trivially brute-forced.
+        val minLen = 8
         val input =
             android.widget.EditText(mapView.context).apply {
-                hint = "Passphrase (your team enters this to import)"
+                hint = "Passphrase (min $minLen chars; team enters to import)"
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             }
         android.app.AlertDialog
@@ -2473,8 +2477,8 @@ class XvDropDownReceiver(
             .setView(input)
             .setPositiveButton("Share") { _, _ ->
                 val pass = input.text?.toString().orEmpty()
-                if (pass.isBlank()) {
-                    meshToast("Passphrase can't be empty.")
+                if (pass.length < minLen) {
+                    meshToast("Passphrase must be at least $minLen characters.")
                     return@setPositiveButton
                 }
                 val carrier = controller.buildChannelPlanCarrier(pass.toCharArray(), selected)
