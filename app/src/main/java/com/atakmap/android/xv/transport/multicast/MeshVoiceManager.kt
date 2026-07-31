@@ -656,6 +656,7 @@ class MeshVoiceManager(
 
         deduper.prune(now)
         pruneDiscovered(now)
+        pruneEpochBookkeeping(now)
         // Idle-prune the relay burst-gap maps: a speaker unheard for the
         // TTL can drop its bookkeeping regardless of bridge-role changes
         // (belt-and-suspenders for a very long single bridge session).
@@ -1381,6 +1382,29 @@ class MeshVoiceManager(
 
     private fun pruneDiscovered(now: Long) {
         discovered.entries.removeAll { now - it.value.lastSeenMs > DISCOVERED_STALE_MS }
+    }
+
+    /**
+     * Test-only view of the epoch/rotation bookkeeping footprint: (total
+     * tracked peer-epochs across all channels, conflict-rotate timestamps).
+     * Lets a churn test assert these stay bounded across split/merge cycles.
+     */
+    @Synchronized
+    internal fun epochBookkeepingSizesForTest(): Pair<Int, Int> =
+        channelPeerEpochs.values.sumOf { it.size } to lastConflictRotateMs.size
+
+    // Bound the epoch/rotation bookkeeping so a long mission with peer churn
+    // (repeated split/merge, devices cycling in and out) can't grow these
+    // maps without limit. Stale peer epochs are already ignored by consumers
+    // (mayBootstrapKey filters at PEER_EPOCH_STALE_MS), and a conflict-rotate
+    // timestamp older than the throttle window no longer gates anything —
+    // dropping both just reclaims memory with no behavioural change.
+    private fun pruneEpochBookkeeping(now: Long) {
+        channelPeerEpochs.values.forEach { peers ->
+            peers.entries.removeAll { now - it.value.seenMs > PEER_EPOCH_STALE_MS }
+        }
+        channelPeerEpochs.entries.removeAll { it.value.isEmpty() }
+        lastConflictRotateMs.entries.removeAll { now - it.value >= CONFLICT_ROTATE_THROTTLE_MS }
     }
 
     private fun sha256Hex(bytes: ByteArray): String =

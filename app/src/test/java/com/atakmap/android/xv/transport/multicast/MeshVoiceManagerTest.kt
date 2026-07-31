@@ -1211,4 +1211,82 @@ class MeshVoiceManagerTest {
         assertTrue(h.manager.revokeAndRotate("Ops-1", setOf("uid-x"), hard = true))
         assertFalse(before!!.contentEquals(h.manager.currentKeyFor("Ops-1")!!))
     }
+
+    // ---- epoch/rotation bookkeeping stays bounded under peer churn ----
+
+    @Test
+    fun `epoch bookkeeping stays bounded as peers churn through split-merge cycles`() {
+        // A long mission repeatedly partitions and re-merges: distinct
+        // devices cycle in and out of earshot, each beaconing its epoch on
+        // the channel we carry. channelPeerEpochs is keyed by peer uid, so
+        // without the tick()-time prune (pruneEpochBookkeeping) it would
+        // grow once per uid ever seen and never shrink — a slow leak over a
+        // multi-hour event. This proves stale peers are reclaimed, not
+        // accumulated.
+        //
+        // ourUid is "uid-mmm"; every churn uid below sorts under it, so we
+        // never win the keyless-bootstrap tie-break — no key install, no
+        // conflict rotation — keeping the assertion focused on the
+        // peer-epoch map itself.
+        val h = Harness()
+        h.joinAndTick()
+
+        val everSeen = mutableSetOf<String>()
+
+        // Three split/merge waves of fresh, distinct peers. now advances by
+        // 8 s between waves — under PEER_EPOCH_STALE_MS (17 s) — so by the
+        // third wave the first is still (just) fresh and all three coexist
+        // in the map at once.
+        val waveSize = 30
+        repeat(3) { wave ->
+            if (wave > 0) h.now += 8_000
+            (0 until waveSize).forEach { i ->
+                val uid = "uid-churn-%d-%02d".format(wave, i)
+                everSeen += uid
+                h.manager.onControl(
+                    "ops-1",
+                    beaconFor(uid, channelEpoch = ChannelKeyRegistry.NO_EPOCH, h),
+                    sourceHost = "198.51.100.9",
+                )
+            }
+            h.manager.tick()
+        }
+
+        // All 90 distinct peers are within the stale window right now, so the
+        // map genuinely accumulated them — the later drop is real pruning,
+        // not a hard cap that silently discarded beacons on the way in.
+        assertEquals(waveSize * 3, h.manager.epochBookkeepingSizesForTest().first)
+
+        // The mission runs on well past when those peers were last heard, and
+        // only a handful of survivors keep beaconing. Age every earlier
+        // sighting out (advance > PEER_EPOCH_STALE_MS past the last wave),
+        // re-beacon just the survivors at the current instant, then tick.
+        h.now += MeshVoiceManager.PEER_EPOCH_STALE_MS + 3_000
+        val survivors = everSeen.take(8)
+        survivors.forEach { uid ->
+            h.manager.onControl(
+                "ops-1",
+                beaconFor(uid, channelEpoch = ChannelKeyRegistry.NO_EPOCH, h),
+                sourceHost = "198.51.100.9",
+            )
+        }
+        h.manager.tick()
+
+        val (trackedEpochs, conflictRotates) = h.manager.epochBookkeepingSizesForTest()
+        assertEquals(
+            "only currently-fresh survivors outlive the prune",
+            survivors.size,
+            trackedEpochs,
+        )
+        assertTrue(
+            "tracked peer-epochs stay bounded by the fresh set, not the churn total",
+            trackedEpochs < everSeen.size,
+        )
+        // lastConflictRotateMs is keyed by channel, so it is bounded by the
+        // live-leg count regardless of how many peers churn through.
+        assertTrue(
+            "conflict-rotate timestamps stay bounded by channel count",
+            conflictRotates <= h.manager.activeLegs().size,
+        )
+    }
 }
