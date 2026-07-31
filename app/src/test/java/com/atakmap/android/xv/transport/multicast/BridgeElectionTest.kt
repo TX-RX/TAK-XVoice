@@ -68,6 +68,34 @@ class BridgeElectionTest {
     }
 
     @Test
+    fun `after partition merge exactly one bridge survives`() {
+        // Pins IMMEDIATE lowest-UID convergence on a partition merge:
+        // when two self-elected islands hear each other's beacons, exactly
+        // one bridge survives on the very next evaluate() tick, via the
+        // lowest-UID tie-break — NOT gated on any stale timeout. The 17s
+        // PEER_STALE_MS is the unrelated failover-on-silence bound (it only
+        // governs how long a vanished peer keeps influencing the election),
+        // and must not delay merge convergence.
+        val a = BridgeElection(ourUid = "aaa")
+        val z = BridgeElection(ourUid = "zzz")
+        // pre-merge: each island has an offline peer, so each self-elects
+        a.observePeer("aaa-off", mumbleConnected = false, nowMs = 1_000)
+        z.observePeer("zzz-off", mumbleConnected = false, nowMs = 1_000)
+        assertTrue(a.evaluate(nowMs = 1_100, ourMumbleConnected = true))
+        assertTrue(z.evaluate(nowMs = 1_100, ourMumbleConnected = true))
+        // merge: beacons cross both ways
+        a.observePeer("zzz", mumbleConnected = true, nowMs = 2_000)
+        a.observePeer("zzz-off", mumbleConnected = false, nowMs = 2_000)
+        z.observePeer("aaa", mumbleConnected = true, nowMs = 2_000)
+        z.observePeer("aaa-off", mumbleConnected = false, nowMs = 2_000)
+        // exactly one survives immediately (same tick, no stale wait)
+        val aBridges = a.evaluate(nowMs = 2_100, ourMumbleConnected = true)
+        val zBridges = z.evaluate(nowMs = 2_100, ourMumbleConnected = true)
+        assertTrue(aBridges)
+        assertFalse(zBridges)
+    }
+
+    @Test
     fun `multi-network islands elect bridges independently`() {
         val e = BridgeElection(ourUid = "mmm")
         // We hear a disconnected peer on our island (zzz) via multicast beacon.
