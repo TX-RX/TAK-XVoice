@@ -241,9 +241,6 @@ class MulticastTransport(
 
     override fun sendFrame(frame: VoiceFrame) {
         if (!connected) return
-        // Multicast legs are bound to the primary channel; VS2 traffic
-        // (slot 1) stays Mumble-only.
-        if (frame.targetSlot != 0) return
         val datagram = txCodec.encodeTx(frame.opusPayload)
         if (datagram == null) {
             txDroppedByPolicy.incrementAndGet()

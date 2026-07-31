@@ -2,6 +2,7 @@ package com.atakmap.android.xv.provisioning
 
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import com.atakmap.android.contact.Contacts
 import com.atakmap.android.cot.CotMapComponent
 import com.atakmap.coremap.cot.event.CotDetail
 import com.atakmap.coremap.cot.event.CotEvent
@@ -23,7 +24,8 @@ import java.security.SecureRandom
  *
  * Mirrors [com.atakmap.android.xv.calling.XvCallSignals]: a broadcast
  * `b-x-...` command event, addressed by a target-UID filter. No
- * passphrase, no string to copy, no key on the wire.
+ * passphrase, no string to copy, no key on the wire. Recipient scoping
+ * (individuals / group / everyone) rides on ATAK's own contact model.
  *
  * Wire format:
  * ```xml
@@ -63,9 +65,55 @@ object XvChannelShare {
         val eventUid: String? = null,
     )
 
-    fun send(signal: ShareSignal): Boolean =
-        try {
-            CotMapComponent.getExternalDispatcher().dispatchToBroadcast(build(signal))
+    /**
+     * Push the share as a CoT nudge and return whether it went out.
+     * Uses ATAK's standard sharing model:
+     *  - empty [ShareSignal.targetUids] ("Everyone") → server broadcast;
+     *  - specific targetUids → a directed send to exactly those contacts,
+     *    falling back to broadcast (the `targets` attribute still filters
+     *    receivers) if the contacts can't be resolved, so a share never
+     *    silently no-ops.
+     *
+     * Recipient scoping (individuals / groups / everyone) is left to
+     * ATAK's own contact model rather than reimplemented here: the TAK
+     * server's group membership isn't reliably visible to a plugin, so
+     * XV does not try to bound the blast radius itself.
+     */
+    fun send(signal: ShareSignal): Boolean {
+        val event =
+            try {
+                build(signal)
+            } catch (t: Throwable) {
+                Log.w(TAG, "build threw", t)
+                return false
+            }
+        return try {
+            val dispatcher = CotMapComponent.getExternalDispatcher()
+            val targets =
+                signal.targetUids
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+            if (targets.isEmpty()) {
+                // "Everyone" — ATAK's standard broadcast to server contacts.
+                dispatcher.dispatchToBroadcast(event)
+            } else {
+                // Specific contacts — directed send. If the UIDs can't be
+                // resolved to live contacts, broadcast instead; the wire
+                // `targets` attribute keeps the receiver-side filter so
+                // only the addressees act on it.
+                val contacts =
+                    try {
+                        Contacts.fromUIDs(targets)?.filterNotNull()
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "fromUIDs threw", t)
+                        null
+                    }
+                if (contacts.isNullOrEmpty()) {
+                    dispatcher.dispatchToBroadcast(event)
+                } else {
+                    dispatcher.dispatchToContacts(event, contacts)
+                }
+            }
             Log.i(
                 TAG,
                 "send: sharer=${signal.sharerUid} targets=${signal.targetUids.size} " +
@@ -76,6 +124,7 @@ object XvChannelShare {
             Log.w(TAG, "dispatch threw", t)
             false
         }
+    }
 
     private fun build(s: ShareSignal): CotEvent {
         val event = CotEvent()

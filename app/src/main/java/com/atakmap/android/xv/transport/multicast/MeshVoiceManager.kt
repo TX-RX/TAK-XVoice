@@ -110,6 +110,7 @@ class MeshVoiceManager(
     private val patchLegs = LinkedHashMap<String, MeshLeg>() // canonical channel → patch leg
     private var rendezvousLeg: MeshLeg? = null
     private var primaryChannel: String? = null // canonical
+    private var secondaryChannel: String? = null // canonical
 
     private val registries = HashMap<String, ChannelKeyRegistry>()
     private val elections = HashMap<String, KeyElection>()
@@ -243,10 +244,16 @@ class MeshVoiceManager(
         slot: Int,
         channelName: String,
     ) {
-        if (slot != 0) return // mesh legs bind to the primary channel only
         val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
-        if (canonical == primaryChannel) return
-        primaryChannel = canonical
+        if (slot == 0) {
+            if (canonical == primaryChannel) return
+            primaryChannel = canonical
+        } else if (slot == 1) {
+            if (canonical == secondaryChannel) return
+            secondaryChannel = canonical
+        } else {
+            return
+        }
         deduper.reset()
         reconcileLegs()
     }
@@ -272,21 +279,25 @@ class MeshVoiceManager(
     fun forgetChannel(channelName: String) {
         val canonical = MulticastGroupDerivation.canonicalChannelName(channelName)
         legs.remove(canonical)?.let { runCatching { it.close() } }
+        patchLegs.remove(canonical)?.let { runCatching { it.close() } }
         discovered.keys.removeAll { MulticastGroupDerivation.canonicalChannelName(it) == canonical }
         currentKeys.remove(canonical)
         currentKeyFpCache.remove(canonical)
         if (primaryChannel == canonical) primaryChannel = null
+        if (secondaryChannel == canonical) secondaryChannel = null
     }
 
-    /** Operator cleared the whole channel list: drop every leg + discovery. */
     @Synchronized
     fun forgetAllChannels() {
         legs.values.forEach { runCatching { it.close() } }
         legs.clear()
+        patchLegs.values.forEach { runCatching { it.close() } }
+        patchLegs.clear()
         discovered.clear()
         currentKeys.clear()
         currentKeyFpCache.clear()
         primaryChannel = null
+        secondaryChannel = null
     }
 
     /** Peer left (Mumble UserRemove / CoT stale-purge). Feeds key rotation. */
@@ -331,28 +342,23 @@ class MeshVoiceManager(
         opus: ByteArray,
         targetSlot: Int,
     ) {
-        if (targetSlot != 0) return
-        if (legs.isEmpty()) return
+        val targetChannel = if (targetSlot == 0) primaryChannel else secondaryChannel
+        if (targetChannel == null) return
+        if (legs.isEmpty() && patchLegs.isEmpty()) return
         lastLocalTxMs = nowMs()
-        failoverPolicy.observeTxFrame(nowMs())
-        legs.values.forEach { leg ->
+        if (targetSlot == 0) {
+            failoverPolicy.observeTxFrame(nowMs())
+        }
+        legs[targetChannel]?.let { leg ->
             val txNow =
                 when (leg.config.mode) {
                     MulticastMode.ALWAYS -> true
-                    // While we hold the bridge role our OWN mic must
-                    // also go out on the mesh: the server never echoes
-                    // our voice back, so the Mumble→mesh relay path
-                    // structurally cannot carry it — without this the
-                    // bridge operator is inaudible to every mesh-only
-                    // peer. Doubly-connected receivers get two copies
-                    // (server + mesh); the dedup layer collapses them
-                    // via ssrc↔uid correlation like any relayed burst.
                     MulticastMode.FAILOVER -> meshTxActive || bridging
                     MulticastMode.OFF -> false
                 }
             if (txNow) leg.sendOpus(opus)
         }
-        patchLegs.values.forEach { leg ->
+        patchLegs[targetChannel]?.let { leg ->
             val txNow =
                 when (leg.config.mode) {
                     MulticastMode.ALWAYS -> true
@@ -817,6 +823,12 @@ class MeshVoiceManager(
         val desired = mutableMapOf<String, ChannelMulticastConfig>()
         if (enabled) {
             primaryChannel?.let { channel ->
+                val cfg = configForChannel(channel)
+                if (cfg.mode != MulticastMode.OFF && cfg.validate() == null) {
+                    desired[channel] = cfg
+                }
+            }
+            secondaryChannel?.let { channel ->
                 val cfg = configForChannel(channel)
                 if (cfg.mode != MulticastMode.OFF && cfg.validate() == null) {
                     desired[channel] = cfg

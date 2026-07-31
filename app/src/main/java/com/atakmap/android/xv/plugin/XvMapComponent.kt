@@ -1952,6 +1952,53 @@ class XvMapComponent : AbstractMapComponent() {
     }
 
     /**
+     * Mesh-failover member snapshot. [buildSlotMembersSnapshot] is gated
+     * on a live Mumble transport and a `joinedChannelsBySlot` entry, both
+     * of which are cleared on a server drop ([stopActiveTransport]). But
+     * mesh legs and MESH-source presence deliberately outlive the server
+     * (see [MeshVoiceManager.onChannelsCleared]) — the local-mesh peer
+     * count is still knowable. Rebuild it from the surviving presence
+     * registry, keyed on the active mesh leg's channel.
+     *
+     * Mesh legs bind to the primary channel only (slot 0), so this returns
+     * null for any other slot: VS2 has no mesh failover roster to count.
+     * ☁️ (server) is legitimately 0 here — there is no server — while
+     * 📻 (local mesh) reflects the real peers still reachable over mesh.
+     */
+    private fun buildMeshOnlySlotMembersSnapshot(slot: Int): XvDropDownReceiver.SlotMembers? {
+        if (slot != 0) return null
+        // legs is keyed by canonical channel name and excludes the
+        // separate rendezvous discovery leg, so firstOrNull is the
+        // operator's primary channel.
+        val channel = meshVoiceManager?.activeLegs()?.keys?.firstOrNull() ?: return null
+        val ourUid = com.atakmap.android.xv.transport.mumble.MumbleAuth.deviceUid()
+        val rows =
+            presenceRegistry?.all().orEmpty().filter { p ->
+                p.deviceUid != ourUid &&
+                    p.channels.any {
+                        com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                            .canonicalChannelName(it.name) == channel
+                    }
+            }.map { p ->
+                XvDropDownReceiver.ChannelMember(
+                    mumbleSessionId = null,
+                    callsign = p.callsign ?: p.deviceUid.take(12),
+                    slot = slot,
+                    isXvPeer = true,
+                    deviceUid = p.deviceUid,
+                    talkingNow = false,
+                    availableJumpChannels = emptyList(),
+                    connectionSource = XvDropDownReceiver.ConnectionSource.LOCAL_MESH,
+                )
+            }
+        return XvDropDownReceiver.SlotMembers(
+            slot = slot,
+            channelName = channel,
+            members = rows,
+        )
+    }
+
+    /**
      * Phase E outgoing direct call to a peer identified by their ATAK
      * device UID. Steps (in order, all on the plugin side):
      *
@@ -3023,6 +3070,13 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun meshStatus(): XvDropDownReceiver.MeshStatus? {
                 val snap = meshVoiceManager?.statusSnapshot() ?: return null
+                // The live leg's actual group:port — this is the address
+                // voice is flowing over right now, so it's authoritative
+                // for interop (vs. re-deriving, which depends on the
+                // current server identity). legs excludes the rendezvous
+                // discovery leg, so the first value is the primary channel.
+                val primaryEndpoint = meshVoiceManager?.activeLegs()?.values?.firstOrNull()
+                val endpointStr = primaryEndpoint?.let { "${it.groupAddress}:${it.port}" }
                 val label =
                     buildString {
                         append(if (snap.active) "MESH ACTIVE" else "MESH READY")
@@ -3033,8 +3087,15 @@ class XvMapComponent : AbstractMapComponent() {
                         // says "we send unencrypted", this says "we
                         // can't hear them".
                         if (snap.keyNeeded) append(" · KEY NEEDED")
+                        // Operator-visible group so failover voice isn't a
+                        // black box and the address can be shared for interop.
+                        if (endpointStr != null) append(" · $endpointStr")
                     }
-                return XvDropDownReceiver.MeshStatus(label = label, cleartext = snap.cleartext || snap.keyNeeded)
+                return XvDropDownReceiver.MeshStatus(
+                    label = label,
+                    cleartext = snap.cleartext || snap.keyNeeded,
+                    groupEndpoint = endpointStr,
+                )
             }
 
             override fun provisionMeshChannel(): String? = provisionMeshChannelInternal()
@@ -3079,6 +3140,36 @@ class XvMapComponent : AbstractMapComponent() {
             ): String = importChannelPlanCarrierInternal(text, passphrase)
 
             override fun meshChannelConfig(name: String) = settings.channelMulticastConfigFor(name)
+
+            override fun previewEndpoint(channelName: String): String? {
+                val name = channelName.trim()
+                if (name.isEmpty()) return null
+                // Mirror the join-path resolution (see the joinedChannelsBySlot
+                // endpoint block): stored config's pin if present, else the
+                // v1 derivation keyed on the current server identity.
+                val mc =
+                    settings.channelMulticastConfigFor(name)
+                        ?: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig.defaultFor(name)
+                val host =
+                    activeMumbleHost
+                        ?: try {
+                            com.atakmap.android.xv.transport.mumble.TakServerDiscovery
+                                .pickPreferred(settings.persistedPreferredTakHost())
+                                ?.host
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        ?: "offline"
+                return try {
+                    val ep =
+                        mc.resolveEndpoint(
+                            com.atakmap.android.xv.transport.multicast.ServerIdentity.fromHostname(host),
+                        )
+                    "${ep.groupAddress}:${ep.port}"
+                } catch (_: Throwable) {
+                    null
+                }
+            }
 
             override fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String? {
                 val err = config.validate()
@@ -3148,18 +3239,33 @@ class XvMapComponent : AbstractMapComponent() {
             override fun currentAudioRouteLabel(): String = lastAudioRouteLabel
 
             override fun channelMembersBySlot(): Map<Int, XvDropDownReceiver.SlotMembers> {
-                val transport = mumbleTransport() ?: return emptyMap()
+                val transport = mumbleTransport()
                 val result = mutableMapOf<Int, XvDropDownReceiver.SlotMembers>()
-                for (slot in listOf(0, 1)) {
-                    val sm = buildSlotMembersSnapshot(slot, transport) ?: continue
-                    result[slot] = sm
+                if (transport != null) {
+                    for (slot in listOf(0, 1)) {
+                        val sm = buildSlotMembersSnapshot(slot, transport) ?: continue
+                        result[slot] = sm
+                    }
+                }
+                // Mesh failover: the Mumble session (or slot 0's joined
+                // channel) is gone, so the server-gated snapshot above
+                // yields nothing for slot 0 — but the mesh leg and
+                // MESH-source presence deliberately survive a server drop.
+                // Fill slot 0 from that surviving presence so the 👥 badge
+                // reflects local-mesh peers instead of collapsing to zero.
+                if (0 !in result) {
+                    buildMeshOnlySlotMembersSnapshot(0)?.let { result[0] = it }
                 }
                 return result
             }
 
             override fun channelMembersForSlot(slot: Int): XvDropDownReceiver.SlotMembers? {
-                val transport = mumbleTransport() ?: return null
-                return buildSlotMembersSnapshot(slot, transport)
+                val transport = mumbleTransport()
+                val serverSnap = transport?.let { buildSlotMembersSnapshot(slot, it) }
+                // Fall back to a mesh-only roster when the server path is
+                // unavailable (transport down or slot never joined) so the
+                // count survives failover. See buildMeshOnlySlotMembersSnapshot.
+                return serverSnap ?: buildMeshOnlySlotMembersSnapshot(slot)
             }
 
             override fun findOnMap(deviceUid: String) {
@@ -3663,10 +3769,14 @@ class XvMapComponent : AbstractMapComponent() {
             ?.map { it.deviceUid to (it.callsign ?: it.deviceUid) }
             .orEmpty()
 
-    // Broadcast a "join my channel(s)" nudge to the chosen teammates (or
-    // everyone when targetUids is empty). Carries only the channel NAME —
-    // the recipient derives the endpoint locally and the key auto-exchanges
-    // over the existing election, so no passphrase and no string.
+    // Push a "join my channel(s)" nudge to the chosen teammates (or, when
+    // targetUids is empty, the local TAK-server team/group — NOT a
+    // server-wide broadcast; see XvChannelShare). Carries only the channel
+    // NAME — the recipient derives the endpoint locally and the key
+    // auto-exchanges over the existing election, so no passphrase and no
+    // string. Returns false on the fail-safe path (group unresolvable): the
+    // online push is skipped rather than broadcast to guests, and the caller
+    // steers the operator to explicit recipients or the offline carrier.
     private fun shareChannelsViaCot(
         channelNames: List<String>,
         targetUids: List<String>,

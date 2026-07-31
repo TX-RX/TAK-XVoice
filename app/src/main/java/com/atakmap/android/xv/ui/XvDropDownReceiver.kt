@@ -58,6 +58,11 @@ class XvDropDownReceiver(
     data class MeshStatus(
         val label: String,
         val cleartext: Boolean,
+        // Active mesh leg's derived/pinned "group:port" (e.g.
+        // "239.231.14.2:16842"), or null when no leg is live. Surfaced so
+        // an operator can read/copy it to interoperate with OpenManet or
+        // legacy-VX peers who can't run the XV derivation themselves.
+        val groupEndpoint: String? = null,
     )
 
     interface Controller {
@@ -468,6 +473,14 @@ class XvDropDownReceiver(
         // on success (saved + keyed + joined), or an operator-readable
         // validation error.
         fun meshChannelConfig(name: String): com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig?
+
+        // The "group:port" a channel name resolves to (pinned override
+        // else v1 derivation against the current server identity), or null
+        // for a blank name. Lets the config dialog echo the automatic
+        // endpoint operators otherwise never see, so it can be shared for
+        // OpenManet / legacy-VX interop.
+        fun previewEndpoint(channelName: String): String?
+
         fun saveChannelConfig(config: com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig): String?
         fun channelCryptoPolicy(name: String): com.atakmap.android.xv.transport.multicast.CryptoPolicy?
         fun saveMeshChannel(
@@ -918,6 +931,19 @@ class XvDropDownReceiver(
                     null,
                 ),
             )
+            // Long-press the failover status to copy the live group:port —
+            // the quick path to hand an OpenManet / legacy-VX peer the
+            // address while a mission is running.
+            val ep = mesh.groupEndpoint
+            meshStatusView.setOnLongClickListener {
+                if (ep != null) {
+                    copyToClipboard("XV mesh group", ep)
+                    meshToast("Copied $ep")
+                    true
+                } else {
+                    false
+                }
+            }
         }
 
         // VS1 PTT card — channel name lives on the header above the
@@ -1037,7 +1063,7 @@ class XvDropDownReceiver(
             it.connectionSource == ConnectionSource.LOCAL_MESH ||
                 it.connectionSource == ConnectionSource.BOTH
         }
-        v.findViewById<Button>(R.id.xv_btn_members_1).text = "👥 ☁️$vs1Server 📻$vs1Local"
+        v.findViewById<Button>(R.id.xv_btn_members_1).text = "👥\n☁️ $vs1Server\n📻 $vs1Local"
 
         val vs2MembersList = controller.channelMembersForSlot(1)?.members ?: emptyList()
         val vs2Server = vs2MembersList.count {
@@ -1048,7 +1074,7 @@ class XvDropDownReceiver(
             it.connectionSource == ConnectionSource.LOCAL_MESH ||
                 it.connectionSource == ConnectionSource.BOTH
         }
-        v.findViewById<Button>(R.id.xv_btn_members_2).text = "👥 ☁️$vs2Server 📻$vs2Local"
+        v.findViewById<Button>(R.id.xv_btn_members_2).text = "👥\n☁️ $vs2Server\n📻 $vs2Local"
     }
 
     private fun showSettings() {
@@ -1083,11 +1109,14 @@ class XvDropDownReceiver(
 
         val list = v.findViewById<android.widget.ExpandableListView>(R.id.xv_picker_list)
 
+        val currentPrimary = controller.currentChannelName()
+        val currentSecondary = controller.secondaryChannelName()
+
         val allChannels = controller.availableChannels().map { it.name }.toMutableSet()
         val serverGroups = controller.availableChannels().groupBy { controller.connectedTakHost() ?: "Offline / ad-hoc" }.toMutableMap()
 
         // Add offline/mesh candidates
-        if (slot == 0 && controller.meshVoiceEnabled()) {
+        if (controller.meshVoiceEnabled()) {
             val serverCanon = allChannels.map { MulticastGroupDerivation.canonicalChannelName(it) }.toSet()
             val offlineOnly = controller.meshChannelCandidates()
                 .filter { MulticastGroupDerivation.canonicalChannelName(it) !in serverCanon }
@@ -1108,9 +1137,39 @@ class XvDropDownReceiver(
             }
         }
 
-        val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
-        val groupList = sortedGroups.map { it.key }
-        val childMap = sortedGroups.associate { it.key to it.value.map { ch -> ch.name }.sorted() }
+        serverGroups.forEach { (group, channels) ->
+            val mutableChannels = channels.toMutableList()
+            mutableChannels.removeAll {
+                it.name.equals(currentPrimary, ignoreCase = true) ||
+                    it.name.equals(currentSecondary, ignoreCase = true)
+            }
+            serverGroups[group] = mutableChannels
+        }
+        val emptyGroups = serverGroups.filter { it.value.isEmpty() }.keys
+        emptyGroups.forEach { serverGroups.remove(it) }
+
+        val sortedGroupsList = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
+
+        val groupList = mutableListOf<String>()
+        val childMap = mutableMapOf<String, List<String>>()
+
+        val activeChannelsList = mutableListOf<String>()
+        if (currentPrimary != null) activeChannelsList.add(currentPrimary)
+        if (currentSecondary != null &&
+            !currentSecondary.equals(currentPrimary, ignoreCase = true)
+        ) {
+            activeChannelsList.add(currentSecondary)
+        }
+
+        if (activeChannelsList.isNotEmpty()) {
+            groupList.add("Active Channels")
+            childMap["Active Channels"] = activeChannelsList
+        }
+
+        sortedGroupsList.forEach { entry ->
+            groupList.add(entry.key)
+            childMap[entry.key] = entry.value.map { it.name }.sorted()
+        }
 
         val current = if (slot == 0) controller.currentChannelName() else controller.secondaryChannelName()
         val otherSlotChannel = if (slot == 0) controller.secondaryChannelName() else controller.currentChannelName()
@@ -1318,6 +1377,66 @@ class XvDropDownReceiver(
         }
         view.addView(overrideSpinner)
 
+        val host = controller.connectedTakHost()
+        val derivedEndpoint = if (host != null) {
+            runCatching {
+                com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation.derive(
+                    com.atakmap.android.xv.transport.multicast.ServerIdentity.fromHostname(host),
+                    channel
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
+
+        val nativeText = android.widget.TextView(ctx).apply {
+            text = "Native Mesh Endpoint (Auto-derived)"
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+            textSize = 12f
+            val density = ctx.resources.displayMetrics.density
+            setPadding(0, (16 * density).toInt(), 0, (4 * density).toInt())
+        }
+        view.addView(nativeText)
+
+        val infoText = android.widget.TextView(ctx).apply {
+            text = if (derivedEndpoint != null) {
+                "Group: ${derivedEndpoint.groupAddress}\nPort: ${derivedEndpoint.port}\nFormat: RTP (XV_NATIVE)"
+            } else {
+                "Cannot derive endpoint (no server connection)."
+            }
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text, null))
+            textSize = 14f
+            val density = ctx.resources.displayMetrics.density
+            setPadding(0, 0, 0, (8 * density).toInt())
+        }
+        view.addView(infoText)
+
+        val cryptoText = android.widget.TextView(ctx).apply {
+            text = "Encryption (Native Mesh)"
+            setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
+            textSize = 12f
+            val density = ctx.resources.displayMetrics.density
+            setPadding(0, (8 * density).toInt(), 0, (4 * density).toInt())
+        }
+        view.addView(cryptoText)
+
+        val cryptoSpinner = android.widget.Spinner(ctx).apply {
+            val adapter = android.widget.ArrayAdapter(
+                ctx,
+                android.R.layout.simple_spinner_item,
+                arrayOf("Encrypted (Preferred)", "Cleartext (Disabled)")
+            )
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            this.adapter = adapter
+            val modeIndex = when (existingConfig.cryptoPolicy) {
+                com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED -> 0
+                com.atakmap.android.xv.transport.multicast.CryptoPolicy.REQUIRED -> 0 // Treat as preferred in UI
+                com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT -> 1
+            }
+            setSelection(modeIndex)
+        }
+        view.addView(cryptoSpinner)
+
         val patchText = android.widget.TextView(ctx).apply {
             text = "External Patch (Vx)"
             setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
@@ -1359,6 +1478,10 @@ class XvDropDownReceiver(
                     1 -> com.atakmap.android.xv.transport.multicast.MulticastMode.ALWAYS
                     else -> com.atakmap.android.xv.transport.multicast.MulticastMode.OFF
                 }
+                val cryptoMode = when (cryptoSpinner.selectedItemPosition) {
+                    0 -> com.atakmap.android.xv.transport.multicast.CryptoPolicy.PREFERRED
+                    else -> com.atakmap.android.xv.transport.multicast.CryptoPolicy.CLEARTEXT
+                }
                 val pg = patchGroup.text.toString().trim().ifEmpty { null }
                 val pp = patchPort.text.toString().trim().ifEmpty { null }?.toIntOrNull()
 
@@ -1369,6 +1492,7 @@ class XvDropDownReceiver(
 
                 val newConfig = existingConfig.copy(
                     mode = mode,
+                    cryptoPolicy = cryptoMode,
                     patchGroup = pg,
                     patchPort = pp
                 )
@@ -2506,6 +2630,22 @@ class XvDropDownReceiver(
         }
     }
 
+    // Copy a short string (e.g. a multicast group:port) to the system
+    // clipboard so an operator can paste it out-of-band to a non-XV peer
+    // for interop. Best-effort — a clipboard failure never disrupts voice.
+    private fun copyToClipboard(
+        label: String,
+        text: String,
+    ) {
+        try {
+            val cm =
+                pluginContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as? android.content.ClipboardManager
+            cm?.setPrimaryClip(android.content.ClipData.newPlainText(label, text))
+        } catch (_: Throwable) {
+        }
+    }
+
     // Provisioning path 3 form: name (required) + an optional interop
     // block (pin group/port, wire format, crypto). Blank group/port keeps
     // the automatic derivation, so "name it myself" needs no address
@@ -2562,6 +2702,66 @@ class XvDropDownReceiver(
                 setSelection(idx)
             }
 
+        // Read-only echo of the group:port the entered name resolves to.
+        // With blank group/port the address is auto-derived and operators
+        // never otherwise see it; surfacing it (with a copy button) is the
+        // whole point — a non-XV peer (OpenManet / legacy VX) can't run our
+        // derivation, so they need the literal address to hand-match.
+        val derivedView =
+            TextView(ctx).apply {
+                setTextColor(pluginContext.resources.getColor(R.color.xv_accent, null))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+        fun currentResolvedEndpoint(): String? {
+            val g = groupField.text?.toString()?.trim().orEmpty()
+            val p = portField.text?.toString()?.trim().orEmpty()
+            // A manual pin overrides the derivation — echo it directly.
+            if (g.isNotEmpty() && p.isNotEmpty()) return "$g:$p"
+            return controller.previewEndpoint(nameField.text?.toString().orEmpty())
+        }
+        fun refreshDerived() {
+            val ep = currentResolvedEndpoint()
+            derivedView.text = ep ?: "—"
+        }
+        val derivedWatcher =
+            object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) = refreshDerived()
+
+                override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+
+                override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+            }
+        nameField.addTextChangedListener(derivedWatcher)
+        groupField.addTextChangedListener(derivedWatcher)
+        portField.addTextChangedListener(derivedWatcher)
+        val copyBtn =
+            android.widget.Button(ctx).apply {
+                text = "📋"
+                setOnClickListener {
+                    val ep = currentResolvedEndpoint()
+                    if (ep != null) {
+                        copyToClipboard("XV mesh group", ep)
+                        meshToast("Copied $ep")
+                    }
+                }
+            }
+        val derivedRow =
+            android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                addView(
+                    derivedView,
+                    android.widget.LinearLayout.LayoutParams(
+                        0,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                        1f,
+                    ),
+                )
+                addView(copyBtn)
+            }
+        refreshDerived()
+
         val container =
             android.widget.LinearLayout(ctx).apply {
                 orientation = android.widget.LinearLayout.VERTICAL
@@ -2575,6 +2775,8 @@ class XvDropDownReceiver(
                 )
                 addView(groupField)
                 addView(portField)
+                addView(caption("Resolved group — share this for interop"))
+                addView(derivedRow)
                 addView(caption("Security Policy"))
                 addView(cryptoSpinner)
             }
