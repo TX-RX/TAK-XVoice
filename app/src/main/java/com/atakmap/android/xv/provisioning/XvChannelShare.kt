@@ -97,10 +97,13 @@ object XvChannelShare {
                 // "Everyone" — ATAK's standard broadcast to server contacts.
                 dispatcher.dispatchToBroadcast(event)
             } else {
-                // Specific contacts — directed send. If the UIDs can't be
-                // resolved to live contacts, broadcast instead; the wire
-                // `targets` attribute keeps the receiver-side filter so
-                // only the addressees act on it.
+                // Specific recipients — directed send ONLY. If the UIDs can't
+                // be resolved to live contacts, FAIL CLOSED: never fall back to
+                // broadcast. A targeted share that broadcasts would disclose the
+                // channel names, sharer identity, and server host to the whole
+                // server audience (the wire `targets` attribute only filters who
+                // ACTS on it, not who receives it). Return false so the caller
+                // can prompt the operator to retry or use the offline/QR path.
                 val contacts =
                     try {
                         Contacts.fromUIDs(targets)?.filterNotNull()
@@ -109,10 +112,10 @@ object XvChannelShare {
                         null
                     }
                 if (contacts.isNullOrEmpty()) {
-                    dispatcher.dispatchToBroadcast(event)
-                } else {
-                    dispatcher.dispatchToContacts(event, contacts)
+                    Log.w(TAG, "send: targeted recipients unresolved — failing closed (no broadcast)")
+                    return false
                 }
+                dispatcher.dispatchToContacts(event, contacts)
             }
             Log.i(
                 TAG,
