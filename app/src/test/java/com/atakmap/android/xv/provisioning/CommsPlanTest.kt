@@ -3,6 +3,8 @@ package com.atakmap.android.xv.provisioning
 import com.atakmap.android.xv.transport.multicast.AeadCodec
 import com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
 import com.atakmap.android.xv.transport.multicast.CryptoPolicy
+import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+import com.atakmap.android.xv.transport.multicast.ServerIdentity
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -46,6 +48,41 @@ class CommsPlanTest {
     @Test
     fun `sample plan is valid`() {
         assertNull(samplePlan().validate())
+    }
+
+    // ---- materializedFor: pin the derived endpoint at import time so an
+    // ---- unpinned channel works offline on a wiped device (see import path).
+
+    @Test
+    fun `materializedFor pins the derived endpoint using the server identity`() {
+        val cfg = ChannelMulticastConfig.defaultFor("ops-1")
+        assertNull(cfg.pinnedGroup)
+        assertNull(cfg.pinnedPort)
+        val pinned = cfg.materializedFor("tak.example.com")
+        val ep = MulticastGroupDerivation.derive(ServerIdentity("tak.example.com"), "ops-1")
+        assertEquals(ep.groupAddress, pinned.pinnedGroup)
+        assertEquals(ep.port, pinned.pinnedPort)
+        assertNull(pinned.validate())
+        // Once pinned it resolves the same endpoint with no server identity —
+        // the whole point: an offline/wiped importer stays usable.
+        assertEquals(ep, pinned.resolveEndpoint(ServerIdentity("some-other-host")))
+    }
+
+    @Test
+    fun `materializedFor leaves the config unpinned when no server identity`() {
+        val cfg = ChannelMulticastConfig.defaultFor("ops-1")
+        assertEquals(cfg, cfg.materializedFor(null))
+        assertEquals(cfg, cfg.materializedFor(""))
+        assertEquals(cfg, cfg.materializedFor("   "))
+    }
+
+    @Test
+    fun `materializedFor leaves an already-pinned config unchanged`() {
+        val pinned =
+            ChannelMulticastConfig
+                .defaultFor("ops-1")
+                .copy(pinnedGroup = "239.1.2.3", pinnedPort = 16801)
+        assertEquals(pinned, pinned.materializedFor("tak.example.com"))
     }
 
     @Test

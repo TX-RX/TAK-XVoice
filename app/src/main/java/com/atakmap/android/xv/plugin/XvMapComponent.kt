@@ -4225,13 +4225,21 @@ class XvMapComponent : AbstractMapComponent() {
         val plan =
             com.atakmap.android.xv.provisioning.CommsPlanCarrier.decode(planText.trim(), passphrase)
         plan.channels.forEach { ch ->
-            settings.persistChannelMulticastConfig(ch.config)
-            ch.preSharedKey?.let { key ->
-                meshVoiceManager?.installPresharedKey(ch.config.channelName, key)
+            // Materialize the derived endpoint at import time: an unpinned
+            // channel derives its group/port from the server identity, but a
+            // wiped/offline importer has none of its own. Pin it now while the
+            // plan still carries a server identity, so the channel resolves an
+            // endpoint offline forever after. Already-pinned channels (every
+            // VX_COMPAT one included) are untouched; a plan with no server
+            // identity leaves the channel unpinned exactly as before.
+            val materialized = ch.copy(config = ch.config.materializedFor(plan.serverIdentity))
+            settings.persistChannelMulticastConfig(materialized.config)
+            materialized.preSharedKey?.let { key ->
+                meshVoiceManager?.installPresharedKey(materialized.config.channelName, key)
             }
-            // A received channel is re-shareable — with its key if it
-            // carried one, else its config alone (cleartext/interop).
-            recordShareableChannel(ch)
+            // A received channel is re-shareable — now carrying the pinned
+            // config so the next offline recipient is covered too.
+            recordShareableChannel(materialized)
         }
         // Same directory merge as acceptSharedChannels: the picker
         // renders the known-channel directory, not the config store, so

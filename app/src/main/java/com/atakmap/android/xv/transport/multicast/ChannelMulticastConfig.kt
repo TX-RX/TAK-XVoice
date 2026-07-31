@@ -131,6 +131,25 @@ data class ChannelMulticastConfig(
         }
 
     /**
+     * Materialize an unpinned (derived) channel into a pinned one using the
+     * given server identity, so it resolves to a fixed multicast endpoint
+     * without ever needing the server identity again — e.g. after a comms-plan
+     * import onto a wiped/offline device that has no server identity of its
+     * own. Returns this config unchanged when it is already pinned (every
+     * VX_COMPAT channel is) or when [serverIdentity] is null/blank (nothing to
+     * derive from — stays unpinned exactly as before). The pinned result is
+     * only returned if it validates, so a future derivation change can never
+     * silently persist a broken override.
+     */
+    fun materializedFor(serverIdentity: String?): ChannelMulticastConfig {
+        if (pinnedGroup != null && pinnedPort != null) return this
+        val host = serverIdentity?.takeIf { it.isNotBlank() } ?: return this
+        val ep = MulticastGroupDerivation.derive(ServerIdentity(host), channelName)
+        val pinned = copy(pinnedGroup = ep.groupAddress, pinnedPort = ep.port)
+        return if (pinned.validate() == null) pinned else this
+    }
+
+    /**
      * Canonical JSON for persistence and for embedding in a comms-plan
      * bundle. Field order is FIXED (schema v1) so the same config
      * always emits byte-identical JSON — comms-plan signatures depend
