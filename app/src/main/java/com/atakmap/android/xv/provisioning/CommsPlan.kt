@@ -54,6 +54,15 @@ data class CommsPlan(
     /** Canonical server identity for derived channels; null for plans of pinned-only channels. */
     val serverIdentity: String? = null,
     val channels: List<Channel>,
+    /**
+     * Wall-clock after which this plan (and any PSK it carries) must be
+     * refused at import (#95: guest/out-of-band secrets expire ≤ 5 days).
+     * Null = no expiry (a plain v1 plan). Its presence promotes the
+     * canonical encoding to schema v2; a v1 plan with no expiry still
+     * emits byte-identical v1 JSON, so existing signatures and older
+     * importers are unaffected.
+     */
+    val notAfterMs: Long? = null,
 ) {
     data class Channel(
         val displayName: String,
@@ -98,14 +107,25 @@ data class CommsPlan(
         return null
     }
 
-    /** Canonical (byte-stable) encoding — see class doc. */
+    /** True once [notAfterMs] has passed. Plans with no expiry never
+     *  expire. Enforced at import (see [fromJson]). */
+    fun isExpired(nowMs: Long): Boolean = notAfterMs != null && nowMs >= notAfterMs
+
+    /** Canonical (byte-stable) encoding — see class doc. A plan with no
+     *  expiry emits schema v1 byte-for-byte as before; an expiry
+     *  promotes it to v2 and adds the `notAfter` field after
+     *  `createdAtMs`. */
     fun toCanonicalJson(): String {
+        val emittedVersion = if (notAfterMs != null) SCHEMA_VERSION_EXPIRING else SCHEMA_VERSION
         val sb = StringBuilder()
         sb.append('{')
-        sb.append("\"v\":").append(SCHEMA_VERSION)
+        sb.append("\"v\":").append(emittedVersion)
         sb.append(",\"planId\":").append(JSONObject.quote(planId))
         sb.append(",\"name\":").append(JSONObject.quote(name))
         sb.append(",\"createdAtMs\":").append(createdAtMs)
+        if (notAfterMs != null) {
+            sb.append(",\"notAfter\":").append(notAfterMs)
+        }
         if (serverIdentity != null) {
             sb.append(",\"serverIdentity\":").append(JSONObject.quote(serverIdentity))
         }
@@ -127,15 +147,29 @@ data class CommsPlan(
     fun toCanonicalBytes(): ByteArray = toCanonicalJson().toByteArray(Charsets.UTF_8)
 
     companion object {
+        /** Baseline (no-expiry) schema. */
         const val SCHEMA_VERSION = 1
+
+        /** Schema carrying a [notAfterMs] expiry (#95). */
+        const val SCHEMA_VERSION_EXPIRING = 2
+
+        private val SUPPORTED_VERSIONS = setOf(SCHEMA_VERSION, SCHEMA_VERSION_EXPIRING)
 
         /**
          * Parse a plan from JSON. Throws [IllegalArgumentException]
          * with an operator-readable message on any problem — imports
          * are explicit UI actions, so unlike per-channel config reads
          * a failure here must be loud, not a silent degrade.
+         *
+         * @param nowMs when non-null, the plan's [notAfterMs] is
+         *   enforced: an expired plan is refused here rather than
+         *   silently importing a stale secret. Left null (the default)
+         *   for pure parse/round-trip callers and tests.
          */
-        fun fromJson(json: String): CommsPlan {
+        fun fromJson(
+            json: String,
+            nowMs: Long? = null,
+        ): CommsPlan {
             val o =
                 try {
                     JSONObject(json)
@@ -143,8 +177,8 @@ data class CommsPlan(
                     throw IllegalArgumentException("not a comms plan: ${e.message}")
                 }
             val v = o.optInt("v", -1)
-            require(v == SCHEMA_VERSION) {
-                "comms plan schema v$v not supported (this build understands v$SCHEMA_VERSION)"
+            require(v in SUPPORTED_VERSIONS) {
+                "comms plan schema v$v not supported (this build understands v$SCHEMA_VERSION and v$SCHEMA_VERSION_EXPIRING)"
             }
             val channelsJson = o.optJSONArray("channels") ?: throw IllegalArgumentException("plan has no channels array")
             val channels =
@@ -174,10 +208,26 @@ data class CommsPlan(
                     createdAtMs = o.optLong("createdAtMs", 0L),
                     serverIdentity = o.optString("serverIdentity").takeIf { it.isNotBlank() },
                     channels = channels,
+                    notAfterMs = if (o.has("notAfter")) o.getLong("notAfter") else null,
                 )
             plan.validate()?.let { throw IllegalArgumentException(it) }
+            if (nowMs != null && plan.isExpired(nowMs)) {
+                throw IllegalArgumentException(
+                    "this comms plan expired ${(nowMs - (plan.notAfterMs ?: nowMs)) / 60_000} min ago and can't be imported",
+                )
+            }
             return plan
         }
+
+        /**
+         * Build the [notAfterMs] for a freshly-issued guest plan: the
+         * requested lifetime, clamped to the 5-day ceiling (#95). Never
+         * lets an operator hand out a secret that outlives the policy.
+         */
+        fun expiryFrom(
+            createdAtMs: Long,
+            requestedTtlMs: Long,
+        ): Long = createdAtMs + com.atakmap.android.xv.transport.multicast.KeyLifecyclePolicy.clampMs(requestedTtlMs)
 
         // java.util.Base64 (API 26+, matches minSdk) rather than
         // android.util.Base64 so the canonical encoding is testable on

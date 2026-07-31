@@ -481,6 +481,23 @@ class XvDropDownReceiver(
 
         fun meshActiveChannelPatchConfig(): Pair<String, String>?
 
+        // ---- key rotation / revocation (#92 / #95) ----
+        // Operator "rotate key now" remediation for a channel: a device
+        // lost, a passphrase overheard → rotate and cert-less guests are
+        // cut off at the next epoch. Returns true if a rotation was
+        // issued (false on a cleartext / unknown / not-yet-keyed channel).
+        fun rotateChannelKeyNow(name: String): Boolean = false
+
+        // Revoke [uids] from a channel and rotate so they lose access.
+        // When [hard], the previous-epoch grace is dropped immediately
+        // (confirmed compromise; brief audio loss beats a live key).
+        // Returns true if a rotation was issued.
+        fun revokeChannelPeers(
+            name: String,
+            uids: Set<String>,
+            hard: Boolean,
+        ): Boolean = false
+
         // ---- H5: permission revocation surface ----
         // User-friendly names of permissions XV needs but doesn't
         // currently have. Empty when everything is granted. Used to
@@ -2081,11 +2098,48 @@ class XvDropDownReceiver(
             confirmForgetAllMeshChannels(v)
         }
 
+        v.findViewById<Button>(R.id.xv_btn_mesh_rotate_key).setOnClickListener {
+            confirmRotateChannelKey(v)
+        }
+
         v.findViewById<Button>(R.id.xv_btn_mesh_wipe).setOnClickListener {
             promptWipeMeshKeys(v)
         }
 
         refreshMeshSection(v)
+    }
+
+    // Operator "rotate key now" (#92 / #95). Single confirm — it is
+    // non-destructive to the honest team (they re-key automatically),
+    // its only effect on them being a momentary handover the grace
+    // window covers. Guests holding only the old key fall off, which is
+    // the point. Rotates the active channel; if none is active there is
+    // nothing to rotate.
+    private fun confirmRotateChannelKey(section: View) {
+        val channel = controller.meshActiveChannelCanonical()
+        if (channel == null) {
+            meshToast("No active mesh channel to rotate.")
+            return
+        }
+        android.app.AlertDialog
+            .Builder(mapView.context)
+            .setTitle("Rotate key for “$channel”?")
+            .setMessage(
+                "Generates a fresh channel key. Everyone still trusted is re-keyed " +
+                    "automatically with no interruption; anyone you shared the old key with " +
+                    "(a QR or passphrase guest) is cut off. Use this after sharing a key in " +
+                    "the field, or if a device or passphrase may be exposed.",
+            ).setPositiveButton("Rotate now") { _, _ ->
+                val issued = controller.rotateChannelKeyNow(channel)
+                meshToast(
+                    if (issued) {
+                        "Rotated key for “$channel”."
+                    } else {
+                        "Couldn't rotate “$channel” (cleartext or not yet keyed)."
+                    },
+                )
+            }.setNegativeButton("Cancel", null)
+            .show()
     }
 
     // Mass-clear confirm. One tap, one dialog — the fast way to empty a

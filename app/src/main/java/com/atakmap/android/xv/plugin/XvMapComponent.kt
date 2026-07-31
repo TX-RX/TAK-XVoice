@@ -3123,6 +3123,14 @@ class XvMapComponent : AbstractMapComponent() {
                 return Pair(config.patchGroup, config.patchPort.toString())
             }
 
+            override fun rotateChannelKeyNow(name: String): Boolean = meshVoiceManager?.rotateChannelKeyNow(name) ?: false
+
+            override fun revokeChannelPeers(
+                name: String,
+                uids: Set<String>,
+                hard: Boolean,
+            ): Boolean = meshVoiceManager?.revokeAndRotate(name, uids, hard) ?: false
+
             override fun forgetMeshChannel(name: String) = forgetMeshChannelInternal(name)
 
             override fun forgetAllMeshChannels() = forgetAllMeshChannelsInternal()

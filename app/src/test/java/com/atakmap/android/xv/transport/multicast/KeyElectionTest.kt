@@ -170,4 +170,46 @@ class KeyElectionTest {
         assertEquals(0, rB.currentEpoch())
         assertEquals(0, rC.currentEpoch())
     }
+
+    // ---- onKeyExpired: age-ceiling rotation (#92 / #95) ----
+
+    @Test
+    fun `expired key on a lone holder rotates (own lowest holder)`() {
+        val (e, r) = freshElection("ANDROID-mmm")
+        r.install(epoch = 3, key = key)
+        val action = e.onKeyExpired()
+        assertTrue(action is KeyElection.Action.RotateKey)
+        assertEquals(4, (action as KeyElection.Action.RotateKey).nextEpoch)
+    }
+
+    @Test
+    fun `expired key, we are lowest-uid holder, we rotate`() {
+        val (e, r) = freshElection("ANDROID-aaa")
+        r.install(epoch = 3, key = key)
+        e.observePeerEpoch("ANDROID-zzz", peerEpoch = 3, hadCurrentKey = true)
+        assertTrue(e.onKeyExpired() is KeyElection.Action.RotateKey)
+    }
+
+    @Test
+    fun `expired key, a lower-uid holder exists, we wait`() {
+        val (e, r) = freshElection("ANDROID-zzz")
+        r.install(epoch = 3, key = key)
+        e.observePeerEpoch("ANDROID-aaa", peerEpoch = 3, hadCurrentKey = true)
+        assertEquals(KeyElection.Action.Idle, e.onKeyExpired())
+    }
+
+    @Test
+    fun `expired check with no key is idle`() {
+        val (e, _) = freshElection("ANDROID-aaa")
+        assertEquals(KeyElection.Action.Idle, e.onKeyExpired())
+    }
+
+    @Test
+    fun `expired key wraps the epoch mod 256`() {
+        val (e, r) = freshElection("ANDROID-aaa")
+        r.install(epoch = 255, key = key)
+        val action = e.onKeyExpired()
+        assertTrue(action is KeyElection.Action.RotateKey)
+        assertEquals(0, (action as KeyElection.Action.RotateKey).nextEpoch)
+    }
 }

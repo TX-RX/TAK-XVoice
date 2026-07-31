@@ -167,4 +167,84 @@ class CommsPlanTest {
                 """{"channel":"ops-1","mode":"FAILOVER","wireFormat":"XV_NATIVE","cryptoPolicy":"PREFERRED"}}]}"""
         assertEquals("ops-1", CommsPlan.fromJson(json).channels[0].displayName)
     }
+
+    // ---- guest-plan expiry / schema v2 (#95) ----
+
+    @Test
+    fun `no expiry still emits schema v1`() {
+        assertTrue(samplePlan().toCanonicalJson().startsWith("""{"v":1,"""))
+    }
+
+    @Test
+    fun `an expiry promotes the encoding to v2 and round-trips`() {
+        val plan = samplePlan().copy(notAfterMs = 1_750_432_000_000L)
+        val json = plan.toCanonicalJson()
+        assertTrue(json.startsWith("""{"v":2,"""))
+        assertTrue(json.contains(""""notAfter":1750432000000"""))
+        assertEquals(plan, CommsPlan.fromJson(json))
+    }
+
+    @Test
+    fun `v2 places notAfter right after createdAtMs - known answer`() {
+        val plan =
+            CommsPlan(
+                planId = "p",
+                name = "n",
+                createdAtMs = 1,
+                serverIdentity = null,
+                channels = listOf(CommsPlan.Channel("Ops 1", ChannelMulticastConfig.defaultFor("ops-1"))),
+                notAfterMs = 999,
+            )
+        assertEquals(
+            """{"v":2,"planId":"p","name":"n","createdAtMs":1,"notAfter":999,"channels":[""" +
+                """{"displayName":"Ops 1","config":""" +
+                """{"channel":"ops-1","mode":"FAILOVER","wireFormat":"XV_NATIVE","cryptoPolicy":"PREFERRED"}}]}""",
+            plan.toCanonicalJson(),
+        )
+    }
+
+    @Test
+    fun `isExpired is false before and true at or after notAfter`() {
+        val plan = samplePlan().copy(notAfterMs = 1_000L)
+        assertTrue(!plan.isExpired(999))
+        assertTrue(plan.isExpired(1_000))
+        assertTrue(plan.isExpired(1_001))
+    }
+
+    @Test
+    fun `a plan with no expiry never expires`() {
+        assertTrue(!samplePlan().isExpired(Long.MAX_VALUE))
+    }
+
+    @Test
+    fun `import enforces expiry when a clock is supplied`() {
+        val plan = samplePlan().copy(notAfterMs = 5_000L)
+        val json = plan.toCanonicalJson()
+        // Before expiry: imports fine.
+        assertNotNull(CommsPlan.fromJson(json, nowMs = 4_000L))
+        // After expiry: refused.
+        assertThrows(IllegalArgumentException::class.java) {
+            CommsPlan.fromJson(json, nowMs = 6_000L)
+        }
+        // No clock: parse-only, expiry not enforced.
+        assertNotNull(CommsPlan.fromJson(json))
+    }
+
+    @Test
+    fun `expiryFrom clamps the ttl to the 5-day ceiling`() {
+        val created = 1_000_000L
+        val fiveDays = com.atakmap.android.xv.transport.multicast.KeyLifecyclePolicy.HARD_CEILING_MS
+        // A one-day ttl is honored.
+        assertEquals(created + fiveDays / 5, CommsPlan.expiryFrom(created, fiveDays / 5))
+        // A 30-day request is clamped to 5 days.
+        assertEquals(created + fiveDays, CommsPlan.expiryFrom(created, 30L * 24 * 60 * 60 * 1000))
+    }
+
+    @Test
+    fun `an unknown schema version is still rejected`() {
+        val json =
+            """{"v":9,"planId":"p","name":"n","createdAtMs":1,"channels":[{"config":""" +
+                """{"channel":"ops-1","mode":"FAILOVER","wireFormat":"XV_NATIVE","cryptoPolicy":"PREFERRED"}}]}"""
+        assertThrows(IllegalArgumentException::class.java) { CommsPlan.fromJson(json) }
+    }
 }

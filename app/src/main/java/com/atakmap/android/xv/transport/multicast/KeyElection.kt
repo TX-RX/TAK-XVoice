@@ -158,6 +158,31 @@ class KeyElection(
     }
 
     /**
+     * The current key has aged past the lifecycle ceiling (#92 / #95:
+     * the 5-day cap) and must be rotated. Same "lowest-uid holder wins"
+     * rule as departure-driven rotation, so exactly one device on the
+     * group rotates and everyone else adopts the fresh epoch through the
+     * normal KEY_REQ path — no coordination round-trip.
+     *
+     * Returns [Action.RotateKey] when WE are the lowest-uid holder of
+     * the current epoch (a lone device is its own lowest holder, so its
+     * key never outlives the cap either), otherwise [Action.Idle]. No
+     * key installed → nothing to rotate.
+     */
+    fun onKeyExpired(): Action {
+        if (!registry.hasKey()) return Action.Idle
+        val holders =
+            peers.values
+                .filter { it.advertisedEpoch == registry.currentEpoch() }
+                .map { it.uid } + listOf(ourUid)
+        return if (holders.min() == ourUid) {
+            Action.RotateKey(nextEpoch = nextEpoch(registry.currentEpoch()))
+        } else {
+            Action.Idle
+        }
+    }
+
+    /**
      * Compute the next epoch byte after [current], wrapping mod 256 (the
      * wire epoch is one byte; see [AeadCodec]).
      */

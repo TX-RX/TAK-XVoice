@@ -32,6 +32,13 @@ class ChannelKeyRegistry(
     private var previousEpoch: Int = NO_EPOCH
     private var previousKey: ByteArray? = null
 
+    // Wall-clock (caller-supplied) install time of the current key, used
+    // for the 5-day key-lifecycle ceiling (#92 / #95). UNTRACKED_INSTALL
+    // means the caller installed without a timestamp — treated as "age
+    // unknown", which never counts as expired so a legacy/test install
+    // can't trigger a surprise rotation.
+    private var currentInstalledAtMs: Long = UNTRACKED_INSTALL
+
     /**
      * Install a fresh key + epoch. The prior current is rolled to the
      * previous slot (keeping in-flight frames decryptable for the grace
@@ -40,12 +47,17 @@ class ChannelKeyRegistry(
      * monotonicity beyond rejecting an exact resubmission of the
      * already-current epoch (returns false in that case).
      *
+     * @param installedAtMs caller's wall-clock at install, fed into the
+     *   key-age ceiling ([isCurrentKeyExpired]). Defaults to
+     *   [UNTRACKED_INSTALL] so callers that don't care about lifecycle
+     *   (tests, bootstrap paths) keep the old 2-arg call.
      * @return true if the key was installed; false if [epoch] equals
      *   the existing current epoch (caller already has it).
      */
     fun install(
         epoch: Int,
         key: ByteArray,
+        installedAtMs: Long = UNTRACKED_INSTALL,
     ): Boolean {
         require(epoch in 0..255) { "epoch must be 0..255, got $epoch" }
         require(key.size == AeadCodec.KEY_BYTES) {
@@ -56,7 +68,48 @@ class ChannelKeyRegistry(
         previousKey = currentKey
         currentEpoch = epoch
         currentKey = key
+        currentInstalledAtMs = installedAtMs
         return true
+    }
+
+    /** Wall-clock this channel's current key was installed, or
+     *  [UNTRACKED_INSTALL] when it was installed without a timestamp. */
+    fun currentKeyInstalledAtMs(): Long = currentInstalledAtMs
+
+    /**
+     * True when the current key is older than [maxAgeMs]. The basis for
+     * the 5-day secret-lifetime ceiling: at expiry the mesh manager
+     * force-rotates so no channel key outlives the policy window.
+     *
+     * Returns false when there is no key, when the install was
+     * [UNTRACKED_INSTALL] (age unknown — never force a rotation off a
+     * value we don't have), or when a clock jump made the install look
+     * like the future (defensive: a backward wall-clock step must not
+     * instantly expire a live key).
+     */
+    fun isCurrentKeyExpired(
+        nowMs: Long,
+        maxAgeMs: Long,
+    ): Boolean {
+        if (currentKey == null) return false
+        if (currentInstalledAtMs == UNTRACKED_INSTALL) return false
+        val ageMs = nowMs - currentInstalledAtMs
+        if (ageMs < 0) return false
+        return ageMs >= maxAgeMs
+    }
+
+    /**
+     * Drop the previous-epoch grace slot immediately. Normal rotation
+     * keeps the old key decryptable for a grace window so nobody clips
+     * mid-burst; a *hard* revoke (confirmed compromise) cannot afford
+     * that — a device holding the burned key must stop being able to
+     * decrypt the instant we rotate. Brief audio loss for a lagging
+     * peer beats a live compromised key. No-op when there is no
+     * previous slot.
+     */
+    fun dropPrevious() {
+        previousEpoch = NO_EPOCH
+        previousKey = null
     }
 
     /** True iff at least one key has been installed. */
@@ -141,5 +194,8 @@ class ChannelKeyRegistry(
 
     companion object {
         const val NO_EPOCH: Int = -1
+
+        /** Sentinel install time meaning "age not tracked for this key". */
+        const val UNTRACKED_INSTALL: Long = Long.MIN_VALUE
     }
 }

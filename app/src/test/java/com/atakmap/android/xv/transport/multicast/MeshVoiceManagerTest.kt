@@ -1077,4 +1077,138 @@ class MeshVoiceManagerTest {
             .getInstance("SHA-256")
             .digest(bytes)
             .joinToString("") { "%02x".format(it) }
+
+    // ---- key lifecycle: 5-day ceiling + manual rotate/revoke (#92 / #95) ----
+
+    private val fiveDaysMs = KeyLifecyclePolicy.HARD_CEILING_MS
+
+    /** Join the primary channel and bootstrap a channel key (we are the
+     *  lowest-uid generator by default). */
+    private fun Harness.bootstrapKey() {
+        joinAndTick()
+        repeat(MeshVoiceManager.KEY_BOOTSTRAP_WAIT_TICKS + 1) {
+            now += 1_000
+            manager.tick()
+        }
+    }
+
+    private fun Harness.establishPeerCert(
+        uid: String,
+        certDer: ByteArray,
+    ) {
+        peerUids += uid
+        certFps[uid] = sha256HexOf(certDer)
+        manager.onControl("ops-1", ControlPacket.Message.CertReply(certDer), sourceHost = "198.51.100.20")
+    }
+
+    @Test
+    fun `key auto-rotates once it ages past the 5-day ceiling`() {
+        val h = Harness()
+        h.bootstrapKey()
+        val before = h.manager.currentKeyFor("Ops-1")
+        assertNotNull(before)
+        // Jump past the ceiling with the TX path idle: a tick force-rotates.
+        h.now += fiveDaysMs + 1
+        h.manager.tick()
+        val after = h.manager.currentKeyFor("Ops-1")
+        assertNotNull(after)
+        assertFalse("an expired key must be replaced", before!!.contentEquals(after!!))
+    }
+
+    @Test
+    fun `key does not rotate before the ceiling`() {
+        val h = Harness()
+        h.bootstrapKey()
+        val before = h.manager.currentKeyFor("Ops-1")
+        h.now += fiveDaysMs - 60_000 // just under 5 days
+        h.manager.tick()
+        assertTrue(before!!.contentEquals(h.manager.currentKeyFor("Ops-1")!!))
+    }
+
+    @Test
+    fun `an expired key waits for a TX-idle gap before rotating`() {
+        val h = Harness()
+        h.bootstrapKey()
+        val before = h.manager.currentKeyFor("Ops-1")
+        h.now += fiveDaysMs + 1
+        // We just keyed the mic — a rotation right now would clip the burst.
+        h.manager.beginTxBurst()
+        h.manager.tick()
+        assertTrue(
+            "must not rotate mid-burst",
+            before!!.contentEquals(h.manager.currentKeyFor("Ops-1")!!),
+        )
+        // Once the idle gap clears, it rotates.
+        h.now += MeshVoiceManager.KEY_ROTATE_IDLE_GAP_MS
+        h.manager.tick()
+        assertFalse(before.contentEquals(h.manager.currentKeyFor("Ops-1")!!))
+    }
+
+    @Test
+    fun `auto-rotation refreshes the clock so it does not immediately re-rotate`() {
+        val h = Harness()
+        h.bootstrapKey()
+        h.now += fiveDaysMs + 1
+        h.manager.tick() // rotates
+        val rotated = h.manager.currentKeyFor("Ops-1")
+        h.now += 1_000
+        h.manager.tick() // must NOT rotate again — the fresh key restarted the clock
+        assertTrue(rotated!!.contentEquals(h.manager.currentKeyFor("Ops-1")!!))
+    }
+
+    @Test
+    fun `rotateChannelKeyNow rotates the live key and reports success`() {
+        val h = Harness()
+        h.bootstrapKey()
+        val before = h.manager.currentKeyFor("Ops-1")
+        assertTrue(h.manager.rotateChannelKeyNow("Ops-1"))
+        assertFalse(before!!.contentEquals(h.manager.currentKeyFor("Ops-1")!!))
+    }
+
+    @Test
+    fun `rotateChannelKeyNow is a no-op on a cleartext channel`() {
+        val h =
+            Harness(
+                configOverride = {
+                    ChannelMulticastConfig.defaultFor(it).copy(cryptoPolicy = CryptoPolicy.CLEARTEXT)
+                },
+            )
+        h.joinAndTick()
+        assertFalse(h.manager.rotateChannelKeyNow("Ops-1"))
+    }
+
+    @Test
+    fun `rotateChannelKeyNow returns false for an unknown channel`() {
+        val h = Harness()
+        h.joinAndTick()
+        assertFalse(h.manager.rotateChannelKeyNow("Nonexistent"))
+    }
+
+    @Test
+    fun `revokeAndRotate rotates and drops the revoked peer from key offers`() {
+        val h = Harness(ourUid = "uid-aaa") // lowest uid → we hold + rotate
+        h.bootstrapKey()
+        h.establishPeerCert("uid-keep", byteArrayOf(1, 1, 1))
+        h.establishPeerCert("uid-revoke", byteArrayOf(2, 2, 2))
+        val leg = h.channelLeg()
+        leg.sentControl.clear()
+
+        assertTrue(h.manager.revokeAndRotate("Ops-1", setOf("uid-revoke"), hard = false))
+
+        val offers = leg.sentControl.filterIsInstance<ControlPacket.Message.KeyOffer>()
+        assertTrue("kept peer must be re-keyed", offers.any { it.recipientUid == "uid-keep" })
+        assertFalse("revoked peer must not be re-keyed", offers.any { it.recipientUid == "uid-revoke" })
+    }
+
+    @Test
+    fun `hard revoke still rotates and reports success`() {
+        // The registry-level previous-epoch drop is covered in
+        // ChannelKeyRegistryTest; here we assert revokeAndRotate wires
+        // the hard path through to an actual rotation.
+        val h = Harness(ourUid = "uid-aaa")
+        h.bootstrapKey()
+        val before = h.manager.currentKeyFor("Ops-1")
+        assertTrue(h.manager.revokeAndRotate("Ops-1", setOf("uid-x"), hard = true))
+        assertFalse(before!!.contentEquals(h.manager.currentKeyFor("Ops-1")!!))
+    }
 }

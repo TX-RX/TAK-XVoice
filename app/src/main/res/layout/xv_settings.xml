@@ -1110,6 +1110,29 @@
                     android:textAllCaps="false"
                     android:background="@drawable/xv_button_bg"/>
 
+                <!-- Rotate key. Regenerates the active channel's key and
+                     re-keys every still-trusted (cert-holding) peer
+                     automatically; guests holding only the old key fall
+                     off at the next epoch (#92 / #95). Non-destructive to
+                     the honest team, so it is not styled as an error. -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Rotate the active channel's key now. Everyone still trusted is re-keyed automatically; guests you shared the old key with are cut off. Use after sharing a key in the field, or if a device or passphrase may be exposed."
+                    android:textColor="@color/xv_text_dim"
+                    android:textSize="11sp"
+                    android:layout_marginTop="12dp"/>
+
+                <Button
+                    android:id="@+id/xv_btn_mesh_rotate_key"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:text="Rotate key now…"
+                    android:textColor="@color/xv_text"
+                    android:textAllCaps="false"
+                    android:background="@drawable/xv_button_bg"/>
+
                 <!-- Panic wipe. Destructive + local-only: shreds every
                      stored channel key + config and the Keystore key that
                      seals them, without a full ATAK data clear. Gated in
