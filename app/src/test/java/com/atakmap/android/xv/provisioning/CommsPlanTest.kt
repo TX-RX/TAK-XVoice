@@ -124,8 +124,10 @@ class CommsPlanTest {
 
     @Test
     fun `unknown schema versions are rejected at import`() {
-        val v2 = samplePlan().toCanonicalJson().replaceFirst("\"v\":1", "\"v\":2")
-        assertThrows(IllegalArgumentException::class.java) { CommsPlan.fromJson(v2) }
+        // v1 and v2 are both understood now (v2 = expiring schema), so an
+        // unknown version must be one the build has never seen.
+        val unknownVersion = samplePlan().toCanonicalJson().replaceFirst("\"v\":1", "\"v\":3")
+        assertThrows(IllegalArgumentException::class.java) { CommsPlan.fromJson(unknownVersion) }
         assertThrows(IllegalArgumentException::class.java) { CommsPlan.fromJson("""{"planId":"x"}""") }
     }
 
