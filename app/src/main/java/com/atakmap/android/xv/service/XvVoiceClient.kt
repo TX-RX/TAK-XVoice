@@ -394,14 +394,7 @@ class XvVoiceClient(
         // operator has a stale APK installed; we'd rather log loudly
         // and try to limp along than refuse to bind. The version probe
         // also serves as a heartbeat that the binder is responsive.
-        //
-        // Keep this in lockstep with
-        // [XvVoiceService.Companion.AIDL_API_VERSION]. It had drifted:
-        // this side stayed at 1 while the service advanced to 4, so
-        // every bind logged a mismatch warning that meant nothing and
-        // trained the reader to ignore the one signal that would have
-        // flagged a genuinely stale plugin. Realigned at the v5 bump.
-        private const val EXPECTED_API_VERSION = 5
+        private const val EXPECTED_API_VERSION = 1
 
         // Must match the intent-filter action declared on the service
         // in AndroidManifest.xml.
