@@ -47,6 +47,7 @@ class MulticastTransport(
     @Volatile
     private var multicastLock: WifiManager.MulticastLock? = null
 
+    @Volatile
     private var listener: TransportListener? = null
 
     // One decoder per peer (identified by source address). Multicast
@@ -58,6 +59,13 @@ class MulticastTransport(
 
     override fun connect(listener: TransportListener) {
         this.listener = listener
+        // Pre-warm the AudioTrack before the receive thread starts so the
+        // first decoded PCM frame skips AudioPlayback.beginPlayback() and
+        // its 100ms silence preroll entirely. Without this, the first peer
+        // voice frame lands while the AudioTrack is still cold and is
+        // consumed by the hardware startup window — the operator hears
+        // silence for the first ~100ms of every new speaker's transmission.
+        playback.warmupForMulticast()
         receiveThread =
             thread(start = true, name = "XvMulticast-${config.port}") {
                 runReceiveLoop()
@@ -97,8 +105,35 @@ class MulticastTransport(
                     break
                 }
                 val peerId = packet.address?.hostAddress ?: "unknown"
-                val opusPayload = packet.data.copyOfRange(0, packet.length)
-                if (opusPayload.isEmpty()) continue
+                val raw = packet.data.copyOfRange(0, packet.length)
+                if (raw.isEmpty()) continue
+
+                // Q1: RTP discriminator. If the first byte has V=2 (top two
+                // bits = 0b10 = 0x80), the datagram is an RTP packet — strip
+                // the 12-byte fixed header before handing the payload to the
+                // Opus decoder. This makes the receive path forward-compatible
+                // with RTP-framed senders (OpenMANET nodes, XV bridge nodes,
+                // or any RFC-3550-compliant voice source on the same group)
+                // without breaking raw-Opus senders: a valid Opus TOC byte
+                // never has the top two bits set to 0b10, so the test is
+                // unambiguous. See RtpFraming for the full header layout.
+                val opusPayload =
+                    if (raw.size > com.atakmap.android.xv.transport.multicast.RtpFraming.HEADER_BYTES &&
+                        (raw[0].toInt() and 0xC0) == 0x80
+                    ) {
+                        // RTP packet — decode and validate, then extract payload.
+                        val parsed = com.atakmap.android.xv.transport.multicast.RtpFraming.decode(raw)
+                        if (parsed == null) {
+                            Log.w(TAG, "Dropping malformed RTP datagram from $peerId (${raw.size} bytes)")
+                            continue
+                        }
+                        val (_, payload) = parsed
+                        if (payload.isEmpty()) continue
+                        payload
+                    } else {
+                        // Raw Opus datagram (no RTP header).
+                        raw
+                    }
 
                 val decoder = decoders.getOrPut(peerId) { opusDecoderFactory() }
                 val pcm =

@@ -293,6 +293,35 @@ class AudioPlayback(
         }
     }
 
+    /**
+     * Pre-warms the AudioTrack for multicast receive. Must be called on
+     * the caller thread before the receive thread starts so that the
+     * first decoded PCM frame hits an already-ACTIVE track and skips
+     * [beginPlayback]'s 100ms silence preroll entirely.
+     *
+     * Unlike [warmupForCall], this is not gated by a Telecom call
+     * context — multicast voice is always delivered over the media
+     * stream, never via SCO/HFP. The track is left ACTIVE so the idle
+     * reset timer arms normally on the first [playPcm] call.
+     *
+     * Idempotent: a second call while already ACTIVE is a no-op.
+     */
+    fun warmupForMulticast() {
+        synchronized(lock) {
+            if (state != State.IDLE) {
+                Log.d(TAG, "warmupForMulticast: state=$state — skipping")
+                return
+            }
+            startTrack(useSco = false)
+            if (track == null) {
+                Log.w(TAG, "warmupForMulticast: AudioTrack build failed")
+                return
+            }
+            state = State.ACTIVE
+            Log.i(TAG, "warmupForMulticast: AudioTrack pre-allocated for multicast receive")
+        }
+    }
+
     fun shutdown() {
         idleResetJob?.cancel()
         idleResetJob = null

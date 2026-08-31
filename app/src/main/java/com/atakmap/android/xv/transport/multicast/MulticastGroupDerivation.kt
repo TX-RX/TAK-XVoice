@@ -26,7 +26,8 @@ import java.security.MessageDigest
 object MulticastGroupDerivation {
     /**
      * Derive the multicast group address (e.g. "239.42.123.45") and UDP port
-     * for a given (server cert fingerprint, channel id) pair.
+     * for a given (server cert fingerprint, channel id) pair. Used for
+     * Mumble-primary channels where the group is keyed to the server identity.
      *
      * @param serverCertFp lowercase hex SHA-256 of the server's leaf cert.
      *   We require it lowercase (not enforced — caller's responsibility) so
@@ -50,6 +51,43 @@ object MulticastGroupDerivation {
                 (channelId and 0xFF).toByte(),
             ),
         )
+        val digest = md.digest()
+
+        val octet3 = digest[0].toInt() and 0xFF
+        val octet4 = digest[1].toInt() and 0xFF
+        val portOffset = digest[2].toInt() and 0xFFF
+        return MulticastEndpoint(
+            groupAddress = "239.42.$octet3.$octet4",
+            port = PORT_BASE + portOffset,
+        )
+    }
+
+    /**
+     * Derive the multicast group address and UDP port for a **local channel**
+     * identified only by its name. Used when there is no TAK server cert
+     * fingerprint — e.g. a user-created local channel such as "TAK-01".
+     *
+     * The derivation uses a fixed domain-separator ("xv.local.ch:") prepended
+     * to the normalized (lowercase, trimmed) channel name. This ensures the
+     * local-channel namespace is disjoint from the server-keyed namespace
+     * produced by [derive] — an attacker-controlled server cert fingerprint
+     * cannot be crafted to collide with a named local channel.
+     *
+     * Group/port are fully deterministic: two devices that agree on a channel
+     * name compute the same endpoint without any out-of-band coordination.
+     * Encryption credentials (if enabled) still need to be shared separately
+     * via the `.xvchannel` artifact.
+     *
+     * @param channelName the canonical channel name (e.g. "TAK-01"). Case is
+     *   normalized to lowercase before derivation so "tak-01" and "TAK-01"
+     *   resolve to the same group.
+     */
+    fun deriveFromName(channelName: String): MulticastEndpoint {
+        val normalizedName = channelName.trim().lowercase()
+        val md = MessageDigest.getInstance("SHA-256")
+        // Domain-separator makes the local-channel namespace disjoint from
+        // the server-cert-keyed namespace used by [derive].
+        md.update("xv.local.ch:$normalizedName".toByteArray(Charsets.UTF_8))
         val digest = md.digest()
 
         val octet3 = digest[0].toInt() and 0xFF

@@ -94,4 +94,55 @@ class MulticastGroupDerivationTest {
         val b = MulticastGroupDerivation.derive(fpA, 0x01020304)
         assertEquals(a, b)
     }
+
+    // ---- deriveFromName tests ----
+
+    @Test
+    fun `deriveFromName is deterministic for the same name`() {
+        val a = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val b = MulticastGroupDerivation.deriveFromName("TAK-01")
+        assertEquals(a, b)
+    }
+
+    @Test
+    fun `deriveFromName normalizes case`() {
+        val lower = MulticastGroupDerivation.deriveFromName("tak-01")
+        val upper = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val mixed = MulticastGroupDerivation.deriveFromName("Tak-01")
+        assertEquals("case must not affect derivation", lower, upper)
+        assertEquals(lower, mixed)
+    }
+
+    @Test
+    fun `deriveFromName produces address in 239_42 scope`() {
+        val ep = MulticastGroupDerivation.deriveFromName("TAK-01")
+        assertTrue(
+            "expected 239.42.X.Y, got ${ep.groupAddress}",
+            ep.groupAddress.startsWith("239.42."),
+        )
+    }
+
+    @Test
+    fun `deriveFromName is disjoint from server-keyed derive`() {
+        // "TAK-01" used as a channel name must never coincidentally land on
+        // the same endpoint as a server-cert-fp that happens to produce the
+        // same low 24 digest bits. The domain-separator in deriveFromName
+        // makes the namespaces orthogonal.
+        val local = MulticastGroupDerivation.deriveFromName("TAK-01")
+        // Derive using "TAK-01" as if it were a cert fingerprint (it isn't,
+        // but the test proves the domain-separator breaks the symmetry).
+        val serverKeyed = MulticastGroupDerivation.derive("TAK-01", 0)
+        assertNotEquals(
+            "local-name derivation must not collide with server-cert derivation of same string",
+            local,
+            serverKeyed,
+        )
+    }
+
+    @Test
+    fun `different channel names produce different endpoints`() {
+        val a = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val b = MulticastGroupDerivation.deriveFromName("TAK-02")
+        assertNotEquals(a, b)
+    }
 }

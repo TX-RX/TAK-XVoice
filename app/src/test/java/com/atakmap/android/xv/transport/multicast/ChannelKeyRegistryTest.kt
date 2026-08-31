@@ -130,6 +130,39 @@ class ChannelKeyRegistryTest {
     }
 
     @Test
+    fun `backward epoch is rejected by the forward-only guard`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 10, key = keyA)
+        // Epoch 9 is behind 10 — must be rejected.
+        assertFalse(
+            "epoch behind current must be rejected",
+            r.install(epoch = 9, key = keyB),
+        )
+        // Epoch 10 still current.
+        assertEquals(10, r.currentEpoch())
+    }
+
+    @Test
+    fun `epoch 128 steps ahead is treated as backward (replay guard)`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 0, key = keyA)
+        // Delta = 128 — ambiguous; the guard rejects as a replay.
+        assertFalse(
+            "epoch 128 steps ahead must be rejected as possible replay",
+            r.install(epoch = 128, key = keyB),
+        )
+        assertEquals(0, r.currentEpoch())
+    }
+
+    @Test
+    fun `first install always accepted regardless of epoch value`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        // No currentEpoch yet — any epoch must be accepted.
+        assertTrue(r.install(epoch = 200, key = keyA))
+        assertEquals(200, r.currentEpoch())
+    }
+
+    @Test
     fun `epoch byte wrap is supported (255 then 0)`() {
         val r = ChannelKeyRegistry(channelId = 6)
         r.install(epoch = 255, key = keyA)
