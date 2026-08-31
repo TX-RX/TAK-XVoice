@@ -5,6 +5,9 @@ All notable user-visible and operationally significant changes to TAK-XVoice are
 ## [Unreleased]
 
 ### Removed
+- Version bumped to 0.3.0 (`versionCode` 21). Minor rather than patch:
+  this drops a previously-supported device and makes a breaking AIDL
+  schema change, both of which are user-visible.
 - Dropped Sonim XP10 (XP9900) support entirely: the four device-specific
   button readers (PTT and Emergency, in both the service-process
   broadcast and ATAK-process foreground-KeyEvent forms), the
