@@ -4,6 +4,37 @@ All notable user-visible and operationally significant changes to TAK-XVoice are
 
 ## [Unreleased]
 
+### Removed
+- Dropped Sonim XP10 (XP9900) support entirely: the four device-specific
+  button readers (PTT and Emergency, in both the service-process
+  broadcast and ATAK-process foreground-KeyEvent forms), the
+  assigned-app receiver, the `Build.BRAND` / `Build.MODEL` device gate,
+  the settings row, and the six Sonim methods on `IXvVoice.aidl`.
+- `AIDL_API_VERSION` 4 → 5. This is a **breaking** schema change, not an
+  additive one — the removed methods sat mid-interface, so every method
+  after them shifts Binder transaction ID. `XvVoiceClient`'s
+  `EXPECTED_API_VERSION` was realigned to match; it had drifted to 1
+  while the service was at 4, so the mismatch warning had been firing on
+  every bind and meant nothing.
+
+### Why the Sonim XP10 was retired
+- **It did not meet the project's stability bar.** The handset showed
+  persistent instability across testing on a clean OS install, not
+  traceable to XV's own state machines.
+- **It was problematic under performance and endurance testing.**
+  Run-to-run behavior was inconsistent enough that the device was
+  useless as a reference target — a failure could not be trusted to
+  indicate an XV regression, nor a pass to indicate a fix.
+- **Bluetooth was the disqualifying problem.** Serious, reproducible
+  Bluetooth issues. XV's speakermic and BLE-button integration depends
+  on dependable SCO setup/teardown, bonded-device reconnect, and HID/SPP
+  event delivery, so a handset with an unreliable Bluetooth stack is a
+  poor candidate for custom button integration.
+- **End-of-life with no security update path**, which is inconsistent
+  with the project's security posture.
+- Full rationale and operator-facing impact:
+  [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
+
 ### Changed
 - Hardened TX startup/restart behavior in the audio pipeline:
   - Suppressed false-positive capture restart on initial route-settle (`routedDevice` unresolved to first stable device id).

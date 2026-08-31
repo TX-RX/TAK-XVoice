@@ -216,7 +216,18 @@ Curated / validated ruggedized handsets (on-device hardware keys):
   [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
 
 This list only includes devices that have been integrated end-to-end
-and validated against event traffic.
+and validated against event traffic. Additional hardware is added the
+same way — one device at a time, once it's been tested. Other chassis
+that share these keys (other XCover / Tab Active models) are gated on
+by model prefix but are not yet validated.
+
+Retired hardware — the Sonim XP10 (XP9900) was carried as a supported
+device and has since been dropped. It did not meet the stability bar
+this list implies, and its Bluetooth problems made it a poor target for
+custom button integration. See
+[docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md) for the full
+rationale. Retiring a device is part of the same curated policy as
+adding one: the list is only worth reading if entries can leave it.
 
 ## License
 
