@@ -32,8 +32,6 @@ import com.atakmap.android.xv.audio.TptTone
 import com.atakmap.android.xv.audio.TxController
 import com.atakmap.android.xv.audio.logPrefixForPttSource
 import com.atakmap.android.xv.ptt.SamsungActiveKeyReader
-import com.atakmap.android.xv.ptt.SonimEmergencyButtonReader
-import com.atakmap.android.xv.ptt.SonimPttButtonReader
 
 // All of XV's audio + AINA + PTT-state subsystem, instantiated in our
 // APK's UID where FOREGROUND_SERVICE_TYPE_MICROPHONE actually grants
@@ -180,18 +178,7 @@ class VoicePlant(
             cellularCallStateFromAudioMode(
                 audioMode = am?.mode ?: AudioManager.MODE_NORMAL,
                 xvHasActiveTelecomCall = xvOwnCallOrGrace,
-                // Sonim XP10 carrier variants (AT&T XP9900 in
-                // particular) hold MODE_IN_COMMUNICATION as a
-                // steady-state artefact of the resident MCPTT stack
-                // (AT&T EPTT / Dispatch Hub always running).
-                // Field-observed 2026-07-14: the mode stays IN_COMMUNICATION
-                // for minutes at a time with no actual call in
-                // progress, producing an unbroken stream of false-positive
-                // "Cellular call active — hang up before XV PTT"
-                // blocks. Suppress the MODE_IN_COMMUNICATION defensive
-                // block on Sonim hardware; real MODE_IN_CALL and
-                // MODE_RINGTONE still block unconditionally.
-                suppressInCommunicationDefensiveBlock = com.atakmap.android.xv.util.SonimHardwareButtons.isSupported(context),
+                suppressInCommunicationDefensiveBlock = false,
             )
         } catch (t: Throwable) {
             android.util.Log.w(
@@ -558,18 +545,6 @@ class VoicePlant(
     // stays null because [XvVoiceService] never calls
     // [startSamsungActiveKey]. See [com.atakmap.android.xv.util.SamsungActiveKey].
     @Volatile private var samsungActiveKey: SamsungActiveKeyReader? = null
-
-    // Sonim ruggedized-device dedicated PTT + Emergency broadcast
-    // readers (XP10 / XP9900 and XP-family peers). Independent of AINA
-    // / Secondary — run in parallel and key slot 0 via
-    // PttSource.SONIM_PTT / SONIM_EMERGENCY. Present only on Sonim
-    // hardware that emits the corresponding broadcasts; on any other
-    // device these stay null because [XvVoiceService] never calls
-    // [startSonimPttButton] / [startSonimEmergencyButton]. See
-    // [com.atakmap.android.xv.util.SonimHardwareButtons].
-    @Volatile private var sonimPtt: SonimPttButtonReader? = null
-
-    @Volatile private var sonimEmergency: SonimEmergencyButtonReader? = null
 
     // MAC of the currently-connected AINA (or null when none). Used by
     // the BOND_STATE_CHANGED receiver to detect "the operator just
@@ -1747,129 +1722,6 @@ class VoicePlant(
     /** True while the Samsung Active Key reader is registered. */
     fun isSamsungActiveKeyRunning(): Boolean = samsungActiveKey?.isRunning() == true
 
-    // ============================================================
-    // Sonim ruggedized-device dedicated hardware buttons
-    // ============================================================
-
-    /**
-     * Start the Sonim dedicated PTT side button reader. Registers a
-     * broadcast receiver for `com.sonim.intent.action.PTT_KEY_DOWN/_UP`
-     * and routes press / release edges through [pttDown] / [pttUp]
-     * with [PttSource.SONIM_PTT]. Idempotent — repeated calls are
-     * no-ops if the reader is already running.
-     *
-     * The plugin gates the call on
-     * [com.atakmap.android.xv.util.SonimHardwareButtons.isSupported] +
-     * the operator's persisted toggle, so this method itself does not
-     * re-verify hardware capability — starting on a non-Sonim device
-     * is harmless (the broadcast just never fires).
-     */
-    fun startSonimPttButton() {
-        if (sonimPtt != null) {
-            Log.i(TAG, "startSonimPttButton: already running — ignoring")
-            return
-        }
-        val reader =
-            SonimPttButtonReader(context) { isDown, source ->
-                if (isDown) {
-                    pttDown(slot = 0, source = source)
-                } else {
-                    pttUp(slot = 0, source = source)
-                }
-            }
-        if (reader.start()) {
-            sonimPtt = reader
-        } else {
-            Log.w(TAG, "startSonimPttButton: reader.start() failed — leaving disabled")
-        }
-    }
-
-    /**
-     * Stop the Sonim PTT reader (if running) and drop any pending
-     * held-source bookkeeping from the dispatcher so a mid-press
-     * "toggle-off" doesn't leave the OR-gate thinking the button is
-     * still down. Idempotent.
-     */
-    fun stopSonimPttButton() {
-        val reader = sonimPtt ?: return
-        try {
-            reader.stop()
-        } catch (t: Throwable) {
-            Log.w(TAG, "stopSonimPttButton: reader.stop() threw", t)
-        }
-        sonimPtt = null
-        try {
-            pttDispatcher.forgetSource(PttSource.SONIM_PTT)
-        } catch (t: Throwable) {
-            Log.w(TAG, "forgetSource(SONIM_PTT) threw", t)
-        }
-    }
-
-    /** True while the Sonim PTT broadcast receiver is registered. */
-    fun isSonimPttButtonRunning(): Boolean = sonimPtt?.isRunning() == true
-
-    /**
-     * Start the Sonim dedicated Emergency / SOS button reader.
-     * Registers a broadcast receiver for `android.intent.action.SOS.down`
-     * / `_up` and routes press / release edges into
-     * [PlantCallbacks.onEmergencyButton] — the same emergency-dispatch
-     * path the AINA PTTE key uses (see [primaryAinaEvent]). Idempotent.
-     *
-     * The Sonim SOS key is a distinct red hardware button intended to
-     * declare emergency, NOT to key voice. Field policy 2026-07-14:
-     * the button is partially hidden and recessed on the XP9900 chassis
-     * so accidental presses are unlikely, and its purpose parallels
-     * the AINA PTTE. Routing it through [EmergencyController] therefore
-     * fires ATAK's Alert Tool via [AtakEmergencyDispatcher] (short-press
-     * = fire panic; long-hold = cancel), matching AINA behavior. It
-     * does NOT open a Telecom call or transmit audio.
-     */
-    fun startSonimEmergencyButton() {
-        if (sonimEmergency != null) {
-            Log.i(TAG, "startSonimEmergencyButton: already running — ignoring")
-            return
-        }
-        val reader =
-            SonimEmergencyButtonReader(context) { isDown, _ ->
-                onSonimEmergencyEdge(isDown)
-            }
-        if (reader.start()) {
-            sonimEmergency = reader
-        } else {
-            Log.w(TAG, "startSonimEmergencyButton: reader.start() failed — leaving disabled")
-        }
-    }
-
-    /**
-     * Deliver a Sonim SOS-button edge from either the broadcast path
-     * ([SonimEmergencyButtonReader]) or the foreground KeyEvent path
-     * (via [XvVoiceService]'s `notifySonimEmergencyEdge` binder shim)
-     * into the plugin-side emergency subsystem. Public so
-     * [XvVoiceService] can forward foreground edges through the same
-     * shim, keeping the AINA-PTTE-parity contract single-sited.
-     */
-    fun onSonimEmergencyEdge(down: Boolean) {
-        Log.i(TAG, "sonim SOS down=$down — routing to onEmergencyButton (AINA-PTTE parity)")
-        callbacks.onEmergencyButton(down)
-    }
-
-    /** Stop the Sonim Emergency reader (if running). Idempotent. */
-    fun stopSonimEmergencyButton() {
-        val reader = sonimEmergency ?: return
-        try {
-            reader.stop()
-        } catch (t: Throwable) {
-            Log.w(TAG, "stopSonimEmergencyButton: reader.stop() threw", t)
-        }
-        sonimEmergency = null
-        // No pttDispatcher.forgetSource needed — SOS edges no longer
-        // register as a PTT source; they route to the emergency
-        // subsystem via callbacks.onEmergencyButton().
-    }
-
-    /** True while the Sonim Emergency broadcast receiver is registered. */
-    fun isSonimEmergencyButtonRunning(): Boolean = sonimEmergency?.isRunning() == true
-
     fun disconnectAina() {
         disconnectAinaReaderOnly()
         // Drop the BT routing hint — no AINA selected means no implicit
@@ -2111,14 +1963,6 @@ class VoicePlant(
         }
         try {
             stopSamsungActiveKey()
-        } catch (_: Throwable) {
-        }
-        try {
-            stopSonimPttButton()
-        } catch (_: Throwable) {
-        }
-        try {
-            stopSonimEmergencyButton()
         } catch (_: Throwable) {
         }
         try {
