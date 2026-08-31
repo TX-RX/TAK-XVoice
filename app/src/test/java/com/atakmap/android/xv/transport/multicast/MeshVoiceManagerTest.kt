@@ -77,6 +77,7 @@ class MeshVoiceManagerTest {
         val callsigns = mutableMapOf<String, String>() // uid → presence callsign
         val mumbleNames = mutableMapOf<Int, String>() // session → roster username
         val warnings = mutableListOf<String>()
+        val diagnostics = mutableListOf<String>() // burst-boundary + state-transition trace
 
         val manager =
             MeshVoiceManager(
@@ -102,6 +103,7 @@ class MeshVoiceManagerTest {
                 unwrapKey = { it.reversedArray() },
                 wrapKeyFor = { _, key -> key.reversedArray() },
                 logWarn = { warnings += it },
+                logDiag = { diagnostics += it },
                 nowMs = { now },
             )
 
@@ -1288,5 +1290,65 @@ class MeshVoiceManagerTest {
             "conflict-rotate timestamps stay bounded by channel count",
             conflictRotates <= h.manager.activeLegs().size,
         )
+    }
+
+    // ---- diagnostic instrumentation (mesh<->Mumble bridge echo hunt) ----
+
+    @Test
+    fun `hostToken is stable, differs by host, and never leaks the raw host`() {
+        val a = MeshVoiceManager.hostToken("198.51.100.7")
+        val b = MeshVoiceManager.hostToken("198.51.100.7")
+        val c = MeshVoiceManager.hostToken("203.0.113.9")
+        // Stable: same host → same token every call.
+        assertEquals(a, b)
+        // Discriminating: two different hosts → different tokens (these two
+        // sample addresses hash apart).
+        assertFalse("distinct hosts must tokenize distinctly", a == c)
+        // Non-reversible / no leak: the raw host string never appears in the
+        // token, and the token is the short "h:xxxx" form.
+        assertFalse(a.contains("198.51.100.7"))
+        assertTrue(a.matches(Regex("h:[0-9a-f]{4}")))
+        assertEquals("h:-", MeshVoiceManager.hostToken(""))
+    }
+
+    @Test
+    fun `bridge full-duplex play burst is captured once per burst without leaking the host`() {
+        val h = Harness()
+        h.makeUsBridge() // we hold the bridge role → bridging == true
+        // First frame of a serverless speaker's burst while bridging: a
+        // play-burst diagnostic must be emitted (the echo-hunt signal).
+        h.manager.onVoice("ops-1", byteArrayOf(1), "ssrc:cafebabe", seqInBurst = 0, sourceHost = "198.51.100.7")
+        val playBursts = h.diagnostics.filter { it.startsWith("play burst") }
+        assertEquals("exactly one play-burst diagnostic for the burst start", 1, playBursts.size)
+        assertTrue(playBursts.single().contains("ch=ops-1"))
+        // Raw peer host must never reach the log — only the tokenized form.
+        assertTrue(playBursts.single().contains("src=${MeshVoiceManager.hostToken("198.51.100.7")}"))
+        assertTrue(h.diagnostics.none { it.contains("198.51.100.7") })
+        // The bridge also relays the serverless speaker → a relay-burst line.
+        assertTrue(h.diagnostics.any { it.startsWith("relay burst -> mumble+mesh") })
+
+        // A later frame of the SAME burst is a getOrPut HIT → no new
+        // play-burst diagnostic (burst-gated, never per-frame).
+        h.manager.onVoice("ops-1", byteArrayOf(2), "ssrc:cafebabe", seqInBurst = 1, sourceHost = "198.51.100.7")
+        assertEquals(1, h.diagnostics.count { it.startsWith("play burst") })
+    }
+
+    @Test
+    fun `bridge role and failover transitions are traced`() {
+        val h = Harness()
+        h.makeUsBridge()
+        assertTrue(h.diagnostics.any { it.startsWith("bridge role -> ON") })
+    }
+
+    @Test
+    fun `no burst diagnostics outside the full-duplex window`() {
+        // Plain playback with a healthy server and no bridge role: the
+        // play-burst diagnostic is gated on (bridging || meshTxActive), so
+        // ordinary RX must not emit burst lines.
+        val h = Harness()
+        h.joinAndTick()
+        h.mumbleUp = false // lift the failover RX gate so the frame plays
+        h.manager.onVoice("ops-1", byteArrayOf(1), ssrcKeyOf("uid-peer"), seqInBurst = 0)
+        assertTrue(h.diagnostics.none { it.startsWith("play burst") })
     }
 }

@@ -85,6 +85,16 @@ class MeshVoiceManager(
     private val wrapKeyFor: (recipientCertDer: ByteArray, key: ByteArray) -> ByteArray? = { _, _ -> null },
     /** Warn sink for rare operator-relevant anomalies. No-op by default (pure-JVM tests). */
     private val logWarn: (String) -> Unit = {},
+    /**
+     * Diagnostic-trace sink for mesh burst boundaries and bridge/failover
+     * state transitions. Wired at the construction site to BOTH logcat and
+     * the on-device DiagnosticLogger file, so a pulled field log finally
+     * captures the mesh<->Mumble bridge full-duplex/relay path. No-op by
+     * default (pure-JVM tests). Callers MUST pass already-redacted strings:
+     * no raw peer hosts/IPs, MACs, or callsigns — use [hostToken] for a
+     * source host and canonical ids / channel names for everything else.
+     */
+    private val logDiag: (String) -> Unit = {},
     private val generateKey: () -> ByteArray = { AeadCodec.generateChannelKey() },
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val failoverPolicy: FailoverPolicy = FailoverPolicy(),
@@ -437,8 +447,30 @@ class MeshVoiceManager(
     ) {
         val action = decideVoiceRx(channelName, speakerKey, sourceHost, isPatchLeg)
         if (!action.play) return
+        // Burst-boundary diagnostics — OUTSIDE the manager lock, burst-gated
+        // (never per-frame). The full-duplex window (this device bridging, or
+        // mesh as the live TX leg) is exactly where the operator-reported
+        // echo lives, so a PLAY burst-start there is the signal to capture:
+        // the bridge hearing its own PTT looped back through Mumble reads as
+        // a server-originated play-burst while bridging.
+        if (action.playBurstStart && (bridging || meshTxActive)) {
+            val serverOrig = action.serverOriginated
+            logDiag(
+                "play burst ch=$channelName spk=${action.canonical} src=${hostToken(sourceHost)} " +
+                    "serverOrig=$serverOrig" +
+                    (if (serverOrig && bridging) " [SELF-ECHO SUSPECT: playing server-originated audio while bridging]" else "") +
+                    (if (meshTxActive) " [FULL-DUPLEX: local mesh TX active]" else ""),
+            )
+        }
         onRxOpus(opus, "mcast:$channelName:$speakerKey")
         if (action.relay) {
+            if (action.relayBurstStart) {
+                logDiag(
+                    "relay burst -> mumble+mesh ch=$channelName spk=${action.canonical} " +
+                        "src=${hostToken(sourceHost)} serverOrig=${action.serverOriginated} " +
+                        "meshTx=$meshTxActive bridging=$bridging",
+                )
+            }
             relayToMumble(opus, action.relayBurstStart)
             if (!isPatchLeg) {
                 patchLegs[channelName]?.sendRelayOpus(action.canonical, opus, action.relayBurstStart)
@@ -454,6 +486,13 @@ class MeshVoiceManager(
         val relayBurstStart: Boolean,
         val canonical: String = "",
         val serverOriginated: Boolean = false,
+        /**
+         * Observability only: true when this frame is the first of a play
+         * burst for [canonical] (the [meshTalking] getOrPut missed). Lets
+         * [onVoice] emit a burst-boundary diagnostic outside the lock. Does
+         * not influence any play/relay/drop decision.
+         */
+        val playBurstStart: Boolean = false,
     )
 
     @Synchronized
@@ -541,13 +580,21 @@ class MeshVoiceManager(
             relayBurstStart = last == null || now - last > RELAY_BURST_GAP_MS
             relayToServerLastMs[speakerKey] = now
         }
+        // A getOrPut MISS means this speaker had no live talker entry — i.e.
+        // this frame starts a PLAY burst for them. Observed here (under the
+        // lock, WITHOUT logging) and surfaced via VoiceRxAction so onVoice
+        // can emit the burst-boundary diagnostic outside the lock. The
+        // getOrPut below still runs exactly as before — decision behaviour
+        // is unchanged; this is pure observability.
+        val playBurstStart = !meshTalking.containsKey(canonical)
         meshTalking.getOrPut(canonical) { MeshTalker(speakerKey, now) }.lastFrameMs = now
         return VoiceRxAction(
             play = true,
             relay = relay,
             relayBurstStart = relayBurstStart,
             canonical = canonical,
-            serverOriginated = serverOriginated
+            serverOriginated = serverOriginated,
+            playBurstStart = playBurstStart,
         )
     }
 
@@ -623,6 +670,7 @@ class MeshVoiceManager(
         if (newMeshTx != meshTxActive) {
             meshTxActive = newMeshTx
             onMeshTxStateChanged(newMeshTx)
+            logDiag("failover TX -> MESH ${if (newMeshTx) "ON" else "OFF"}")
         }
 
         // Key elections.
@@ -637,6 +685,10 @@ class MeshVoiceManager(
             // Notify local-mesh peers of our bridge role change via CoT.
             bridgeCotPublisher?.setBridging(bridging)
             bridgeCotPublisher?.setMumbleSession(if (mumbleConnected()) 0 else null)
+            logDiag(
+                "bridge role -> ${if (bridging) "ON" else "OFF"} " +
+                    "(mumbleConnected=${mumbleConnected()}, legs=${legs.size})",
+            )
         }
         if (wasBridging && !bridging) {
             // Lost the bridge role: shed all per-speaker relay state so a
@@ -1469,6 +1521,23 @@ class MeshVoiceManager(
          * SSRC derivation, truncated to Int.
          */
         fun stableChannelId(canonicalChannelName: String): Int = RtpFraming.fnv1aSsrc(canonicalChannelName).toInt()
+
+        /**
+         * Stable, non-reversible short token for a peer's source host, so a
+         * diagnostic line can distinguish "same vs different source" WITHOUT
+         * the raw peer IP/hostname ever reaching the log. Peer addresses are
+         * sensitive content (CLAUDE.md) and DiagnosticLogger does no
+         * redaction — the discipline is here at the caller. Derived from the
+         * string hash, truncated to 16 bits: one-way, carries no address
+         * octets, and collides only rarely at realistic team sizes.
+         * Empty host (test / control frames) maps to a fixed "h:-".
+         */
+        internal fun hostToken(sourceHost: String): String =
+            if (sourceHost.isEmpty()) {
+                "h:-"
+            } else {
+                "h:%04x".format(sourceHost.hashCode() and 0xFFFF)
+            }
 
         /**
          * Short key fingerprint advertised in beacons so peers can

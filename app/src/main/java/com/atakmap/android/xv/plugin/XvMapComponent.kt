@@ -3588,7 +3588,30 @@ class XvMapComponent : AbstractMapComponent() {
                         null
                     }
                 },
-                logWarn = { msg -> Log.w(TAG, msg) },
+                logWarn = { msg ->
+                    // Route bridge warnings to BOTH logcat and the on-device
+                    // DiagnosticLogger file so a pulled field log captures
+                    // them. Messages are already redacted at the emit site.
+                    Log.w("XvMesh", msg)
+                    com.atakmap.android.xv.util.DiagnosticLogger.event(
+                        tag = "XvMesh",
+                        severity = 'W',
+                        message = msg,
+                    )
+                },
+                logDiag = { msg ->
+                    // Mesh burst-boundary + bridge/failover state trace →
+                    // logcat AND the DiagnosticLogger file, so the mesh<->
+                    // Mumble bridge full-duplex/relay path (echo hunt) is
+                    // finally visible in pulled logs. Redacted at the emit
+                    // site (source hosts tokenized via hostToken).
+                    Log.i("XvMesh", msg)
+                    com.atakmap.android.xv.util.DiagnosticLogger.event(
+                        tag = "XvMesh",
+                        severity = 'I',
+                        message = msg,
+                    )
+                },
                 bridgeCotPublisher = bridgeCotPublisher,
                 onPeerBeacon = { msg ->
                     presenceRegistry?.upsert(
