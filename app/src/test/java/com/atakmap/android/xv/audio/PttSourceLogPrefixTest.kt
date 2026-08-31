@@ -37,16 +37,6 @@ class PttSourceLogPrefixTest {
     }
 
     @Test
-    fun `Sonim PTT source maps to Sonim PTT`() {
-        assertEquals("Sonim PTT", logPrefixForPttSource(PttSource.SONIM_PTT))
-    }
-
-    @Test
-    fun `Sonim Emergency source maps to Sonim Emergency`() {
-        assertEquals("Sonim Emergency", logPrefixForPttSource(PttSource.SONIM_EMERGENCY))
-    }
-
-    @Test
     fun `debug source maps to debug PTT`() {
         assertEquals("debug PTT", logPrefixForPttSource(PttSource.DEBUG))
     }

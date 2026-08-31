@@ -87,8 +87,8 @@ fun shouldGateForCellularCall(
 ): PttGate =
     when (callState) {
         // All PTT sources get blocked — phone calls are #1 priority.
-        // Hardware AINA button, Pryme puck, Samsung Active Key, Sonim
-        // PTT / Emergency, on-screen, DEBUG intent — every one of them.
+        // Hardware AINA button, Pryme puck, Samsung Active Key,
+        // on-screen, DEBUG intent — every one of them.
         TelephonyManager.CALL_STATE_OFFHOOK -> PttGate.BLOCK_CELLULAR_CALL
         TelephonyManager.CALL_STATE_RINGING -> PttGate.BLOCK_CELLULAR_RINGING
         else -> PttGate.ALLOW
@@ -237,7 +237,12 @@ fun cellularCallStateFromAudioMode(
                 // producing an unbroken stream of "Cellular call
                 // active" blocks that don't correspond to any actual
                 // call. Callers pass suppressInCommunicationDefensiveBlock=true
-                // for known-false-positive device classes.
+                // for known-false-positive device classes. The XP10 is
+                // retired (docs/hardware/sonim-xp10.md) and no caller
+                // passes true today, but the parameter and this dated
+                // evidence are retained: any background MCPTT stack
+                // that holds MODE_IN_COMMUNICATION as a steady state
+                // reproduces the same false positive.
                 //
                 // Real cellular calls (MODE_IN_CALL, above) and
                 // incoming rings (MODE_RINGTONE) still block

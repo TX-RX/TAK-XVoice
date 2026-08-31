@@ -29,26 +29,6 @@ enum class PttSource(val dropsTrailingClick: Boolean) {
     // OR-gate.
     SAMSUNG_ACTIVE_KEY(dropsTrailingClick = false),
 
-    // Sonim ruggedized-device dedicated PTT side button (XP10 and
-    // XP-family peers). Fires through either the Sonim broadcast intent
-    // path (`com.sonim.intent.action.PTT_KEY_DOWN` / `_UP`) or the
-    // foreground KeyEvent path — see [com.atakmap.android.xv.util.SonimHardwareButtons].
-    // The dedicated side key is a physical mechanical button with a
-    // faint tactile click but no audible click through the audio path
-    // (the button lives on the phone chassis, not on a BT
-    // speakermic), so we do NOT trim the trailing frame on release —
-    // same treatment as ON_SCREEN. Independent PTT source; runs in
-    // parallel with AINA / External Button via the dispatcher's
-    // OR-gate.
-    SONIM_PTT(dropsTrailingClick = false),
-
-    // Sonim ruggedized-device dedicated Emergency / SOS button. Distinct
-    // from SONIM_PTT so a future iteration can promote presses of this
-    // button into an emergency CoT event or SOS broadcast without
-    // disturbing the plain PTT path. For now, treated as a plain
-    // additional PTT source; the distinct enum value is what makes the
-    // upgrade a local change.
-    SONIM_EMERGENCY(dropsTrailingClick = false),
     DEBUG(dropsTrailingClick = false),
     ;
 
@@ -78,7 +58,5 @@ fun logPrefixForPttSource(source: PttSource): String =
         PttSource.AINA_V2 -> "primary AINA V2 button"
         PttSource.PRYME_BLE -> "external button"
         PttSource.SAMSUNG_ACTIVE_KEY -> "Samsung Active Key"
-        PttSource.SONIM_PTT -> "Sonim PTT"
-        PttSource.SONIM_EMERGENCY -> "Sonim Emergency"
         PttSource.DEBUG -> "debug PTT"
     }
