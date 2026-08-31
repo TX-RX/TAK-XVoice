@@ -6,6 +6,7 @@ import android.net.wifi.WifiManager
 import android.util.Log
 import com.atakmap.android.xv.audio.AudioPlayback
 import com.atakmap.android.xv.audio.OpusDecoder
+import com.atakmap.android.xv.transport.multicast.RtpFraming
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -118,11 +119,11 @@ class MulticastTransport(
                 // never has the top two bits set to 0b10, so the test is
                 // unambiguous. See RtpFraming for the full header layout.
                 val opusPayload =
-                    if (raw.size > com.atakmap.android.xv.transport.multicast.RtpFraming.HEADER_BYTES &&
+                    if (raw.size > RtpFraming.HEADER_BYTES &&
                         (raw[0].toInt() and 0xC0) == 0x80
                     ) {
                         // RTP packet — decode and validate, then extract payload.
-                        val parsed = com.atakmap.android.xv.transport.multicast.RtpFraming.decode(raw)
+                        val parsed = RtpFraming.decode(raw)
                         if (parsed == null) {
                             Log.w(TAG, "Dropping malformed RTP datagram from $peerId (${raw.size} bytes)")
                             continue

@@ -20,8 +20,8 @@ import java.security.MessageDigest
  *
  * Layout: take the low 24 bits of the SHA-256 digest. Bytes 0..1 form the
  * last two octets of `239.42.X.Y` (the 239.42/16 admin-scoped range — IETF
- * reserves 239/8 for organization-local multicast); byte 2 mod 0xFFF chooses
- * a port in `6000..10095`.
+ * reserves 239/8 for organization-local multicast); bytes 2..3 (top 12 bits)
+ * choose a port in `6000..10095`.
  */
 object MulticastGroupDerivation {
     /**
@@ -55,7 +55,14 @@ object MulticastGroupDerivation {
 
         val octet3 = digest[0].toInt() and 0xFF
         val octet4 = digest[1].toInt() and 0xFF
-        val portOffset = digest[2].toInt() and 0xFFF
+        // Extract a clean unsigned 12-bit port offset from bytes 2-3 of the
+        // digest. Using two bytes avoids the sign-extension hazard: a single
+        // byte widened via .toInt() retains the sign bit, so masking with
+        // 0xFFF gives a non-uniform distribution for bytes >= 0x80.
+        // This two-byte extraction takes the high 8 bits from byte[2] and the
+        // top 4 bits from byte[3], yielding a uniform 0..4095 range.
+        val portOffset =
+            ((digest[2].toInt() and 0xFF) shl 4) or ((digest[3].toInt() and 0xFF) ushr 4)
         return MulticastEndpoint(
             groupAddress = "239.42.$octet3.$octet4",
             port = PORT_BASE + portOffset,
@@ -92,7 +99,8 @@ object MulticastGroupDerivation {
 
         val octet3 = digest[0].toInt() and 0xFF
         val octet4 = digest[1].toInt() and 0xFF
-        val portOffset = digest[2].toInt() and 0xFFF
+        val portOffset =
+            ((digest[2].toInt() and 0xFF) shl 4) or ((digest[3].toInt() and 0xFF) ushr 4)
         return MulticastEndpoint(
             groupAddress = "239.42.$octet3.$octet4",
             port = PORT_BASE + portOffset,
