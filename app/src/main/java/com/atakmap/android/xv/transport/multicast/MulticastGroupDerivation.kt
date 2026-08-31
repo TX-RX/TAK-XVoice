@@ -55,8 +55,8 @@ object MulticastGroupDerivation {
     const val LOCAL_PORT_BASE: Int = 6000
     const val LOCAL_PORT_COUNT: Int = 4096
 
-        /**
-        * Derive the v1 multicast endpoint for a channel on a server.
+     /**
+      * Derive the v1 multicast endpoint for a channel on a server.
      *
      * @param serverIdentity canonical deployment identity — build via
      *   [ServerIdentity.fromHostname].
