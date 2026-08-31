@@ -26,6 +26,7 @@ import com.atakmap.android.xv.R
 import com.atakmap.android.xv.aina.AinaDeviceInfo
 import com.atakmap.android.xv.audio.OutputRoute
 import com.atakmap.android.xv.audio.TptTone
+import com.atakmap.android.xv.transport.MumbleTransport
 import com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
 import com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation
 
@@ -1226,7 +1227,10 @@ class XvDropDownReceiver(
                         com.atakmap.android.xv.transport.mumble.MumbleSession.ChannelInfo.Participation.LISTEN
                     else -> chParticipation
                 }
-                val labelOverride = if (isOnOtherSlot) "$chName   (in use by $otherSlotLabel)" else chName
+                // Display the lobby as "Lobby" while chName (raw) still
+                // drives selection/config/forget below.
+                val chDisplay = MumbleTransport.lobbyLabel(chName)
+                val labelOverride = if (isOnOtherSlot) "$chDisplay   (in use by $otherSlotLabel)" else chDisplay
 
                 val container = android.widget.LinearLayout(pluginContext).apply {
                     orientation = android.widget.LinearLayout.HORIZONTAL
@@ -1597,7 +1601,7 @@ class XvDropDownReceiver(
             it.connectionSource == ConnectionSource.LOCAL_MESH ||
                 it.connectionSource == ConnectionSource.BOTH
         }
-        headerView.text = "$slotLabel · ${data.channelName} (☁️$serverCount 📻$localCount)"
+        headerView.text = "$slotLabel · ${MumbleTransport.lobbyLabel(data.channelName)} (☁️$serverCount 📻$localCount)"
         listView.removeAllViews()
         if (data.members.isEmpty()) {
             val tv =
@@ -1695,7 +1699,8 @@ class XvDropDownReceiver(
 
         if (member.availableJumpChannels.size == 1) {
             val jc = member.availableJumpChannels[0]
-            val nameDisplay = if (jc.description != null) "${jc.channelName} (${jc.description})" else jc.channelName
+            val chDisplay = MumbleTransport.lobbyLabel(jc.channelName)
+            val nameDisplay = if (jc.description != null) "$chDisplay (${jc.description})" else chDisplay
             android.widget.Toast.makeText(
                 pluginContext,
                 "Joining $nameDisplay...",
@@ -1717,7 +1722,8 @@ class XvDropDownReceiver(
             // picks which slot to move. Channel name surfaces in the
             // action label so the operator doesn't have to remember
             // peer-channel-mapping at a glance.
-            val nameDisplay = if (jc.description != null) "${jc.channelName} (${jc.description})" else jc.channelName
+            val chDisplay = MumbleTransport.lobbyLabel(jc.channelName)
+            val nameDisplay = if (jc.description != null) "$chDisplay (${jc.description})" else chDisplay
             actions +=
                 "Move VS1 → $nameDisplay" to {
                     controller.setPrimaryChannel(jc.channelName)
@@ -2245,9 +2251,13 @@ class XvDropDownReceiver(
             meshToast("No active mesh channel to rotate.")
             return
         }
+        // meshActiveChannelCanonical() returns the lowercase canonical
+        // ("lobby" for the lobby) — surface "Lobby" to the operator while
+        // the raw canonical still drives rotateChannelKeyNow below.
+        val channelDisplay = MumbleTransport.lobbyLabel(channel)
         android.app.AlertDialog
             .Builder(mapView.context)
-            .setTitle("Rotate key for “$channel”?")
+            .setTitle("Rotate key for “$channelDisplay”?")
             .setMessage(
                 "Generates a fresh channel key. Everyone still trusted is re-keyed " +
                     "automatically with no interruption; anyone you shared the old key with " +
@@ -2257,9 +2267,9 @@ class XvDropDownReceiver(
                 val issued = controller.rotateChannelKeyNow(channel)
                 meshToast(
                     if (issued) {
-                        "Rotated key for “$channel”."
+                        "Rotated key for “$channelDisplay”."
                     } else {
-                        "Couldn't rotate “$channel” (cleartext or not yet keyed)."
+                        "Couldn't rotate “$channelDisplay” (cleartext or not yet keyed)."
                     },
                 )
             }.setNegativeButton("Cancel", null)
@@ -2925,7 +2935,7 @@ class XvDropDownReceiver(
                     channels.forEach { name ->
                         val canonical = MulticastGroupDerivation.canonicalChannelName(name)
                         val chip = Button(pluginContext).apply {
-                            text = name
+                            text = MumbleTransport.lobbyLabel(name)
                             isAllCaps = false
                             textSize = 12f
                             maxLines = 2
@@ -3919,8 +3929,11 @@ class XvDropDownReceiver(
         idleText: String,
     ): String {
         if (channel == null) return if (connected) idleText else ""
-        if (speakers.isEmpty()) return channel
-        return "$channel  $RX_DOT ${speakers.joinToString(", ")}"
+        // Mesh-mode currentChannelName() can return the raw "Root" or
+        // the lowercase canonical "lobby" for the lobby; render "Lobby".
+        val display = MumbleTransport.lobbyLabel(channel)
+        if (speakers.isEmpty()) return display
+        return "$display  $RX_DOT ${speakers.joinToString(", ")}"
     }
 
     companion object {

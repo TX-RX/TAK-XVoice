@@ -3007,7 +3007,15 @@ class XvMapComponent : AbstractMapComponent() {
                     val canonical =
                         com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
                             .canonicalChannelName(name)
-                    if (canonical.isNotBlank()) out.putIfAbsent(canonical, name)
+                    if (canonical.isNotBlank()) {
+                        // Force "Lobby" for the lobby regardless of whether
+                        // "Root" or "Lobby" was the first raw spelling seen,
+                        // so the offline list never surfaces "Root".
+                        out.putIfAbsent(
+                            canonical,
+                            com.atakmap.android.xv.transport.MumbleTransport.lobbyLabel(name),
+                        )
+                    }
                 }
                 settings
                     .persistedPrimaryChannel()

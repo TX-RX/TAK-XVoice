@@ -57,6 +57,46 @@ class MulticastGroupDerivationTest {
     }
 
     @Test
+    fun `canonical aliases Root to lobby - Root Lobby and padded ROOT all canonicalize identically`() {
+        // Mumble's Root (channel id 0) IS the lobby. "Root" and "Lobby"
+        // must canonicalize to the same value or two devices fork onto
+        // different multicast groups and cannot share lobby voice.
+        assertEquals(MulticastGroupDerivation.LOBBY_CANONICAL, MulticastGroupDerivation.canonicalChannelName("Root"))
+        assertEquals(MulticastGroupDerivation.LOBBY_CANONICAL, MulticastGroupDerivation.canonicalChannelName("Lobby"))
+        assertEquals(MulticastGroupDerivation.LOBBY_CANONICAL, MulticastGroupDerivation.canonicalChannelName("  ROOT "))
+        assertEquals(
+            MulticastGroupDerivation.canonicalChannelName("Root"),
+            MulticastGroupDerivation.canonicalChannelName("Lobby"),
+        )
+    }
+
+    @Test
+    fun `canonical leaves the empty string empty - blank guards depend on it`() {
+        assertEquals("", MulticastGroupDerivation.canonicalChannelName(""))
+        assertEquals("", MulticastGroupDerivation.canonicalChannelName("   "))
+    }
+
+    @Test
+    fun `canonical does not disturb a non-lobby name`() {
+        assertEquals("ops-1", MulticastGroupDerivation.canonicalChannelName("Ops-1"))
+        assertEquals("ops-1", MulticastGroupDerivation.canonicalChannelName("  OPS-1 "))
+    }
+
+    @Test
+    fun `Root and Lobby derive the same endpoint on the same server`() {
+        assertEquals(
+            "Root and Lobby must land on the same multicast group+port",
+            MulticastGroupDerivation.derive(serverA, "Root"),
+            MulticastGroupDerivation.derive(serverA, "Lobby"),
+        )
+        // And padded/mixed-case spellings agree too.
+        assertEquals(
+            MulticastGroupDerivation.derive(serverA, "  root  "),
+            MulticastGroupDerivation.derive(serverA, "LOBBY"),
+        )
+    }
+
+    @Test
     fun `different channels on the same server differ`() {
         assertNotEquals(
             MulticastGroupDerivation.derive(serverA, "ops-1"),

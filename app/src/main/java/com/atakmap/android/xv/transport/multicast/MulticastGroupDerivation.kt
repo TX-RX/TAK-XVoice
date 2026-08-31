@@ -22,6 +22,14 @@ import java.text.Normalizer
  * where `canon` is trim + Unicode NFC + lowercase (channel names are
  * operator-typed; "Ops-1" and "ops-1" on two devices must not fork the
  * derivation, and NFC folds composed/decomposed accent encodings).
+ * `canon` additionally aliases "Root" → [LOBBY_CANONICAL] ("lobby"):
+ * Mumble's Root channel (numeric id 0) IS the lobby, and online the
+ * transport relabels it to "Lobby" for display, but the offline/mesh
+ * path can still see the raw "Root" spelling. Without the alias, one
+ * device deriving from "Root" and another from "Lobby" would land on
+ * two different 239.x groups and fail to share lobby voice. The empty
+ * string is deliberately NOT aliased — blank guards elsewhere depend on
+ * `canonicalChannelName("")` staying blank.
  *
  * Range choices:
  *   - `239.224.0.0/12` sits inside the IANA organization-local scope
@@ -49,6 +57,13 @@ import java.text.Normalizer
 object MulticastGroupDerivation {
     /** Canonical input prefix; bump ONLY with a new derivation spec. */
     const val VERSION_TAG = "xv-mcast-v1"
+
+    /**
+     * Canonical form of the lobby channel. Mumble's Root channel (id 0)
+     * is the lobby; [canonicalChannelName] aliases "root" to this so the
+     * "Root"/"Lobby" spellings derive the same multicast group.
+     */
+    const val LOBBY_CANONICAL = "lobby"
 
     const val PORT_BASE: Int = 16800
     const val PORT_COUNT: Int = 100
@@ -86,7 +101,13 @@ object MulticastGroupDerivation {
      * Exposed so config lookups key channels the same way the
      * derivation does.
      */
-    fun canonicalChannelName(name: String): String = Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase()
+    fun canonicalChannelName(name: String): String {
+        val normalized = Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase()
+        // Mumble's Root (channel id 0) is the lobby; alias so "Root" and
+        // "Lobby" cannot fork the derivation onto different groups. Blank
+        // stays blank — do NOT map "" → lobby (blank guards depend on it).
+        return if (normalized == "root") LOBBY_CANONICAL else normalized
+    }
 
     /**
      * Derive the endpoint for a local-only channel identified by name.
