@@ -97,12 +97,6 @@ and feature polish.
    - **Samsung Active Key** (Galaxy Tab Active5, XCover6 Pro / 7, Tab
      Active4 Pro, Tab Active3) — the side Active Key becomes a PTT
      source. See [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
-   - **Sonim XP10 (XP9900)** — the dedicated side PTT key drives PTT and
-     the SOS key fires the ATAK emergency alert. Works with the classic
-     Sonim key broadcasts, MCX / MCPTT carrier firmware, and the
-     handset's "assign key to ATAK" Programmable-Keys mode. The Yellow
-     key is left as an app-launcher convenience key and does not key PTT.
-     See [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
 
    These toggles appear only on hardware that actually has the keys. An
    optional, tightly-scoped accessibility service — enabled once by the
@@ -136,8 +130,7 @@ XV also adds:
   button, prev/next channel) so a fresh pairing "just works." Operators
   edit the defaults; overrides persist by BT address.
 - **LMR-style emergency button** — short press fires the emergency
-  configured in ATAK's Alert Tool; long press (1 s) cancels. On Sonim
-  handsets the dedicated SOS key maps to the same emergency.
+  configured in ATAK's Alert Tool; long press (1 s) cancels.
 - **Configurable Talk Permit Tones** (ASTRO 25 / Nextel / DMR / MOTOTRBO
   / None) for operators transitioning from public-safety LMR systems.
 - **Mumble + multicast channels under a single UX** — transport is an
@@ -221,16 +214,20 @@ Curated / validated ruggedized handsets (on-device hardware keys):
 - Samsung Galaxy Tab Active5 (SM-X308U) — Active Key PTT, foreground and
   background (accessibility). See
   [docs/hardware/samsung-active-key.md](docs/hardware/samsung-active-key.md).
-- Sonim XP10 (XP9900, AT&T carrier / Android 12) — side PTT key and SOS
-  key, via MCX / MCPTT firmware and the assign-to-ATAK mode. The Yellow
-  key is an app-launcher convenience key and does not key PTT. See
-  [docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md).
 
 This list only includes devices that have been integrated end-to-end
 and validated against event traffic. Additional hardware is added the
 same way — one device at a time, once it's been tested. Other chassis
-that share these keys (other XCover / Tab Active models, non-carrier
-Sonim variants) are gated on by model prefix but are not yet validated.
+that share these keys (other XCover / Tab Active models) are gated on
+by model prefix but are not yet validated.
+
+Retired hardware — the Sonim XP10 (XP9900) was carried as a supported
+device and has since been dropped. It did not meet the stability bar
+this list implies, and its Bluetooth problems made it a poor target for
+custom button integration. See
+[docs/hardware/sonim-xp10.md](docs/hardware/sonim-xp10.md) for the full
+rationale. Retiring a device is part of the same curated policy as
+adding one: the list is only worth reading if entries can leave it.
 
 ## License
 

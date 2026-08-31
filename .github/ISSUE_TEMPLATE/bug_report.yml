@@ -41,7 +41,7 @@ body:
     id: hardware
     attributes:
       label: PTT / audio hardware
-      description: e.g. AINA V2 puck, Sonim XP10, on-screen only
+      description: e.g. AINA V2 puck, on-screen only
     validations:
       required: false
   - type: input

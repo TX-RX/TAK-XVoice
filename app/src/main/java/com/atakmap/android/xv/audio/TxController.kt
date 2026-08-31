@@ -81,6 +81,10 @@ data class ColdStartMitigationPolicy(
 // bursts demonstrably ran), so the burst-milestone events below are
 // mirrored into DiagnosticLogger's per-day files — retrievable on any
 // device via `adb pull .../files/xv-logs` regardless of logcat policy.
+// The XP9900 is retired (docs/hardware/sonim-xp10.md), but the dated
+// observation is kept deliberately: it is the evidence this trail
+// exists at all, and aggressive logcat filtering is not unique to
+// that handset.
 // DiagnosticLogger.event is a same-process no-throw no-op before
 // init(), so unit tests and non-service embeddings are unaffected.
 // Messages must stay free of MACs / callsigns per its contract.
