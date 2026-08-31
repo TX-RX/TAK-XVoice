@@ -2644,7 +2644,18 @@ class XvMapComponent : AbstractMapComponent() {
                     return
                 }
                 Log.i(TAG, "Controller.setPrimaryChannel('$trimmed')")
-                joinMumbleChannelInternal(trimmed, -1)
+                if (mumbleTransport() != null) {
+                    joinMumbleChannelInternal(trimmed, -1)
+                } else {
+                    // Offline / mesh-only: the Mumble join path is a no-op
+                    // without a live server, so the picked channel never
+                    // takes effect and "disappears" on the next picker
+                    // repaint (it was never persisted). Switch the mesh leg
+                    // directly and persist, so the selection sticks and a
+                    // later Mumble reconnect lands on the same channel.
+                    Log.i(TAG, "setPrimaryChannel('$trimmed'): offline — routing to mesh leg")
+                    selectMeshChannelInternal(trimmed)
+                }
             }
 
             override fun setSecondaryChannel(name: String) {
@@ -2934,37 +2945,7 @@ class XvMapComponent : AbstractMapComponent() {
 
             override fun selectMeshChannel(name: String) {
                 Log.i(TAG, "Controller.selectMeshChannel($name)")
-                // A channel known only from peer beacons (fully
-                // offline: no server identity to derive from) must be
-                // pinned to the ADVERTISED endpoint or the leg can
-                // never resolve one. For channels this device can
-                // derive itself, the pin and the derivation agree —
-                // the advertiser derived it the same way.
-                val canonical =
-                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
-                        .canonicalChannelName(name)
-                val discovered =
-                    meshVoiceManager
-                        ?.discoveredChannels()
-                        ?.firstOrNull {
-                            com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
-                                .canonicalChannelName(it.name) == canonical
-                        }
-                if (discovered != null && settings.channelMulticastConfigFor(name) == null) {
-                    val pinned =
-                        com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
-                            .defaultFor(name)
-                            .copy(pinnedGroup = discovered.group, pinnedPort = discovered.port)
-                    if (pinned.validate() == null) {
-                        settings.persistChannelMulticastConfig(pinned)
-                        Log.i(TAG, "selectMeshChannel: pinned discovered endpoint for '$canonical'")
-                    }
-                }
-                // Persist as the primary so a later Mumble reconnect
-                // lands on the same channel the operator picked while
-                // offline; the mesh leg rebinds on the next tick.
-                settings.persistPrimaryChannel(name)
-                meshVoiceManager?.onChannelJoined(0, name)
+                selectMeshChannelInternal(name)
             }
 
             override fun meshStatus(): XvDropDownReceiver.MeshStatus? {
@@ -5946,6 +5927,49 @@ class XvMapComponent : AbstractMapComponent() {
         } else {
             Log.w(TAG, "JOIN: need either channel name or id")
         }
+    }
+
+    /**
+     * Offline / mesh-only channel switch. [joinMumbleChannelInternal] is a
+     * no-op without a live Mumble transport, so [Controller.setPrimaryChannel]
+     * routes here when the server is gone — otherwise a picked channel never
+     * takes effect and "disappears" on the next picker repaint because it was
+     * never persisted. Pins the advertised endpoint for a beacon-only channel,
+     * persists it as primary (so a later reconnect lands on it), and switches
+     * the live mesh leg. Also the body behind the [Controller.selectMeshChannel]
+     * override.
+     */
+    private fun selectMeshChannelInternal(name: String) {
+        // A channel known only from peer beacons (fully offline: no server
+        // identity to derive from) must be pinned to the ADVERTISED endpoint
+        // or the leg can never resolve one. For channels this device can
+        // derive itself, the pin and the derivation agree — the advertiser
+        // derived it the same way.
+        val canonical =
+            com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                .canonicalChannelName(name)
+        val discovered =
+            meshVoiceManager
+                ?.discoveredChannels()
+                ?.firstOrNull {
+                    com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                        .canonicalChannelName(it.name) == canonical
+                }
+        if (discovered != null && settings.channelMulticastConfigFor(name) == null) {
+            val pinned =
+                com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+                    .defaultFor(name)
+                    .copy(pinnedGroup = discovered.group, pinnedPort = discovered.port)
+            if (pinned.validate() == null) {
+                settings.persistChannelMulticastConfig(pinned)
+                Log.i(TAG, "selectMeshChannelInternal: pinned discovered endpoint for '$canonical'")
+            }
+        }
+        // Persist as the primary so a later Mumble reconnect lands on the
+        // same channel the operator picked while offline; the mesh leg
+        // rebinds on the next tick.
+        settings.persistPrimaryChannel(name)
+        meshVoiceManager?.onChannelJoined(0, name)
     }
 
     @SuppressWarnings("MissingPermission")
