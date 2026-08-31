@@ -2300,7 +2300,18 @@ class XvVoiceService : Service() {
         // that doesn't emit HARD_KEY_REPORT. Older plugins built
         // against v4 simply won't call it — the broadcast path is
         // still their only Samsung Active Key route.
-        private const val AIDL_API_VERSION = 4
+        // v4 → v5: BREAKING — removed the six Sonim methods
+        // (setSonimPttButtonEnabled / isSonimPttButtonRunning,
+        // setSonimEmergencyButtonEnabled / isSonimEmergencyButtonRunning,
+        // notifySonimPttEdge / notifySonimEmergencyEdge) when Sonim
+        // XP10 support was retired. Unlike every bump above this one
+        // is not additive: the removed methods sat in the MIDDLE of
+        // the interface, so every method declared after them shifts
+        // Binder transaction ID. A stale plugin built against v4 would
+        // land on the wrong transaction rather than merely miss a
+        // call — which is exactly the case this version check exists
+        // to catch.
+        private const val AIDL_API_VERSION = 5
 
         // Channel ids for the incoming-ring + active-call CallStyle
         // notifications live in NotificationChannels.kt. The service's

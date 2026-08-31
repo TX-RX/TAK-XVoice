@@ -96,7 +96,8 @@ class SamsungActiveKeyAccessibilityService : AccessibilityService() {
      * it `abstract`. The service descriptor subscribes to
      * `typeWindowStateChanged` (the minimum AAPT accepts; `typeNone`/`0`
      * is rejected at build time), but no event data is used here.
-     */    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
         // Intentionally empty.  typeWindowStateChanged in
         // xv_accessibility_service.xml is the nominal subscription required
         // by AAPT; all dispatched events are discarded.

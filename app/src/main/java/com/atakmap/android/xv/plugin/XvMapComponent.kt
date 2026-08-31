@@ -1459,9 +1459,8 @@ class XvMapComponent : AbstractMapComponent() {
         // Foreground-KeyEvent fallback paths: detach the OnKeyListeners
         // BEFORE we drop heldMapView. Each also fires a defensive up()
         // through the AIDL so the service's dispatcher can't strand
-        // SAMSUNG_ACTIVE_KEY / SONIM_PTT / SONIM_EMERGENCY in
-        // heldButtons if the plugin unloads while the operator was
-        // mid-press.
+        // SAMSUNG_ACTIVE_KEY in heldButtons if the plugin unloads
+        // while the operator was mid-press.
         try {
             stopSamsungActiveKeyForeground()
         } catch (_: Throwable) {
@@ -2703,7 +2702,8 @@ class XvMapComponent : AbstractMapComponent() {
         startSamsungActiveKeyForeground()
     }
 
-    private fun autoConnectMumble() {
+    /**
+     * Attach the [com.atakmap.android.xv.ptt.SamsungActiveKeyForegroundReader]
      * to the MapView. Idempotent. The reader translates a foreground
      * `KEYCODE == 1015` down / up into a
      * `PttSource.SAMSUNG_ACTIVE_KEY` edge dispatched to the service
