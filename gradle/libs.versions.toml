@@ -5,14 +5,19 @@
 # app/build.gradle.kts. Gradle auto-loads this file as the `libs`
 # catalog (no settings.gradle.kts change needed on Gradle 7.4+).
 #
-# SDK-blocked pins (do NOT bump without a coordinated takdev refresh —
-# see .github/dependabot.yml): `agp` and `coreKtx`. Dependabot's ignore
-# rules reference these by Maven coordinate, so keep the coordinates in
-# the [libraries]/[plugins] blocks stable.
+# SDK-coupled pins — how far each can move is bounded by the ATAK
+# takdev SDK. .github/dependabot.yml encodes the blocked bumps by
+# Maven coordinate + semver level, so keep those coordinates stable:
+#   - `agp`: only MAJOR bumps (AGP 9.x) are SDK-blocked — 9.x needs
+#     Gradle 9.4+ and a takdev jar refresh from tak.gov. Minor/patch
+#     bumps within AGP 8.x are allowed once verified locally against
+#     the current SDK (./scripts/verify-gates.ps1).
+#   - `coreKtx`: held at 1.13.1 — 1.19+ (minor) needs compileSdk 37 +
+#     AGP 9.1, so both minor and major are blocked.
 
 [versions]
-agp = "8.7.3"
-kotlin = "2.4.0"
+agp = "8.13.2"
+kotlin = "2.4.10"
 ktlintPlugin = "14.2.0"
 protobufPlugin = "0.10.0"
 # Standalone ktlint CLI version. NOTE: the CI job (.github/workflows/
@@ -22,9 +27,9 @@ ktlint = "1.3.1"
 coroutines = "1.11.0"
 # Held at 1.13.1 — 1.19+ needs compileSdk 37 + AGP 9.1 (SDK-blocked).
 coreKtx = "1.13.1"
-appcompat = "1.7.1"
+appcompat = "1.8.0"
 # Shared by protobuf-javalite (runtime) and the protoc compiler.
-protobuf = "4.35.1"
+protobuf = "4.36.0"
 # JitPack commit-pinned Concentus (pure-Java Opus); see app build file.
 concentus = "3885c4e46513ef0fc81fca100189e54f1714c6ca"
 junit = "4.13.2"
