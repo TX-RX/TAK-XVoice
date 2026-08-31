@@ -118,4 +118,55 @@ class MulticastGroupDerivationTest {
             seen.size >= inputs.size - 5,
         )
     }
+
+    @Test
+    fun `deriveFromName is deterministic for the same name`() {
+        val a = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val b = MulticastGroupDerivation.deriveFromName("TAK-01")
+        assertEquals(a, b)
+    }
+
+    @Test
+    fun `deriveFromName canonicalizes case whitespace and NFC`() {
+        val lower = MulticastGroupDerivation.deriveFromName("tak-01")
+        val upper = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val spaced = MulticastGroupDerivation.deriveFromName("  Tak-01  ")
+        val precomposed = MulticastGroupDerivation.deriveFromName("caf" + Char(0xE9))
+        val decomposed = MulticastGroupDerivation.deriveFromName("cafe" + Char(0x301))
+        assertEquals("case must not affect derivation", lower, upper)
+        assertEquals(lower, spaced)
+        assertEquals(precomposed, decomposed)
+    }
+
+    @Test
+    fun `deriveFromName stays inside the local namespace`() {
+        val ep = MulticastGroupDerivation.deriveFromName("TAK-01")
+        assertTrue(
+            "expected 239.42.X.Y, got ${ep.groupAddress}",
+            ep.groupAddress.startsWith("239.42."),
+        )
+        assertTrue(
+            "port ${ep.port} outside local window",
+            ep.port in MulticastGroupDerivation.LOCAL_PORT_BASE until
+                (MulticastGroupDerivation.LOCAL_PORT_BASE + MulticastGroupDerivation.LOCAL_PORT_COUNT),
+        )
+    }
+
+    @Test
+    fun `deriveFromName is disjoint from server-keyed derive`() {
+        val local = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val serverKeyed = MulticastGroupDerivation.derive(ServerIdentity.fromHostname("tak-01"), "tak-01")
+        assertNotEquals(
+            "local-name derivation must not collide with server-keyed derivation of same string",
+            local,
+            serverKeyed,
+        )
+    }
+
+    @Test
+    fun `different channel names produce different endpoints`() {
+        val a = MulticastGroupDerivation.deriveFromName("TAK-01")
+        val b = MulticastGroupDerivation.deriveFromName("TAK-02")
+        assertNotEquals(a, b)
+    }
 }

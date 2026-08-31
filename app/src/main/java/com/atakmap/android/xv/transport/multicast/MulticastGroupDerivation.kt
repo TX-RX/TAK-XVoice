@@ -52,9 +52,11 @@ object MulticastGroupDerivation {
 
     const val PORT_BASE: Int = 16800
     const val PORT_COUNT: Int = 100
+    const val LOCAL_PORT_BASE: Int = 6000
+    const val LOCAL_PORT_COUNT: Int = 4096
 
-    /**
-     * Derive the v1 multicast endpoint for a channel on a server.
+        /**
+        * Derive the v1 multicast endpoint for a channel on a server.
      *
      * @param serverIdentity canonical deployment identity — build via
      *   [ServerIdentity.fromHostname].
@@ -85,6 +87,27 @@ object MulticastGroupDerivation {
      * derivation does.
      */
     fun canonicalChannelName(name: String): String = Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase()
+
+    /**
+     * Derive the endpoint for a local-only channel identified by name.
+     * This namespace is intentionally disjoint from the server-keyed
+     * v1 derivation above so an operator-created local channel cannot
+     * collide with a server-backed channel of the same visible name.
+     */
+    fun deriveFromName(channelName: String): MulticastEndpoint {
+        val digest =
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest("xv.local.ch:${canonicalChannelName(channelName)}".toByteArray(Charsets.UTF_8))
+        val octet3 = digest[0].toInt() and 0xFF
+        var octet4 = digest[1].toInt() and 0xFF
+        if (octet3 == 0 && octet4 == 0) octet4 = 1
+        val portOffset = (((digest[2].toInt() and 0xFF) shl 4) or ((digest[3].toInt() and 0xFF) ushr 4))
+        return MulticastEndpoint(
+            groupAddress = "239.42.$octet3.$octet4",
+            port = LOCAL_PORT_BASE + (portOffset % LOCAL_PORT_COUNT),
+        )
+    }
 }
 
 data class MulticastEndpoint(

@@ -18,9 +18,17 @@ package com.atakmap.android.xv.transport.multicast
  *   - Wrong key for the advertised epoch → returns null and a log
  *     emission caller-side; this is a real anomaly worth surfacing.
  *
- * Caller is responsible for serializing access; the registry is not
- * thread-safe internally because the multicast RX thread is the only
- * decrypt site and the key-rotation flow is single-thread.
+ * Thread-safety: all public methods are `@Synchronized`. The UDP receive
+ * thread (decrypting at ~50/sec) and the key-election tick thread both
+ * call into this class and they are NOT the same thread — without
+ * synchronisation the `currentKey`/`currentEpoch` field writes by the
+ * election thread are a JMM data race vs. the reads in [decrypt].
+ * `@Synchronized` on the individual methods is the simplest correct fix
+ * (the critical sections are microseconds; contention cost is negligible
+ * vs. per-frame Opus decode time).
+ *
+ * Caller is NOT responsible for serializing access; the registry is
+ * thread-safe internally.
  */
 class ChannelKeyRegistry(
     private val channelId: Int,
@@ -42,18 +50,24 @@ class ChannelKeyRegistry(
     /**
      * Install a fresh key + epoch. The prior current is rolled to the
      * previous slot (keeping in-flight frames decryptable for the grace
-     * window). Caller's responsibility to ensure [epoch] is the
-     * intended forward step (mod 256); the registry does not validate
-     * monotonicity beyond rejecting an exact resubmission of the
-     * already-current epoch (returns false in that case).
+     * window).
+     *
+     * Q3 — forward-only guard: only epochs that are *ahead* of
+     * [currentEpoch] in mod-256 arithmetic are accepted. "Ahead" means
+     * the candidate is 1..127 steps forward (wrapping). This rejects
+     * replayed or stale KEY_OFFER datagrams that arrived after a newer
+     * epoch was already installed, preventing an attacker or a slow
+     * peer from rolling the active key backwards.
      *
      * @param installedAtMs caller's wall-clock at install, fed into the
      *   key-age ceiling ([isCurrentKeyExpired]). Defaults to
      *   [UNTRACKED_INSTALL] so callers that don't care about lifecycle
      *   (tests, bootstrap paths) keep the old 2-arg call.
      * @return true if the key was installed; false if [epoch] equals
-     *   the existing current epoch (caller already has it).
+     *   the existing current epoch (caller already has it) or if
+     *   [epoch] is behind [currentEpoch] in the mod-256 ordering.
      */
+    @Synchronized
     fun install(
         epoch: Int,
         key: ByteArray,
@@ -64,6 +78,9 @@ class ChannelKeyRegistry(
             "key must be ${AeadCodec.KEY_BYTES} bytes, got ${key.size}"
         }
         if (epoch == currentEpoch) return false
+        // Mod-256 forward check. When no key is installed yet (currentEpoch
+        // == NO_EPOCH = -1) we accept any first epoch unconditionally.
+        if (currentEpoch != NO_EPOCH && !isForwardEpoch(currentEpoch, epoch)) return false
         previousEpoch = currentEpoch
         previousKey = currentKey
         currentEpoch = epoch
@@ -113,9 +130,11 @@ class ChannelKeyRegistry(
     }
 
     /** True iff at least one key has been installed. */
+    @Synchronized
     fun hasKey(): Boolean = currentKey != null
 
     /** The current key's epoch, or -1 if no key is installed yet. */
+    @Synchronized
     fun currentEpoch(): Int = currentEpoch
 
     /**
@@ -124,6 +143,7 @@ class ChannelKeyRegistry(
      * silently drop because the call site can't recover useful
      * information from a no-op encrypt).
      */
+    @Synchronized
     fun encrypt(plaintext: ByteArray): ByteArray {
         val key = currentKey ?: error("no key installed for channel $channelId")
         return AeadCodec(key, currentEpoch).encrypt(plaintext)
@@ -136,6 +156,7 @@ class ChannelKeyRegistry(
      *   - epoch we don't have a key for
      *   - bad AEAD tag (wrong key for that epoch).
      */
+    @Synchronized
     fun decrypt(datagram: ByteArray): ByteArray? {
         if (datagram.isEmpty()) return null
         val gotEpoch = AeadCodec.peekEpoch(datagram)
@@ -153,6 +174,7 @@ class ChannelKeyRegistry(
      * drop quietly" (UnknownEpoch) from "key mismatch, this is bad"
      * (BadTag).
      */
+    @Synchronized
     fun decryptDetailed(datagram: ByteArray): DecryptResult {
         if (datagram.isEmpty()) return DecryptResult.Malformed
         val gotEpoch = AeadCodec.peekEpoch(datagram)
@@ -173,6 +195,20 @@ class ChannelKeyRegistry(
             previousEpoch -> previousKey
             else -> null
         }
+
+    /**
+     * Returns true when [candidate] is strictly ahead of [current] in
+     * mod-256 space — i.e., 1..127 steps forward (wrapping from 255 to
+     * 0 counts as +1). Values 128..255 steps ahead are treated as
+     * backward (they're more likely a replay than a real 128+ rotation).
+     */
+    private fun isForwardEpoch(
+        current: Int,
+        candidate: Int,
+    ): Boolean {
+        val delta = (candidate - current + 256) and 0xFF
+        return delta in 1..127
+    }
 
     sealed class DecryptResult {
         data class Ok(

@@ -74,6 +74,7 @@ class MulticastTransport(
     @Volatile
     private var socket: MulticastSocket? = null
 
+    @Volatile
     private var listener: TransportListener? = null
 
     @Volatile
