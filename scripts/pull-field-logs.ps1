@@ -100,12 +100,27 @@ $macRe   = '(?i)\b([0-9A-F]{2}):[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:
 $ipv4Re  = '\b(?:\d{1,3}\.){3}\d{1,3}\b'
 $ipv6Re  = '(?i)\b(?:[0-9A-F]{1,4}:){2,7}[0-9A-F]{1,4}\b|(?<![a-zA-Z0-9:])(?:[0-9A-F]{1,4}:)*::(?:[0-9A-F]{1,4}:)*[0-9A-F]{1,4}(?![a-zA-Z0-9:])'
 $geoRe   = '-?\d{1,3}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}'
+# DiagnosticLogger line-timestamp column: "[HH:mm:ss.SSS]" at line start.
+# "HH:MM:SS" is three colon-separated hex-looking groups, so the IPv6 pass
+# (and the IPv6 leak gate) would otherwise mask it as "[IPv6]" and destroy
+# the log's wall-clock — the 2026-08-31 "[[IPv6].354]" mangling. The column
+# carries no sensitive content, so shield it from the IPv6 detector on both
+# the scrub (placeholder → scrub → restore) and the gate (blank-for-scan).
+$tsRe    = '(?m)^\[\d{1,2}:\d{2}:\d{2}\.\d{3}\]'
+$tsGuard = [char]0xE000  # Unicode private-use sentinel; never appears in logs
 # Operator content patterns (real hostnames / callsigns / unit names).
 $opPatterns = @($cfg.contentForbiddenPatterns | Where-Object { $_ -and $_.Trim() -ne "" })
 
 function Invoke-Scrub([string] $Text) {
     if ([string]::IsNullOrEmpty($Text)) { return "" } # empty/rotated-out log
-    $t = $Text
+    # Swap the timestamp column to a sentinel so the IPv6 pass can't eat it,
+    # then restore it verbatim after every redaction pass.
+    $stamps = [System.Collections.Generic.List[string]]::new()
+    $t = [regex]::Replace($Text, $tsRe, {
+            param($m)
+            [void]$stamps.Add($m.Value)
+            "$tsGuard$($stamps.Count - 1)$tsGuard"
+        })
     $t = [regex]::Replace($t, $macRe, '${1}:XX:XX:XX:XX:${2}')
     $t = [regex]::Replace($t, $ipv6Re, '[IPv6]')
     $t = [regex]::Replace($t, $ipv4Re, '[IPv4]')
@@ -113,6 +128,10 @@ function Invoke-Scrub([string] $Text) {
     foreach ($p in $opPatterns) {
         $t = [regex]::Replace($t, $p, '[REDACTED]', 'IgnoreCase')
     }
+    $t = [regex]::Replace($t, "$tsGuard(\d+)$tsGuard", {
+            param($m)
+            $stamps[[int]$m.Groups[1].Value]
+        })
     return $t
 }
 
@@ -148,8 +167,12 @@ foreach ($t in $targets) {
         $scrubbed = Invoke-Scrub (Get-Content -Raw -LiteralPath $f.FullName)
         Set-Content -LiteralPath $outPath -Value $scrubbed -NoNewline
 
+        # Gate against a copy with the (non-sensitive) timestamp column
+        # blanked, so a restored "[HH:MM:SS.SSS]" can't false-trip the IPv6
+        # leak check while all real message content is still scanned.
+        $gateText = [regex]::Replace($scrubbed, $tsRe, '[TS]')
         foreach ($g in $leakGate) {
-            if ($scrubbed -match $g.re) {
+            if ($gateText -match $g.re) {
                 Write-Host "  LEAK: '$($g.name)' still present in $rel" -ForegroundColor Red
                 $anyLeak = $true
             }
