@@ -64,11 +64,31 @@ if (!devKitMode) {
             .file("empty-atak-proguard-mapping.txt")
             .get()
             .asFile
+    val emptyMappingHeader = "# empty proguard mapping for offline builds\n"
     emptyMapping.parentFile.mkdirs()
     if (!emptyMapping.exists()) {
-        emptyMapping.writeText("# empty proguard mapping for offline builds\n")
+        emptyMapping.writeText(emptyMappingHeader)
     }
     System.setProperty("atak.proguard.mapping", emptyMapping.absolutePath)
+
+    // The write above runs at CONFIGURATION time, but `clean` deletes
+    // app/build/ at EXECUTION time. A single
+    // `./gradlew clean assembleCivRelease` therefore reaches R8 with the
+    // mapping already gone and dies with a NoSuchFileException naming
+    // empty-atak-proguard-mapping.txt. Separate invocations were never
+    // affected -- the file survives from the previous build -- which is
+    // why this went unnoticed. Re-create it immediately before
+    // minification so the one-shot clean-and-build path works too.
+    tasks
+        .matching { it.name.startsWith("minify") && it.name.endsWith("WithR8") }
+        .configureEach {
+            doFirst {
+                emptyMapping.parentFile.mkdirs()
+                if (!emptyMapping.exists()) {
+                    emptyMapping.writeText(emptyMappingHeader)
+                }
+            }
+        }
 }
 
 repositories {
