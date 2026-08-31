@@ -50,8 +50,8 @@ import android.util.Log
 // read thread (the watchers only request them and unblock the read), so
 // the record field is never swapped under a concurrent read.
 // File-backed diagnostic mirror for capture-lifecycle events — same
-// rationale as TxController's txDiag: logcat filtering on some devices
-// swallows XV app tags, and the capture self-heal events are
+// rationale as TxController's txDiag: the Sonim XP9900's logcat
+// filtering swallows XV app tags, and the capture self-heal events are
 // exactly what a first-transmission post-mortem needs. No-throw no-op
 // before DiagnosticLogger.init(); messages carry no MACs (addresses
 // are redacted upstream of any logging here).

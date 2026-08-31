@@ -403,12 +403,21 @@ class PttCellularGateTest {
 
     @Test
     fun `MODE_IN_COMMUNICATION with suppression flag maps to IDLE`() {
-        // Device-specific suppression: some hardware holds
-        // MODE_IN_COMMUNICATION continuously with no actual call in
-        // progress, producing false-positive "hang up before PTT" blocks.
-        // Callers pass suppressInCommunicationDefensiveBlock=true for
-        // those device classes; the mapping then falls through to IDLE
-        // so PTT is not gated.
+        // Device-specific suppression, field-observed 2026-07-14 on
+        // Sonim XP9900 (AT&T carrier, Android 12): the resident AT&T
+        // EPTT / Dispatch Hub apps hold MODE_IN_COMMUNICATION
+        // continuously with no actual call, so the default OFFHOOK
+        // mapping above produced an unbroken stream of false-positive
+        // "hang up before PTT" blocks. Callers pass
+        // suppressInCommunicationDefensiveBlock=true for those device
+        // classes; the mapping then falls through to IDLE so PTT is not
+        // gated.
+        //
+        // The XP9900 is retired (docs/hardware/sonim-xp10.md) and no
+        // caller passes true today, so this test now guards the
+        // general-purpose contract rather than one handset — hence the
+        // device-neutral test name. The dated origin stays here because
+        // it is the only record of why the flag exists.
         assertEquals(
             TelephonyManager.CALL_STATE_IDLE,
             cellularCallStateFromAudioMode(
