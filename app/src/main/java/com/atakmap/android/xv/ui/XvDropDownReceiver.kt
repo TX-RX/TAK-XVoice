@@ -1150,7 +1150,15 @@ class XvDropDownReceiver(
 
         sortedGroupsList.forEach { entry ->
             groupList.add(entry.key)
-            childMap[entry.key] = entry.value.map { it.name }.sorted()
+            // Lobby pinned to the top of every group, then case-insensitive
+            // alphabetical — the always-present pre-tactical channel must be
+            // the first pick, matching meshChannelCandidates' ordering.
+            childMap[entry.key] =
+                entry.value.map { it.name }.sortedWith(
+                    compareByDescending<String> {
+                        MulticastGroupDerivation.canonicalChannelName(it) == MulticastGroupDerivation.LOBBY_CANONICAL
+                    }.thenBy(String.CASE_INSENSITIVE_ORDER) { it },
+                )
         }
 
         val current = if (slot == 0) controller.currentChannelName() else controller.secondaryChannelName()
@@ -2368,7 +2376,14 @@ class XvDropDownReceiver(
         val orderedNames = mutableListOf<String>()
         for ((groupName, groupChannels) in sortedGroups) {
             val prefix = if (groupName == "Offline / ad-hoc") "" else "$groupName / "
-            for (ch in groupChannels.sorted()) {
+            // Lobby first within each group, then case-insensitive alphabetical.
+            val orderedGroup =
+                groupChannels.sortedWith(
+                    compareByDescending<String> {
+                        MulticastGroupDerivation.canonicalChannelName(it) == MulticastGroupDerivation.LOBBY_CANONICAL
+                    }.thenBy(String.CASE_INSENSITIVE_ORDER) { it },
+                )
+            for (ch in orderedGroup) {
                 displayLabels.add("$prefix$ch")
                 orderedNames.add(ch)
             }
@@ -2876,7 +2891,16 @@ class XvDropDownReceiver(
 
             val sortedGroups = serverGroups.entries.sortedWith(compareBy({ it.key == "Offline / ad-hoc" }, { it.key }))
             val groupList = sortedGroups.map { it.key }
-            val childMap = sortedGroups.associate { it.key to it.value.map { ch -> ch.name }.sorted() }
+            // Lobby pinned to the top of every group, then alphabetical.
+            val childMap =
+                sortedGroups.associate { grp ->
+                    grp.key to
+                        grp.value.map { ch -> ch.name }.sortedWith(
+                            compareByDescending<String> {
+                                MulticastGroupDerivation.canonicalChannelName(it) == MulticastGroupDerivation.LOBBY_CANONICAL
+                            }.thenBy(String.CASE_INSENSITIVE_ORDER) { it },
+                        )
+                }
 
             groupList.forEach { groupName ->
                 val channels = childMap[groupName] ?: emptyList()
