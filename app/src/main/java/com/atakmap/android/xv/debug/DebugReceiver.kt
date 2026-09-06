@@ -20,7 +20,7 @@ import android.util.Log
 //   MESH_PLAN_EXPORT [--es passphrase "..."]
 //     Logs the current channel set (primary + persisted directory,
 //     with any stored per-channel configs) as a comms-plan carrier
-//     string — cleartext XVCP1 by default, passphrase-locked XVCP2
+//     string — cleartext XVCP1 by default, passphrase-locked XVCPP1
 //     when a passphrase is given. Paste into MESH_PLAN_IMPORT on a
 //     peer to provision it without a server.
 //   MESH_PLAN_IMPORT --es plan "<carrier text>" [--es passphrase "..."]

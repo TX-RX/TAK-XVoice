@@ -50,9 +50,12 @@ baseline is solid, the roadmap moves toward **multicast and
 decentralized voice**: server-optional operation, mesh-radio
 interoperability via standard RTP framing, and per-frame AEAD with
 distributed key election so a channel can keep running when the server
-is gone. The mesh-voice failover path that delivers this is now
-implemented behind an opt-in toggle (see "What's different"); it stays
-off by default until it has been validated against real event traffic.
+is gone. The mesh-voice failover path that delivers this is
+implemented behind an opt-in toggle (see "What's different") but is
+**alpha and testing-only** — off by default, not comprehensively
+tested, and with a known bridge issue on congested networks; do not use
+it outside of testing until it has been validated against real event
+traffic.
 
 ## Hardware philosophy — curated, not exhaustive
 
@@ -159,7 +162,7 @@ XV also adds:
   set from a documented broadcast, so a fleet MDM, the ATAK Data Sync
   tool, or a companion plugin can supply mission context; native
   auto-detection of Data Sync missions is a follow-up.
-- **Mesh-voice failover (opt-in, not yet field-validated)** — behind a
+- **Mesh-voice failover (ALPHA — testing only)** — behind a
   master toggle that defaults off. When enabled, every joined channel
   gets an auto-derived multicast leg that carries voice when the Mumble
   server is unreachable, with automatic failback once the server
@@ -170,9 +173,11 @@ XV also adds:
   gone dark; and an offline comms-plan carrier (QR / passphrase-locked)
   plus peer-beacon discovery for fully server-less operation. Standard
   RTP framing (RFC 3550 + 7587) and a raw-Opus wire mode provide
-  mesh-radio / OpenMANET interop. Implemented and unit-tested; **not
-  yet validated against real event traffic**, so it stays off by
-  default until it graduates.
+  mesh-radio / OpenMANET interop. Implemented and unit-tested, but
+  **alpha and not comprehensively tested; do not use outside of
+  testing.** It stays off by default; there is a known bridge issue on
+  congested networks under investigation. Do not rely on it
+  operationally until it graduates.
 
 ## Roadmap
 

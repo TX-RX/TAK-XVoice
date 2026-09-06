@@ -35,7 +35,7 @@ import java.security.SecureRandom
  *     <__xvshare sharerUid="<uid>" sharerCallsign="<name>"
  *                targets="<uid> <uid> ..."   (empty = everyone)
  *                serverHost="tak.example.com" (optional, for derivation)
- *                channels="<name>\n<name>"/>
+ *                channels="<name>|<name>"/>  (| delimited; newline tolerated on read)
  *   </detail>
  * </event>
  * ```
