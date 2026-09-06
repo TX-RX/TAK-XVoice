@@ -118,6 +118,16 @@ class MeshVoiceManager(
 
     private val legs = LinkedHashMap<String, MeshLeg>() // canonical channel → leg
     private val patchLegs = LinkedHashMap<String, MeshLeg>() // canonical channel → patch leg
+
+    // Server→mesh relay observability (bridge flood/echo hunt). Counters
+    // reset each tick(), which logs the rate summary. Purely diagnostic —
+    // no behavior depends on them.
+    private var srvMeshFramesSinceTick = 0
+    private val srvMeshSpeakersSinceTick = HashSet<String>()
+
+    // Throttle for the loop-suspect trace so a real feedback loop can't
+    // itself flood the diagnostic log.
+    private var lastSrvMeshLoopWarnMs: Long = Long.MIN_VALUE
     private var rendezvousLeg: MeshLeg? = null
     private var primaryChannel: String? = null // canonical
     private var secondaryChannel: String? = null // canonical
@@ -551,6 +561,27 @@ class MeshVoiceManager(
         // already dropped leg-side; another bridge's can slip through
         // during a handoff overlap).
         val serverOriginated = canonical.startsWith("mumble:")
+        // LOOP/ECHO detector (diagnostic only): a bridge receiving over the
+        // MESH a frame that is server-originated ("mumble:") or carries our
+        // OWN uid means server audio the bridge relayed (or another bridge
+        // relayed) has arrived back over multicast — the signature of a
+        // feedback loop that both echoes and floods. `ourRelay` flags a
+        // speaker we ourselves relayed server->mesh within the burst gap
+        // (i.e. our own relay looping back). Throttled so a live loop can't
+        // itself flood the log. No decision depends on this.
+        if (bridging && (serverOriginated || canonical == ourUid)) {
+            if (lastSrvMeshLoopWarnMs == Long.MIN_VALUE ||
+                now - lastSrvMeshLoopWarnMs > SRV_MESH_LOOP_WARN_THROTTLE_MS
+            ) {
+                lastSrvMeshLoopWarnMs = now
+                val ourRelay = relayLastFrameMs[canonical]?.let { now - it < RELAY_BURST_GAP_MS } ?: false
+                logDiag(
+                    "LOOP SUSPECT: bridge got ${if (canonical == ourUid) "OWN-UID" else "server-originated"} " +
+                        "frame over mesh spk=$canonical src=${hostToken(sourceHost)} ourRelay=$ourRelay " +
+                        "— possible multicast loopback of our server->mesh relay",
+                )
+            }
+        }
         val relay = bridging && canonical != ourUid && !serverOriginated && !uidMumbleConnected(canonical)
         var relayBurstStart = false
         if (relay) {
@@ -662,6 +693,20 @@ class MeshVoiceManager(
         val now = nowMs()
         reconcileLegs()
         refreshSsrcMap()
+
+        // Server->mesh relay rate summary (flood observability). Logs only
+        // when we actually relayed this interval; serverlessPeers is the
+        // count of mesh peers NOT on the server — i.e. those who genuinely
+        // need the relay, for context on whether the volume is justified.
+        if (srvMeshFramesSinceTick > 0) {
+            val serverlessPeers = knownPeerUids().count { !uidMumbleConnected(it) }
+            logDiag(
+                "server->mesh relay: $srvMeshFramesSinceTick frame(s), " +
+                    "${srvMeshSpeakersSinceTick.size} speaker(s), serverlessPeers=$serverlessPeers",
+            )
+        }
+        srvMeshFramesSinceTick = 0
+        srvMeshSpeakersSinceTick.clear()
 
         // Failover evaluation. The policy's "active leg" drives
         // FAILOVER-mode TX routing and the operator badge.
@@ -1383,6 +1428,8 @@ class MeshVoiceManager(
         val last = relayLastFrameMs[canonicalSpeaker]
         val burstStart = last == null || now - last > RELAY_BURST_GAP_MS
         relayLastFrameMs[canonicalSpeaker] = now
+        srvMeshFramesSinceTick++
+        srvMeshSpeakersSinceTick.add(canonicalSpeaker)
         if (burstStart) {
             // Tell mesh receivers who this relayed burst belongs to.
             // Non-XV Mumble clients have no presence and no beacon, so
@@ -1398,6 +1445,10 @@ class MeshVoiceManager(
                     ),
                 )
             }
+            logDiag(
+                "server->mesh relay burst spk=$canonicalSpeaker ch=$channel " +
+                    "leg=${leg != null} patch=${patchLeg != null}",
+            )
         }
         leg?.sendRelayOpus(canonicalSpeaker, opus, burstStart)
         patchLeg?.sendRelayOpus(canonicalSpeaker, opus, burstStart)
@@ -1593,6 +1644,7 @@ class MeshVoiceManager(
 
         /** Min spacing between "bridging an unresolved SSRC" warnings. */
         private const val UNRESOLVED_RELAY_WARN_THROTTLE_MS = 30_000L
+        private const val SRV_MESH_LOOP_WARN_THROTTLE_MS = 2_000L
 
         /**
          * How stale the last observed server activity may be before the
