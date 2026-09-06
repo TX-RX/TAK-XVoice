@@ -2,6 +2,7 @@ package com.atakmap.android.xv.transport.multicast
 
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.util.Locale
 
 /**
  * Deterministic mapping `(serverIdentity, channelName) → (group, port)`
@@ -102,7 +103,11 @@ object MulticastGroupDerivation {
      * derivation does.
      */
     fun canonicalChannelName(name: String): String {
-        val normalized = Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase()
+        // Locale.ROOT is load-bearing: the default-locale lowercase folds
+        // I/i differently on a Turkish-locale device, which would fork the
+        // derivation for two operators on the same channel. Derivation must
+        // be locale-neutral.
+        val normalized = Normalizer.normalize(name.trim(), Normalizer.Form.NFC).lowercase(Locale.ROOT)
         // Mumble's Root (channel id 0) is the lobby; alias so "Root" and
         // "Lobby" cannot fork the derivation onto different groups. Blank
         // stays blank — do NOT map "" → lobby (blank guards depend on it).
