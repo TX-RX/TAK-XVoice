@@ -60,12 +60,31 @@ class ReconnectPolicy(
         }
 
     companion object {
-        // Capped curve: 1s, 2s, 4s, 8s, 15s, 30s, 60s. Last value
-        // repeats indefinitely (ReconnectingMumbleTransport keeps
-        // trying once a minute until the operator tears down or the
-        // server comes back).
+        // Capped curve with a dormant tail: 1s, 2s, 4s, 8s, 15s, 30s,
+        // 60s, then 2m, then 5m — and 5m repeats FOREVER. The fast front
+        // matches "the AINA came back" / "wifi handed off" timescales;
+        // the 2m/5m tail is the auto-slowdown for an unattended device
+        // that's genuinely off-grid (e.g. a hotspot-fed unit thrown in a
+        // vehicle trunk). Retrying a dead uplink once a minute forever
+        // wastes battery and radio for no one; stretching to 5m keeps a
+        // background heartbeat without the drain. An operator who wants
+        // back immediately collapses the wait with a PTT press
+        // (ReconnectingMumbleTransport.retryNow).
+        //
+        // The ladder never stops on its own, by explicit operator
+        // policy: a real LMR radio never gives up trying to reach the
+        // repeater, and XV must not either. Silence because we quit is
+        // operationally worse than silence because we can't get through
+        // — an operator who keys up expecting the radio to have been
+        // trying, and finds it dormant instead, has been lied to by the
+        // device. The only ways out of the ladder are an explicit
+        // operator disconnect, a Fatal outcome (auth wall — retrying
+        // walks into the same wall), or the auto-reconnect toggle. An
+        // earlier revision auto-paused here after ~10 attempts; it was
+        // removed rather than tuned, so don't reintroduce a "give up
+        // after N" constant.
         val DEFAULT_SCHEDULE: LongArray =
-            longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L)
+            longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
 
         // Faster + tighter cap for AINA SPP. The hardware is local
         // (BR/EDR range), so the operator either walks back into

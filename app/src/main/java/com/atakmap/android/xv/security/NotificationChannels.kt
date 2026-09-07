@@ -70,6 +70,15 @@ object NotificationChannels {
      *  EmergencyManager owns the primary alert pipeline. */
     const val EMERGENCY = "xv_emergency"
 
+    /** Persistent "no voice connection, still reconnecting" status while
+     *  the reconnect ladder is grinding. Silent by design: the reconnect
+     *  audio cues (WARNING_VOICE_LOST once, then a quiet per-attempt
+     *  chirp that stops after the audible window) own the sound, and this
+     *  notification is what remains once they go quiet. A channel that
+     *  made noise here would re-create the continuous-beeping complaint
+     *  this whole subsystem exists to fix. */
+    const val RECONNECT = "xv_reconnect_status"
+
     /**
      * Ensure all canonical channels exist on the device. Idempotent;
      * cheap to call repeatedly. No-op below Android 8.0 (Oreo)
@@ -117,6 +126,17 @@ object NotificationChannels {
             name = "XV active calls",
             importance = NotificationManager.IMPORTANCE_LOW,
             description = "Mute/hangup controls while a private call is in progress.",
+            showBadge = false,
+        )
+        // RECONNECT: LOW + no badge. The operator is already being told
+        // audibly (for the first stretch of the outage); this is the
+        // quiet, persistent surface that outlives the tones.
+        ensure(
+            nm,
+            id = RECONNECT,
+            name = "XV connection status",
+            importance = NotificationManager.IMPORTANCE_LOW,
+            description = "Shown while XV has lost the voice server and is reconnecting.",
             showBadge = false,
         )
         // EMERGENCY: future-use. Channel created proactively so a

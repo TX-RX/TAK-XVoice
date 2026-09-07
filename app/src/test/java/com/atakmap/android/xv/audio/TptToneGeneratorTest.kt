@@ -279,4 +279,85 @@ class TptToneGeneratorTest {
         val sampleIdx = samplesFor(5)
         assertNotEquals(astro[sampleIdx], nextel[sampleIdx])
     }
+
+    // ============================================================
+    // Reconnect cues — retryChirp / recoveredChime
+    // ============================================================
+
+    @Test
+    fun `retryChirp duration constant matches the PCM it actually generates`() {
+        // The duration constant isn't decorative: TptPlayer feeds it to
+        // the AudioTrack marker watchdog. A constant that disagrees with
+        // the buffer either truncates the tone or hangs the track past
+        // the end of the audio.
+        val pcm = TptToneGenerator.retryChirp()
+        assertEquals(
+            samplesFor(TptToneGenerator.RETRY_CHIRP_DURATION_MS.toInt()),
+            pcm.size,
+        )
+    }
+
+    @Test
+    fun `recoveredChime duration constant matches the PCM it actually generates`() {
+        val pcm = TptToneGenerator.recoveredChime()
+        assertEquals(
+            samplesFor(TptToneGenerator.RECOVERED_CHIME_DURATION_MS.toInt()),
+            pcm.size,
+        )
+    }
+
+    @Test
+    fun `reconnect cues stay in PCM range and make actual sound`() {
+        for (pcm in listOf(TptToneGenerator.retryChirp(), TptToneGenerator.recoveredChime())) {
+            assertTrue(allInPcmRange(pcm))
+            assertTrue(hasNonZeroSamples(pcm))
+        }
+    }
+
+    @Test
+    fun `retryChirp is markedly quieter than the warning it accompanies`() {
+        // The design contract: WARNING_VOICE_LOST fires once and is
+        // allowed to demand attention; the retry chirp repeats for
+        // minutes and must sit under the conversation. If a future tweak
+        // brings the chirp up to warning level we're back to the
+        // continuous-beeping field complaint this subsystem exists to fix.
+        val chirpPeak = TptToneGenerator.retryChirp().maxOf { kotlin.math.abs(it.toInt()) }
+        val warningPeak = TptToneGenerator.warningChirp().maxOf { kotlin.math.abs(it.toInt()) }
+        assertTrue(
+            "retry chirp peak ($chirpPeak) must be well below warning peak ($warningPeak)",
+            chirpPeak < warningPeak / 2,
+        )
+    }
+
+    @Test
+    fun `retryChirp is a single pulse — no silence gap splitting it`() {
+        // Single-pulse is what makes this cue distinguishable from every
+        // other tone in the system (all of which are 2+ pulses). A gap
+        // would turn it into "some other status chirp" to the operator's
+        // ear. Checked structurally: the interior of the buffer never
+        // goes silent.
+        val pcm = TptToneGenerator.retryChirp()
+        // Skip the attack/release envelope edges, which legitimately
+        // approach zero.
+        val interior = pcm.copyOfRange(samplesFor(20), pcm.size - samplesFor(20))
+        val longestSilentRun = longestRunOfZeros(interior)
+        assertTrue(
+            "found a $longestSilentRun-sample silent run inside a supposedly single pulse",
+            longestSilentRun < samplesFor(2),
+        )
+    }
+
+    private fun longestRunOfZeros(pcm: ShortArray): Int {
+        var longest = 0
+        var current = 0
+        for (s in pcm) {
+            if (s.toInt() == 0) {
+                current++
+                if (current > longest) longest = current
+            } else {
+                current = 0
+            }
+        }
+        return longest
+    }
 }
