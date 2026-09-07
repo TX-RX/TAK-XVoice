@@ -29,12 +29,12 @@ coroutines = "1.11.0"
 coreKtx = "1.13.1"
 appcompat = "1.8.0"
 # Shared by protobuf-javalite (runtime) and the protoc compiler.
-protobuf = "4.36.0"
+protobuf = "4.36.1"
 # JitPack commit-pinned Concentus (pure-Java Opus); see app build file.
 concentus = "3885c4e46513ef0fc81fca100189e54f1714c6ca"
 # QR encode/decode for comms-plan sharing. compileOnly — ATAK bundles
 # zxing at runtime, so nothing new ships in the APK; see app build file.
-zxing = "3.5.3"
+zxing = "3.5.4"
 junit = "4.13.2"
 mockk = "1.14.11"
 androidxTestCore = "1.7.0"
