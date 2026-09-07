@@ -133,8 +133,8 @@ android {
         // TPP / portal listings can't tell the new APK from the
         // previous one, and devices may keep the cached old APK on
         // plugin sync.
-        versionCode = 21
-        versionName = "0.3.0"
+        versionCode = 22
+        versionName = "0.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -285,6 +285,17 @@ dependencies {
     // Mumble wire protocol uses protobuf. Lite runtime keeps APK small;
     // we don't need reflection-based features.
     implementation(libs.protobuf.javalite)
+
+    // QR encode/decode for comms-plan sharing (QrCarrier). compileOnly:
+    // ATAK bundles zxing at runtime, so nothing new ships in the APK —
+    // same pattern as the SDK main.jar above. QR call sites degrade to
+    // the share sheet if the classes are ever absent, so a build where
+    // zxing isn't on the runtime classpath fails soft, not hard.
+    compileOnly(libs.zxing.core)
+    // Also visible to the unit suite so QrCarrierTest can round-trip a
+    // real QR (encode → decode) on the JVM. Core only — zxing-javase is
+    // AWT-based and java.awt isn't on this source set's boot classpath.
+    testImplementation(libs.zxing.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.mockk)

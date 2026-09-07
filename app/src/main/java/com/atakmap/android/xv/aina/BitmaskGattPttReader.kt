@@ -1,3 +1,5 @@
+@file:android.annotation.SuppressLint("WrongConstant")
+
 package com.atakmap.android.xv.aina
 
 import android.annotation.SuppressLint

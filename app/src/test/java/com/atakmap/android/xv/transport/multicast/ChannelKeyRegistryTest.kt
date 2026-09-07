@@ -129,6 +129,118 @@ class ChannelKeyRegistryTest {
         assertThrows(IllegalStateException::class.java) { r.encrypt(plaintext) }
     }
 
+    // ---- key-age ceiling (#92 / #95: 5-day lifecycle) ----
+
+    private val fiveDaysMs = 5L * 24 * 60 * 60 * 1000
+
+    @Test
+    fun `untracked install is never expired`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 1, key = keyA) // no installedAtMs
+        assertEquals(ChannelKeyRegistry.UNTRACKED_INSTALL, r.currentKeyInstalledAtMs())
+        assertFalse(
+            "an age-untracked key must never force a rotation",
+            r.isCurrentKeyExpired(nowMs = Long.MAX_VALUE / 2, maxAgeMs = fiveDaysMs),
+        )
+    }
+
+    @Test
+    fun `keyless registry is never expired`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        assertFalse(r.isCurrentKeyExpired(nowMs = 10_000, maxAgeMs = fiveDaysMs))
+    }
+
+    @Test
+    fun `tracked key is not expired before the ceiling and is at or after it`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        val t0 = 1_000_000L
+        r.install(epoch = 1, key = keyA, installedAtMs = t0)
+        assertEquals(t0, r.currentKeyInstalledAtMs())
+        assertFalse(r.isCurrentKeyExpired(nowMs = t0 + fiveDaysMs - 1, maxAgeMs = fiveDaysMs))
+        assertTrue(r.isCurrentKeyExpired(nowMs = t0 + fiveDaysMs, maxAgeMs = fiveDaysMs))
+        assertTrue(r.isCurrentKeyExpired(nowMs = t0 + fiveDaysMs + 1, maxAgeMs = fiveDaysMs))
+    }
+
+    @Test
+    fun `backward clock jump does not expire a live key`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        val t0 = 5_000_000L
+        r.install(epoch = 1, key = keyA, installedAtMs = t0)
+        assertFalse(
+            "a wall-clock step backwards must not instantly expire the key",
+            r.isCurrentKeyExpired(nowMs = t0 - 100_000, maxAgeMs = fiveDaysMs),
+        )
+    }
+
+    @Test
+    fun `rotation refreshes the install time`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 1, key = keyA, installedAtMs = 1_000L)
+        r.install(epoch = 2, key = keyB, installedAtMs = 2_000L)
+        assertEquals(2_000L, r.currentKeyInstalledAtMs())
+    }
+
+    // ---- hard revoke ----
+
+    @Test
+    fun `dropPrevious hard-revokes the old epoch immediately`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 3, key = keyA)
+        val oldFrame = r.encrypt(plaintext)
+        r.install(epoch = 4, key = keyB)
+        // Soft grace: the old frame still decrypts...
+        assertArrayEquals(plaintext, r.decrypt(oldFrame))
+        // ...until we hard-revoke, after which the burned epoch is gone.
+        r.dropPrevious()
+        assertNull(
+            "hard revoke must stop the previous epoch decrypting",
+            r.decrypt(oldFrame),
+        )
+        // Current key is untouched.
+        assertArrayEquals(plaintext, r.decrypt(r.encrypt(plaintext)))
+    }
+
+    @Test
+    fun `dropPrevious on a fresh registry is a safe no-op`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 1, key = keyA)
+        r.dropPrevious()
+        assertArrayEquals(plaintext, r.decrypt(r.encrypt(plaintext)))
+    }
+
+    @Test
+    fun `backward epoch is rejected by the forward-only guard`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 10, key = keyA)
+        // Epoch 9 is behind 10 — must be rejected.
+        assertFalse(
+            "epoch behind current must be rejected",
+            r.install(epoch = 9, key = keyB),
+        )
+        // Epoch 10 still current.
+        assertEquals(10, r.currentEpoch())
+    }
+
+    @Test
+    fun `epoch 128 steps ahead is treated as backward (replay guard)`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        r.install(epoch = 0, key = keyA)
+        // Delta = 128 — ambiguous; the guard rejects as a replay.
+        assertFalse(
+            "epoch 128 steps ahead must be rejected as possible replay",
+            r.install(epoch = 128, key = keyB),
+        )
+        assertEquals(0, r.currentEpoch())
+    }
+
+    @Test
+    fun `first install always accepted regardless of epoch value`() {
+        val r = ChannelKeyRegistry(channelId = 6)
+        // No currentEpoch yet — any epoch must be accepted.
+        assertTrue(r.install(epoch = 200, key = keyA))
+        assertEquals(200, r.currentEpoch())
+    }
+
     @Test
     fun `epoch byte wrap is supported (255 then 0)`() {
         val r = ChannelKeyRegistry(channelId = 6)

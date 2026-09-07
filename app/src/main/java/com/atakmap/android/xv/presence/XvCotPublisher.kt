@@ -223,6 +223,8 @@ class XvCotPublisher(
             out["name"] = ch.name
             out["id"] = ch.id.toString()
             if (ch.keyEpoch > 0) out["keyEpoch"] = ch.keyEpoch.toString()
+            if (ch.group != null) out["group"] = ch.group
+            if (ch.port != null) out["port"] = ch.port.toString()
             return out
         }
     }

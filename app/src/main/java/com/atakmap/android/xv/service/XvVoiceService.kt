@@ -2311,7 +2311,13 @@ class XvVoiceService : Service() {
         // land on the wrong transaction rather than merely miss a
         // call — which is exactly the case this version check exists
         // to catch.
-        private const val AIDL_API_VERSION = 5
+        // internal (not private): XvVoiceClient derives EXPECTED_API_VERSION
+        // from this constant, so client and service can never skew within
+        // one build — a runtime mismatch then always means a genuinely
+        // stale installed APK, which is exactly what the probe exists to
+        // catch. (The client warned on EVERY load for months when its own
+        // copy sat at 1.)
+        internal const val AIDL_API_VERSION = 5
 
         // Channel ids for the incoming-ring + active-call CallStyle
         // notifications live in NotificationChannels.kt. The service's

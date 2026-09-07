@@ -394,7 +394,11 @@ class XvVoiceClient(
         // operator has a stale APK installed; we'd rather log loudly
         // and try to limp along than refuse to bind. The version probe
         // also serves as a heartbeat that the binder is responsive.
-        private const val EXPECTED_API_VERSION = 1
+        // Sourced from the service's own constant so the pair can't
+        // skew within one build — a hand-kept copy here sat at 1 while
+        // the service moved to 4, tripping the warning on every load
+        // and making the probe useless for real skew.
+        private const val EXPECTED_API_VERSION = XvVoiceService.AIDL_API_VERSION
 
         // Must match the intent-filter action declared on the service
         // in AndroidManifest.xml.

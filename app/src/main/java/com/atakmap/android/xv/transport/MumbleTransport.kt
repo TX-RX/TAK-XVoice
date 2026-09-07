@@ -2118,6 +2118,24 @@ class MumbleTransport(
         // staging channel. Server-side name is unchanged.
         const val LOBBY_DISPLAY_NAME = "Lobby"
 
+        /**
+         * Force the lobby's display spelling. Mumble's Root (id 0) is
+         * the lobby; online this transport relabels it, but the
+         * offline/mesh UI can still receive the raw "Root" or the
+         * lowercase canonical "lobby". Any name whose canonical form is
+         * the lobby renders as [LOBBY_DISPLAY_NAME] ("Lobby"); every
+         * other name is returned trimmed and otherwise unchanged.
+         */
+        fun lobbyLabel(name: String): String =
+            if (com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation
+                    .canonicalChannelName(name) ==
+                com.atakmap.android.xv.transport.multicast.MulticastGroupDerivation.LOBBY_CANONICAL
+            ) {
+                LOBBY_DISPLAY_NAME
+            } else {
+                name.trim()
+            }
+
         // L1: window after a self-initiated joinChannel during which
         // any incoming channel-change UserState is treated as
         // self-initiated (no admin-move toast). Set generously: real

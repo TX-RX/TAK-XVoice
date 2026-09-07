@@ -192,4 +192,67 @@ class XvPresenceRegistryTest {
         // 16 minutes ago should be stale.
         assertFalse(r.isFresh("ANDROID-aaa", nowMs = 16 * 60_000L))
     }
+
+    @Test
+    fun `"upsertBridgeState updates only bridge fields without clobbering full presence`() {
+        val r = XvPresenceRegistry()
+        val p = presence("ANDROID-bridge1", 1_000L, callsign = "Bridge 1")
+        r.upsert(p)
+
+        var notifyCount = 0
+        r.addListener { notifyCount++ }
+
+        r.upsertBridgeState("ANDROID-bridge1", true, true, 2_000L)
+
+        val updated = r.get("ANDROID-bridge1")
+        checkNotNull(updated)
+
+        // Assert old fields unchanged
+        assert(updated.callsign == "Bridge 1")
+        assert(updated.lastSeenMs == 1_000L) // Normal presence timestamp unchanged
+
+        // Assert bridge fields updated
+        assert(updated.mumbleConnected == true)
+        assert(updated.isBridging == true)
+        assert(updated.bridgeLastSeenMs == 2_000L)
+        assert(notifyCount == 1) // Listener should fire on bridge upsert
+    }
+
+    @Test
+    fun `"upsertBridgeState does not create stub presence if missing`() {
+        val r = XvPresenceRegistry()
+        r.upsertBridgeState("ANDROID-bridge2", false, true, 3_000L)
+
+        val created = r.get("ANDROID-bridge2")
+        assert(created == null)
+    }
+
+    @Test
+    fun `mesh presence does not overwrite cot presence`() {
+        val r = XvPresenceRegistry()
+        val cot = presence("uid1", 1_000L).copy(source = PresenceSource.COT, server = "server1")
+        val mesh = presence("uid1", 2_000L).copy(source = PresenceSource.MESH, server = null)
+
+        r.upsert(cot)
+        r.upsert(mesh)
+
+        val retrieved = r.get("uid1")
+        assertEquals("server1", retrieved?.server) // CoT should win
+        assertEquals(PresenceSource.COT, retrieved?.source)
+    }
+
+    @Test
+    fun `mesh presence gets purged faster than cot`() {
+        val r = XvPresenceRegistry(staleAfterMs = 15 * 60_000L, meshStaleAfterMs = 60_000L)
+        val mesh = presence("uid2", 0L).copy(source = PresenceSource.MESH)
+        r.upsert(mesh)
+
+        // At 59s, it's fresh
+        assertTrue(r.isFresh("uid2", nowMs = 59_000L))
+        // At 61s, it's stale and should be purged
+        assertFalse(r.isFresh("uid2", nowMs = 61_000L))
+        val removed = r.purgeStale(nowMs = 61_000L)
+        assertEquals(1, removed)
+        assertNull(r.get("uid2"))
+    }
 }

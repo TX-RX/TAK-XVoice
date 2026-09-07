@@ -1041,6 +1041,16 @@ class MumbleSession(
     }
 
     /**
+     * Wall-clock ms of the last byte received from the server (any
+     * message type — ping acks count), or 0 before the first byte.
+     * The mesh failover layer polls this for "server alive" during
+     * voice silence: without it the failover policy only ever hears
+     * about voice frames, so a connected-but-quiet channel reads as a
+     * dead server and the policy sticks on the mesh leg.
+     */
+    fun lastServerActivityAtMs(): Long = lastServerActivityMs
+
+    /**
      * Test seam: ask the watchdog if the link is currently considered
      * stale, given an injected "now" wall-clock. Mirrors the exact
      * condition in [startPing]'s heartbeat loop so a regression in

@@ -9,7 +9,8 @@ class FailoverPolicyTest {
         rxWindow: Long = 3_000,
         hysteresis: Long = 10_000,
         interBurst: Long = 200,
-    ) = FailoverPolicy(rxWindow, hysteresis, interBurst)
+        mode: FailoverPolicy.TransportMode = FailoverPolicy.TransportMode.MUMBLE_PRIMARY,
+    ) = FailoverPolicy(rxWindow, hysteresis, interBurst, mode)
 
     @Test
     fun `starts on Mumble`() {
@@ -144,5 +145,52 @@ class FailoverPolicyTest {
         val refail = p.evaluate(nowMs = 2_000, mumbleConnected = false)
         assertTrue(refail is FailoverPolicy.Decision.FlippedTo)
         assertEquals(FailoverPolicy.Leg.MULTICAST, refail.active)
+    }
+
+    // ---- TransportMode tests ----
+
+    @Test
+    fun `MUMBLE_ONLY never flips to multicast on disconnect`() {
+        val p = policy(mode = FailoverPolicy.TransportMode.MUMBLE_ONLY)
+        assertEquals(FailoverPolicy.Leg.MUMBLE, p.active())
+        val d = p.evaluate(nowMs = 1_000, mumbleConnected = false)
+        assertTrue("MUMBLE_ONLY must always return NoChange, got $d", d is FailoverPolicy.Decision.NoChange)
+        assertEquals(FailoverPolicy.Leg.MUMBLE, d.active)
+    }
+
+    @Test
+    fun `LOCAL_PRIMARY starts on MULTICAST`() {
+        val p = policy(mode = FailoverPolicy.TransportMode.LOCAL_PRIMARY)
+        assertEquals(FailoverPolicy.Leg.MULTICAST, p.active())
+    }
+
+    @Test
+    fun `LOCAL_PRIMARY flips to Mumble once healthy`() {
+        val p = policy(hysteresis = 5_000, mode = FailoverPolicy.TransportMode.LOCAL_PRIMARY)
+        // Mumble connects and RX traffic arrives.
+        p.observeMumbleRx(nowMs = 1_000)
+        val mid = p.evaluate(nowMs = 1_000, mumbleConnected = true)
+        assertTrue("must hold on MULTICAST during hysteresis, got $mid", mid is FailoverPolicy.Decision.NoChange)
+        // After full hysteresis window.
+        p.observeMumbleRx(nowMs = 6_500)
+        val flip = p.evaluate(nowMs = 6_500, mumbleConnected = true)
+        assertTrue("expected flip to MUMBLE after hysteresis, got $flip", flip is FailoverPolicy.Decision.FlippedTo)
+        assertEquals(FailoverPolicy.Leg.MUMBLE, flip.active)
+    }
+
+    @Test
+    fun `LOCAL_PRIMARY falls back to MULTICAST immediately on Mumble disconnect`() {
+        val p = policy(hysteresis = 1_000, mode = FailoverPolicy.TransportMode.LOCAL_PRIMARY)
+        // Build up to Mumble and flip there.
+        p.observeMumbleRx(nowMs = 100)
+        p.evaluate(nowMs = 100, mumbleConnected = true)
+        p.observeMumbleRx(nowMs = 1_500)
+        val toMumble = p.evaluate(nowMs = 1_500, mumbleConnected = true)
+        assertTrue(toMumble is FailoverPolicy.Decision.FlippedTo)
+        assertEquals(FailoverPolicy.Leg.MUMBLE, toMumble.active)
+        // Now Mumble drops — must fall back immediately to MULTICAST.
+        val toMulticast = p.evaluate(nowMs = 2_000, mumbleConnected = false)
+        assertTrue("expected FlippedTo MULTICAST, got $toMulticast", toMulticast is FailoverPolicy.Decision.FlippedTo)
+        assertEquals(FailoverPolicy.Leg.MULTICAST, toMulticast.active)
     }
 }
