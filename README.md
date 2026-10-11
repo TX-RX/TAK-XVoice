@@ -140,8 +140,10 @@ XV also adds:
   / None) for operators transitioning from public-safety LMR systems.
 - **Mumble + multicast channels under a single UX** — transport is an
   implementation detail. Mumble uses the device's ATAK enrollment cert
-  for TLS auth and refuses a server whose certificate does not name the
-  host it connects to; the multicast leg joins a deterministic UDP group
+  for TLS auth (the server's own entry, else ATAK's default certificates,
+  as a data package that sets only the global ones leaves them) and
+  refuses a server whose certificate does not name the host it connects
+  to; the multicast leg joins a deterministic UDP group
   derived from the server hostname + channel name (the `xv-mcast-v1`
   scheme), so any two devices on the same server and channel compute
   the same group and port with zero coordination. An operator can pin

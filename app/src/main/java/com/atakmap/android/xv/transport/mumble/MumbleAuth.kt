@@ -444,14 +444,16 @@ object MumbleAuth {
     }
 
     private fun loadClientKeyStore(server: String): Pair<KeyStore, CharArray> {
-        val bytes =
-            AtakCertificateDatabase.getCertificateForServer(ICertificateStore.TYPE_CLIENT_CERTIFICATE, server)
-                ?: error("no client cert in ATAK for server $server (TYPE_CLIENT_CERTIFICATE)")
         // Cert-blob types and credential types are different namespaces.
         // The PKCS12 unlock secret for TYPE_CLIENT_CERTIFICATE lives
         // under the credentials store's TYPE_clientPassword key, not
         // its own type.
-        val pwd = certPasswordFor(ICredentialsStore.Credentials.TYPE_clientPassword, server)
+        val (bytes, pwd) =
+            certificateFor(
+                ICertificateStore.TYPE_CLIENT_CERTIFICATE,
+                ICredentialsStore.Credentials.TYPE_clientPassword,
+                server,
+            ) ?: error("no client cert in ATAK for server $server (TYPE_CLIENT_CERTIFICATE)")
         val ks = KeyStore.getInstance("PKCS12")
         ByteArrayInputStream(bytes).use { ks.load(it, pwd) }
         Log.i(TAG, "loaded client cert (${ks.size()} entries)")
@@ -459,11 +461,13 @@ object MumbleAuth {
     }
 
     private fun loadTrustKeyStore(server: String): KeyStore {
-        val bytes =
-            AtakCertificateDatabase.getCertificateForServer(ICertificateStore.TYPE_TRUST_STORE_CA, server)
-                ?: error("no trust-store CA in ATAK for server $server (TYPE_TRUST_STORE_CA)")
         // Trust-store CA uses TYPE_caPassword in the credentials store.
-        val pwd = certPasswordFor(ICredentialsStore.Credentials.TYPE_caPassword, server)
+        val (bytes, pwd) =
+            certificateFor(
+                ICertificateStore.TYPE_TRUST_STORE_CA,
+                ICredentialsStore.Credentials.TYPE_caPassword,
+                server,
+            ) ?: error("no trust-store CA in ATAK for server $server (TYPE_TRUST_STORE_CA)")
         val src = KeyStore.getInstance("PKCS12")
         ByteArrayInputStream(bytes).use { src.load(it, pwd) }
         // Re-emit as a JKS so TrustManagerFactory will accept the entries as
@@ -484,6 +488,37 @@ object MumbleAuth {
         }
         Log.i(TAG, "loaded trust store ($idx CA entries)")
         return out
+    }
+
+    /**
+     * The certificate ATAK uses for [server], with its password: the
+     * per-server entry when there is one, otherwise ATAK's default. A data
+     * package that sets the global caLocation / certificateLocation prefs
+     * (rather than a per-server entry) only fills the defaults, and
+     * ATAK then uses those for this server too.
+     */
+    private fun certificateFor(
+        certType: String,
+        passwordType: String,
+        server: String,
+    ): Pair<ByteArray, CharArray>? {
+        AtakCertificateDatabase.getCertificateForServer(certType, server)?.let {
+            return it to certPasswordFor(passwordType, server)
+        }
+        val fallback = AtakCertificateDatabase.getCertificate(certType) ?: return null
+        Log.i(TAG, "no $certType for $server; using ATAK's default")
+        return fallback to defaultPasswordFor(passwordType)
+    }
+
+    private fun defaultPasswordFor(type: String): CharArray {
+        val raw =
+            try {
+                AtakAuthenticationDatabase.getCredentials(type)?.password
+            } catch (t: Throwable) {
+                Log.w(TAG, "default credentials lookup failed for $type", t)
+                null
+            }
+        return (raw ?: "").toCharArray()
     }
 
     private fun certPasswordFor(
