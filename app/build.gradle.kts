@@ -96,7 +96,14 @@ repositories {
     mavenCentral()
     // JitPack hosts Concentus (pure-Java Opus). Used until we move to
     // native Opus via Humla/wrapped-opus in a later phase.
-    maven { url = uri("https://jitpack.io") }
+    maven {
+        url = uri("https://jitpack.io")
+        // JitPack builds arbitrary GitHub repos; never let it answer for anything else.
+        content { includeGroup("com.github.lostromb.concentus") }
+        // The pinned build's POM claims version master-SNAPSHOT, which Gradle rejects as inconsistent.
+        // Concentus has no dependencies, so resolve it from the jar alone.
+        metadataSources { artifact() }
+    }
     if (devKitMode) {
         maven {
             url = uri(prop("takrepo.url")!!)
