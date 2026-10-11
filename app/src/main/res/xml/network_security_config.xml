@@ -6,8 +6,10 @@
     transport in XV is TLS-only by construction:
       - MumbleTransport / MumbleAuth.connectTls — TLS 1.2 with PKIX
         validation against ATAK's enrollment-cert trust anchors plus
-        the system trust store (and hostname verification via
-        endpointIdentificationAlgorithm = "HTTPS").
+        the system trust store, then hostname verification after the
+        handshake (MumbleAuth.verifyServerHostname): Conscrypt applies
+        endpointIdentificationAlgorithm only with an
+        X509ExtendedTrustManager, which ours is not.
       - MulticastTransport — link-local UDP, AEAD-wrapped at the
         application layer (ChaCha20-Poly1305 with channel keys
         distributed RSA-OAEP-wrapped over Mumble TextMessage). The

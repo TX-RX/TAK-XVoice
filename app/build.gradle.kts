@@ -309,6 +309,11 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.robolectric)
+
+    // On-device tests for what only Android's platform classes can show,
+    // such as its default HostnameVerifier.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
 
 ktlint {

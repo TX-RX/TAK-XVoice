@@ -725,6 +725,7 @@ class MumbleSession(
                     // before the link actually dies).
                     soTimeout = SOCKET_SO_TIMEOUT_MS
                     startHandshake()
+                    MumbleAuth.verifyServerHostname(this, host)
                 }
             // Critical race guard: if disconnect() was called while we
             // were in the multi-second TLS handshake, [running] is now

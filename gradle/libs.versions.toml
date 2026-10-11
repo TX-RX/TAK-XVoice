@@ -39,6 +39,7 @@ zxing = "3.5.3"
 junit = "4.13.2"
 mockk = "1.14.11"
 androidxTestCore = "1.7.0"
+androidxTestRunner = "1.7.0"
 robolectric = "4.16.1"
 
 [libraries]
@@ -53,6 +54,7 @@ protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.
 junit = { module = "junit:junit", version.ref = "junit" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 
 [plugins]

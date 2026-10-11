@@ -13,8 +13,11 @@ import java.security.cert.CertificateFactory
 import java.security.cert.PKIXParameters
 import java.security.cert.TrustAnchor
 import java.security.cert.X509Certificate
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
@@ -168,18 +171,36 @@ object MumbleAuth {
     ): SSLSocket {
         val ctx = buildSslContext(takServerHost)
         val socket = ctx.socketFactory.createSocket(host, port) as SSLSocket
-        // Hostname verification — without this, any cert chained to one of our
-        // trust anchors (TAK private CA OR system trust store) would pass the
-        // PinnedAnchorTrustManager regardless of CN/SAN. "HTTPS" is the
-        // standard SSLParameters identification algorithm; on Conscrypt it
-        // performs RFC 6125-style endpoint matching against `host` (the
-        // string we passed to createSocket) using the SNI sent during
-        // handshake. Set BEFORE startHandshake.
+        // Conscrypt applies this only for an X509ExtendedTrustManager, and
+        // PinnedAnchorTrustManager is a plain X509TrustManager, so it does not
+        // check the hostname here. verifyServerHostname does, after the
+        // handshake; this stays for platforms that do honour it.
         socket.sslParameters =
             socket.sslParameters.apply {
                 endpointIdentificationAlgorithm = "HTTPS"
             }
         return socket
+    }
+
+    /**
+     * Refuse a server whose certificate does not name [host]. The trust
+     * manager only validates the chain, so without this any certificate
+     * from a trusted CA, including another user's client certificate,
+     * would be accepted as the Mumble server. Call right after
+     * startHandshake(); closes the socket when the name does not match.
+     */
+    fun verifyServerHostname(
+        socket: SSLSocket,
+        host: String,
+        verifier: HostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier(),
+    ) {
+        if (!verifier.verify(host, socket.session)) {
+            try {
+                socket.close()
+            } catch (_: Throwable) {
+            }
+            throw SSLPeerUnverifiedException("Mumble server certificate does not match $host")
+        }
     }
 
     private fun buildSslContext(takServerHost: String): SSLContext {
