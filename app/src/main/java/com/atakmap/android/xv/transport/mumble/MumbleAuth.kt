@@ -373,8 +373,8 @@ object MumbleAuth {
     // PKIX validation against a fixed set of anchors. Bypasses the platform's
     // network-security-config wrapper entirely — Android won't substitute its
     // own trust manager in front of this one because it's not a TMF-derived
-    // TrustManagerImpl.
-    private class PinnedAnchorTrustManager(
+    // TrustManagerImpl. Internal for its unit tests.
+    internal class PinnedAnchorTrustManager(
         private val anchors: Set<TrustAnchor>,
     ) : X509TrustManager {
         private val cf = CertificateFactory.getInstance("X.509")
@@ -393,8 +393,11 @@ object MumbleAuth {
             if (chain.isEmpty()) throw java.security.cert.CertificateException("empty chain")
             val leaf = chain.first()
             Log.i(TAG, "trust: server check leaf=${leaf.subjectDN} (${chain.size} certs)")
-            // Try the chain as-is first.
-            if (tryValidate(chain.toList())) {
+            // A server may send its chain up to and including the root, while
+            // the anchor can be any CA in it: ATAK's truststore often yields
+            // only one. PKIX wants a path that ends just below its anchor, so
+            // try each prefix of the presented chain, shortest first.
+            if ((1..chain.size).any { tryValidate(chain.take(it)) }) {
                 Log.i(TAG, "trust: server OK")
                 return
             }
