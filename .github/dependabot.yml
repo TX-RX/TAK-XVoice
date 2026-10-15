@@ -79,9 +79,21 @@ updates:
     # ignore block and let the coordinated bump land as one PR.
     ignore:
       # Gradle wrapper — takdev references removed-in-Gradle-9
-      # Groovy classpath. Re-enable when the SDK's takdev jar is
-      # rebuilt against Gradle 9.
-      - dependency-name: gradle
+      # Groovy classpath, and AGP 8.x relies on the Gradle internal
+      # `InternalProblems` API that Gradle removed in 9.6.0
+      # (verified 2026-10-15: wrapper 9.7.1 fails at configuration,
+      # `com.android.application` can't apply — Gradle upgrade-guide
+      # anchor #agp_8x_incompatible). Re-enable when tak.gov ships a
+      # takdev jar built against Gradle 9 AND AGP moves to a 9.6+-
+      # compatible line.
+      #
+      # NOTE: the dependency-name here is `gradle-wrapper`, NOT
+      # `gradle`. Dependabot tracks the wrapper distribution under
+      # `gradle-wrapper` (see branch dependabot/gradle/gradle-wrapper-*).
+      # An earlier `dependency-name: gradle` entry never matched, which
+      # is why PR #108 (wrapper 9.7.1) leaked through on 2026-09-07
+      # despite this block existing since 2026-07-08.
+      - dependency-name: gradle-wrapper
         update-types:
           - version-update:semver-major
       # Android Gradle Plugin — AGP 9.x requires Gradle 9.4+ and
@@ -98,3 +110,14 @@ updates:
         update-types:
           - version-update:semver-major
           - version-update:semver-minor
+      # Robolectric 4.17 — NOT an SDK coupling, a Robolectric-side
+      # shadow regression. Verified 2026-10-15: 4.17 breaks 25 unit
+      # tests vs 4.16.1 — the `android.bluetooth.BluetoothDevice`
+      # shadow fails static-init under MockK/Objenesis (whole AINA/BT
+      # suite), and a multicast socket bind/joinGroup shadow change
+      # breaks MulticastTransportSwapTest. kotlin/protobuf/zxing from
+      # the same group bump were clean and landed separately. Drop
+      # this block and re-test when a 4.17.x / 4.18 fixes the shadows.
+      - dependency-name: org.robolectric:robolectric
+        versions:
+          - '4.17'

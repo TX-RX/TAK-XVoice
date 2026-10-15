@@ -17,7 +17,7 @@
 
 [versions]
 agp = "8.13.2"
-kotlin = "2.4.10"
+kotlin = "2.4.20"
 ktlintPlugin = "14.2.0"
 protobufPlugin = "0.10.0"
 # Standalone ktlint CLI version. NOTE: the CI job (.github/workflows/
@@ -29,13 +29,13 @@ coroutines = "1.11.0"
 coreKtx = "1.13.1"
 appcompat = "1.8.0"
 # Shared by protobuf-javalite (runtime) and the protoc compiler.
-protobuf = "4.36.0"
+protobuf = "4.36.1"
 # JitPack-built Concentus (pure-Java Opus) at commit 3885c4e465; see app build file. JitPack no longer
 # serves the bare commit coordinate, only this build of it (jar sha256 89d366fb...8eddfab6).
 concentus = "master-3885c4e465-1"
 # QR encode/decode for comms-plan sharing. compileOnly — ATAK bundles
 # zxing at runtime, so nothing new ships in the APK; see app build file.
-zxing = "3.5.3"
+zxing = "3.5.4"
 junit = "4.13.2"
 mockk = "1.14.11"
 androidxTestCore = "1.7.0"
