@@ -13,8 +13,11 @@ import java.security.cert.CertificateFactory
 import java.security.cert.PKIXParameters
 import java.security.cert.TrustAnchor
 import java.security.cert.X509Certificate
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
@@ -168,18 +171,36 @@ object MumbleAuth {
     ): SSLSocket {
         val ctx = buildSslContext(takServerHost)
         val socket = ctx.socketFactory.createSocket(host, port) as SSLSocket
-        // Hostname verification — without this, any cert chained to one of our
-        // trust anchors (TAK private CA OR system trust store) would pass the
-        // PinnedAnchorTrustManager regardless of CN/SAN. "HTTPS" is the
-        // standard SSLParameters identification algorithm; on Conscrypt it
-        // performs RFC 6125-style endpoint matching against `host` (the
-        // string we passed to createSocket) using the SNI sent during
-        // handshake. Set BEFORE startHandshake.
+        // Conscrypt applies this only for an X509ExtendedTrustManager, and
+        // PinnedAnchorTrustManager is a plain X509TrustManager, so it does not
+        // check the hostname here. verifyServerHostname does, after the
+        // handshake; this stays for platforms that do honour it.
         socket.sslParameters =
             socket.sslParameters.apply {
                 endpointIdentificationAlgorithm = "HTTPS"
             }
         return socket
+    }
+
+    /**
+     * Refuse a server whose certificate does not name [host]. The trust
+     * manager only validates the chain, so without this any certificate
+     * from a trusted CA, including another user's client certificate,
+     * would be accepted as the Mumble server. Call right after
+     * startHandshake(); closes the socket when the name does not match.
+     */
+    fun verifyServerHostname(
+        socket: SSLSocket,
+        host: String,
+        verifier: HostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier(),
+    ) {
+        if (!verifier.verify(host, socket.session)) {
+            try {
+                socket.close()
+            } catch (_: Throwable) {
+            }
+            throw SSLPeerUnverifiedException("Mumble server certificate does not match $host")
+        }
     }
 
     private fun buildSslContext(takServerHost: String): SSLContext {
@@ -352,8 +373,8 @@ object MumbleAuth {
     // PKIX validation against a fixed set of anchors. Bypasses the platform's
     // network-security-config wrapper entirely — Android won't substitute its
     // own trust manager in front of this one because it's not a TMF-derived
-    // TrustManagerImpl.
-    private class PinnedAnchorTrustManager(
+    // TrustManagerImpl. Internal for its unit tests.
+    internal class PinnedAnchorTrustManager(
         private val anchors: Set<TrustAnchor>,
     ) : X509TrustManager {
         private val cf = CertificateFactory.getInstance("X.509")
@@ -372,8 +393,11 @@ object MumbleAuth {
             if (chain.isEmpty()) throw java.security.cert.CertificateException("empty chain")
             val leaf = chain.first()
             Log.i(TAG, "trust: server check leaf=${leaf.subjectDN} (${chain.size} certs)")
-            // Try the chain as-is first.
-            if (tryValidate(chain.toList())) {
+            // A server may send its chain up to and including the root, while
+            // the anchor can be any CA in it: ATAK's truststore often yields
+            // only one. PKIX wants a path that ends just below its anchor, so
+            // try each prefix of the presented chain, shortest first.
+            if ((1..chain.size).any { tryValidate(chain.take(it)) }) {
                 Log.i(TAG, "trust: server OK")
                 return
             }
@@ -423,14 +447,16 @@ object MumbleAuth {
     }
 
     private fun loadClientKeyStore(server: String): Pair<KeyStore, CharArray> {
-        val bytes =
-            AtakCertificateDatabase.getCertificateForServer(ICertificateStore.TYPE_CLIENT_CERTIFICATE, server)
-                ?: error("no client cert in ATAK for server $server (TYPE_CLIENT_CERTIFICATE)")
         // Cert-blob types and credential types are different namespaces.
         // The PKCS12 unlock secret for TYPE_CLIENT_CERTIFICATE lives
         // under the credentials store's TYPE_clientPassword key, not
         // its own type.
-        val pwd = certPasswordFor(ICredentialsStore.Credentials.TYPE_clientPassword, server)
+        val (bytes, pwd) =
+            certificateFor(
+                ICertificateStore.TYPE_CLIENT_CERTIFICATE,
+                ICredentialsStore.Credentials.TYPE_clientPassword,
+                server,
+            ) ?: error("no client cert in ATAK for server $server (TYPE_CLIENT_CERTIFICATE)")
         val ks = KeyStore.getInstance("PKCS12")
         ByteArrayInputStream(bytes).use { ks.load(it, pwd) }
         Log.i(TAG, "loaded client cert (${ks.size()} entries)")
@@ -438,11 +464,13 @@ object MumbleAuth {
     }
 
     private fun loadTrustKeyStore(server: String): KeyStore {
-        val bytes =
-            AtakCertificateDatabase.getCertificateForServer(ICertificateStore.TYPE_TRUST_STORE_CA, server)
-                ?: error("no trust-store CA in ATAK for server $server (TYPE_TRUST_STORE_CA)")
         // Trust-store CA uses TYPE_caPassword in the credentials store.
-        val pwd = certPasswordFor(ICredentialsStore.Credentials.TYPE_caPassword, server)
+        val (bytes, pwd) =
+            certificateFor(
+                ICertificateStore.TYPE_TRUST_STORE_CA,
+                ICredentialsStore.Credentials.TYPE_caPassword,
+                server,
+            ) ?: error("no trust-store CA in ATAK for server $server (TYPE_TRUST_STORE_CA)")
         val src = KeyStore.getInstance("PKCS12")
         ByteArrayInputStream(bytes).use { src.load(it, pwd) }
         // Re-emit as a JKS so TrustManagerFactory will accept the entries as
@@ -463,6 +491,37 @@ object MumbleAuth {
         }
         Log.i(TAG, "loaded trust store ($idx CA entries)")
         return out
+    }
+
+    /**
+     * The certificate ATAK uses for [server], with its password: the
+     * per-server entry when there is one, otherwise ATAK's default. A data
+     * package that sets the global caLocation / certificateLocation prefs
+     * (rather than a per-server entry) only fills the defaults, and
+     * ATAK then uses those for this server too.
+     */
+    private fun certificateFor(
+        certType: String,
+        passwordType: String,
+        server: String,
+    ): Pair<ByteArray, CharArray>? {
+        AtakCertificateDatabase.getCertificateForServer(certType, server)?.let {
+            return it to certPasswordFor(passwordType, server)
+        }
+        val fallback = AtakCertificateDatabase.getCertificate(certType) ?: return null
+        Log.i(TAG, "no $certType for $server; using ATAK's default")
+        return fallback to defaultPasswordFor(passwordType)
+    }
+
+    private fun defaultPasswordFor(type: String): CharArray {
+        val raw =
+            try {
+                AtakAuthenticationDatabase.getCredentials(type)?.password
+            } catch (t: Throwable) {
+                Log.w(TAG, "default credentials lookup failed for $type", t)
+                null
+            }
+        return (raw ?: "").toCharArray()
     }
 
     private fun certPasswordFor(

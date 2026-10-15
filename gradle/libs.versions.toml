@@ -30,14 +30,16 @@ coreKtx = "1.13.1"
 appcompat = "1.8.0"
 # Shared by protobuf-javalite (runtime) and the protoc compiler.
 protobuf = "4.36.0"
-# JitPack commit-pinned Concentus (pure-Java Opus); see app build file.
-concentus = "3885c4e46513ef0fc81fca100189e54f1714c6ca"
+# JitPack-built Concentus (pure-Java Opus) at commit 3885c4e465; see app build file. JitPack no longer
+# serves the bare commit coordinate, only this build of it (jar sha256 89d366fb...8eddfab6).
+concentus = "master-3885c4e465-1"
 # QR encode/decode for comms-plan sharing. compileOnly — ATAK bundles
 # zxing at runtime, so nothing new ships in the APK; see app build file.
 zxing = "3.5.3"
 junit = "4.13.2"
 mockk = "1.14.11"
 androidxTestCore = "1.7.0"
+androidxTestRunner = "1.7.0"
 robolectric = "4.16.1"
 
 [libraries]
@@ -46,12 +48,13 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
-concentus = { module = "com.github.lostromb:concentus", version.ref = "concentus" }
+concentus = { module = "com.github.lostromb.concentus:Concentus", version.ref = "concentus" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf" }
 junit = { module = "junit:junit", version.ref = "junit" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 
 [plugins]

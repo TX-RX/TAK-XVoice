@@ -1,6 +1,13 @@
 package com.atakmap.android.xv.transport.mumble
 
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import javax.net.ssl.SSLPeerUnverifiedException
+import javax.net.ssl.SSLSession
+import javax.net.ssl.SSLSocket
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 /**
@@ -68,5 +75,25 @@ class MumbleAuthTest {
     fun `mumbleUsername substitutes ALL spaces, not just the first`() {
         val u = MumbleAuth.mumbleUsername(callsign = "Bravo Six Niner", slotSuffix = "112233VS2")
         assertEquals("Bravo_Six_Niner---112233VS2", u)
+    }
+
+    @Test
+    fun `verifyServerHostname accepts a certificate that names the host`() {
+        val socket = mockk<SSLSocket>(relaxed = true)
+        every { socket.session } returns mockk<SSLSession>()
+        MumbleAuth.verifyServerHostname(socket, "tak.example.org") { host, _ -> host == "tak.example.org" }
+        verify(exactly = 0) { socket.close() }
+    }
+
+    @Test
+    fun `verifyServerHostname closes and refuses a certificate for another name`() {
+        // A trusted CA's certificate for anything else, such as another
+        // user's client certificate, must not pass as the Mumble server.
+        val socket = mockk<SSLSocket>(relaxed = true)
+        every { socket.session } returns mockk<SSLSession>()
+        assertThrows(SSLPeerUnverifiedException::class.java) {
+            MumbleAuth.verifyServerHostname(socket, "tak.example.org") { _, _ -> false }
+        }
+        verify { socket.close() }
     }
 }

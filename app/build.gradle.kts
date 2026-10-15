@@ -96,7 +96,14 @@ repositories {
     mavenCentral()
     // JitPack hosts Concentus (pure-Java Opus). Used until we move to
     // native Opus via Humla/wrapped-opus in a later phase.
-    maven { url = uri("https://jitpack.io") }
+    maven {
+        url = uri("https://jitpack.io")
+        // JitPack builds arbitrary GitHub repos; never let it answer for anything else.
+        content { includeGroup("com.github.lostromb.concentus") }
+        // The pinned build's POM claims version master-SNAPSHOT, which Gradle rejects as inconsistent.
+        // Concentus has no dependencies, so resolve it from the jar alone.
+        metadataSources { artifact() }
+    }
     if (devKitMode) {
         maven {
             url = uri(prop("takrepo.url")!!)
@@ -133,8 +140,8 @@ android {
         // TPP / portal listings can't tell the new APK from the
         // previous one, and devices may keep the cached old APK on
         // plugin sync.
-        versionCode = 22
-        versionName = "0.3.1"
+        versionCode = 23
+        versionName = "0.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -302,6 +309,11 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.robolectric)
+
+    // On-device tests for what only Android's platform classes can show,
+    // such as its default HostnameVerifier.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
 
 ktlint {

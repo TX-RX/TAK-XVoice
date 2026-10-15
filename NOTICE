@@ -23,7 +23,8 @@ Concentus (pure-Java Opus codec)
   Source:  https://github.com/lostromb/concentus
   License: Apache License 2.0
   Use:     Bundled into the APK via maven coordinate
-           `com.github.lostromb:concentus`. Provides Opus encode/decode
+           `com.github.lostromb.concentus:Concentus`, JitPack's build of
+           commit 3885c4e465. Provides Opus encode/decode
            on the JVM without an NDK toolchain. Wrapped by
            ConcentusOpusEncoder / ConcentusOpusDecoder.
 
