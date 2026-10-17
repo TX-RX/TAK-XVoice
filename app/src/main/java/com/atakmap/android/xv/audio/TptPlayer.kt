@@ -130,6 +130,8 @@ class TptPlayer(
                 -> TptToneGenerator.warningChirp()
                 StatusToneKind.CALL_RINGBACK -> TptToneGenerator.ringbackChirp()
                 StatusToneKind.CALL_BUSY -> TptToneGenerator.busyChirp()
+                StatusToneKind.RECONNECT_RETRY -> TptToneGenerator.retryChirp()
+                StatusToneKind.RECONNECT_RECOVERED -> TptToneGenerator.recoveredChime()
             }
         if (pcm.isEmpty()) return
         val durationMs =
@@ -141,6 +143,8 @@ class TptPlayer(
                 -> TptToneGenerator.WARNING_CHIRP_DURATION_MS
                 StatusToneKind.CALL_RINGBACK -> TptToneGenerator.RINGBACK_CHIRP_DURATION_MS
                 StatusToneKind.CALL_BUSY -> TptToneGenerator.BUSY_CHIRP_DURATION_MS
+                StatusToneKind.RECONNECT_RETRY -> TptToneGenerator.RETRY_CHIRP_DURATION_MS
+                StatusToneKind.RECONNECT_RECOVERED -> TptToneGenerator.RECOVERED_CHIME_DURATION_MS
             }
         playPcmSession(
             pcm = pcm,

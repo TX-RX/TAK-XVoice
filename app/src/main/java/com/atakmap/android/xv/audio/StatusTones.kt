@@ -29,6 +29,17 @@ enum class StatusToneKind {
     // when the callee declines, the call times out, or the server
     // refuses the temp channel.
     CALL_BUSY,
+
+    // "Still trying" — one quiet blip per failed reconnect attempt while
+    // the outage is young. Gated by ReconnectNotificationTracker, which
+    // stops it after the audible window even though the ladder keeps
+    // retrying. Deliberately NOT subject to the shared status cooldown
+    // (see DEFAULT_PER_KIND_COOLDOWN_MS).
+    RECONNECT_RETRY,
+
+    // "You're back" — fires once when a reconnect succeeds after a real
+    // outage. Not played for a first-time connect.
+    RECONNECT_RECOVERED,
 }
 
 // Plays status tones with a per-kind cooldown so flapping events
@@ -43,6 +54,11 @@ class StatusTones(
     private val tptPlayer: TptPlayer,
     private val enabled: () -> Boolean = { true },
     private val cooldownMs: () -> Long = { DEFAULT_COOLDOWN_MS },
+    // Per-kind cooldown overrides for kinds whose cadence is already
+    // governed by a caller-side state machine, where the shared cooldown
+    // would silently eat legitimate plays. Falls back to [cooldownMs] for
+    // any kind not listed.
+    private val perKindCooldownMs: Map<StatusToneKind, Long> = DEFAULT_PER_KIND_COOLDOWN_MS,
 ) {
     private val lastPlayedMs = java.util.EnumMap<StatusToneKind, Long>(StatusToneKind::class.java)
 
@@ -62,7 +78,7 @@ class StatusTones(
         if (!enabled()) return
         val now = System.currentTimeMillis()
         val last = lastPlayedMs[kind] ?: 0L
-        val window = cooldownMs()
+        val window = perKindCooldownMs[kind] ?: cooldownMs()
         if (last > 0 && now - last < window) {
             Log.d(TAG, "status $kind suppressed — within ${window}ms cooldown (${now - last}ms since last)")
             return
@@ -80,5 +96,15 @@ class StatusTones(
         // re-emits joinChannel for every existing membership) without
         // beeping the operator's ears off.
         const val DEFAULT_COOLDOWN_MS: Long = 5_000L
+
+        // RECONNECT_RETRY opts out of the shared cooldown. Its cadence is
+        // the reconnect ladder's, whose first gaps (1s, 2s, 4s) are all
+        // inside the 5 s window — the generic cooldown would mute exactly
+        // the early attempts an operator most wants to hear, and the
+        // effect would look like a dropped tone rather than a policy.
+        // ReconnectNotificationTracker is the sole authority on when this
+        // chirp plays and when it stops.
+        val DEFAULT_PER_KIND_COOLDOWN_MS: Map<StatusToneKind, Long> =
+            mapOf(StatusToneKind.RECONNECT_RETRY to 0L)
     }
 }
