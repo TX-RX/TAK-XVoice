@@ -273,6 +273,14 @@ custom button integration. See
 rationale. Retiring a device is part of the same curated policy as
 adding one: the list is only worth reading if entries can leave it.
 
+## Export notice
+
+This software is provided for lawful use only and must not be
+downloaded, used, or re-exported in violation of US export control or
+sanctions laws, including to embargoed countries or restricted
+parties. This repository does not include the TAK SDK, which must be
+obtained separately from tak.gov under its own license terms.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
