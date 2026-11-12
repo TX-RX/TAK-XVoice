@@ -36,12 +36,20 @@ on:
         default: draft
         type: choice
         options: [draft, inProgress, completed]
+      user_fraction:
+        description: "Staged-rollout fraction for inProgress, exclusive 0.0-1.0 (e.g. 0.1 = 10%). For a full rollout use status=completed, not inProgress. Ignored for draft/completed."
+        required: false
+        default: "0.1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: play-deploy-${{ github.ref }}
+  # Serialize by Play application, NOT by github.ref. Every dispatch edits the
+  # same Play app with the same service account, so two runs from different
+  # tags/branches would otherwise get separate concurrency groups, overlap,
+  # and invalidate each other's Play edits. A constant group = one at a time.
+  group: play-deploy-com.atakmap.android.xv.plugin
   cancel-in-progress: false
 
 jobs:
@@ -95,6 +103,10 @@ jobs:
           releaseFiles: signed.aab
           track: ${{ inputs.track }}
           status: ${{ inputs.status }}
+          # The action requires a rollout fraction for inProgress and rejects
+          # one for draft/completed. Pass it only for inProgress; the empty
+          # string reads as "unset" for the other statuses.
+          userFraction: ${{ inputs.status == 'inProgress' && inputs.user_fraction || '' }}
 
       - name: Scrub signing material from the runner
         if: always()
