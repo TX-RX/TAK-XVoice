@@ -129,8 +129,9 @@ class QrCarrierTest {
                 "payload should stay within comfortable QR capacity",
                 QrCarrier.wouldLikelyExceedQrCapacity(carrier),
             )
-            assertEquals("QR round-trip failed on iteration $iteration", carrier, decode(carrier))
-            assertEquals(plan, CommsPlanCarrier.decode(decode(carrier), passphrase.toCharArray()))
+            val scannedBack = decode(carrier)
+            assertEquals("QR round-trip failed on iteration $iteration", carrier, scannedBack)
+            assertEquals(plan, CommsPlanCarrier.decode(scannedBack, passphrase.toCharArray()))
         }
     }
 
