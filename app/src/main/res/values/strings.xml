@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">XVoice by Texas TAK</string>
+    <string name="app_name">Texas TAK-XVoice</string>
     <string name="app_desc">ATAK voice plugin</string>
     <!-- Shown in the system Accessibility settings next to the XV service
          entry.  Deliberately states what the service does AND does not
