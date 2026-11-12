@@ -44,6 +44,13 @@ app/atak_keystore
 # committed config.example.json travels with the repo.
 scripts/config.json
 
+# ---------- Local Play-publishing planning docs ----------
+# docs/play-store/ holds operator-specific Play Console planning notes
+# (developer-account name, contact email that is on the forbidden-pattern
+# scrub list, 1Password item IDs, local keystore paths). Operator handoff
+# material — kept local, never committed to public history.
+docs/play-store/
+
 # ---------- ATAK SDK (vendored, do not commit) ----------
 app/libs/main.jar
 app/libs/*.jar
