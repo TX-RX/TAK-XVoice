@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — TAK-XVoice</title>
+<meta name="description" content="Privacy policy for the TAK-XVoice (XV) ATAK voice plugin.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #5a5a5a;
+    --rule: #e4e4e7;
+    --link: #1d4ed8;
+    --accent: #0f766e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --fg: #e7e7ea;
+      --muted: #a1a1aa;
+      --rule: #2a2d34;
+      --link: #7aa2ff;
+      --accent: #5eead4;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main {
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 3rem 16px 5rem;
+  }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.2rem; margin: 2.25rem 0 .5rem; color: var(--accent); }
+  p, li { margin: .5rem 0; }
+  ul { padding-left: 1.25rem; }
+  a { color: var(--link); }
+  .updated { color: var(--muted); font-size: .9rem; margin: 0 0 1.5rem; }
+  .lede { font-size: 1.05rem; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 3rem; }
+  code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: .1em .35em; border-radius: 4px; font-size: .9em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy — TAK-XVoice</h1>
+  <p class="updated">Last updated: 12 November 2026</p>
+
+  <p class="lede">TAK-XVoice (&ldquo;XV&rdquo;, &ldquo;the plugin&rdquo;) is an open-source
+  voice plugin for the Android Team Awareness Kit (ATAK), distributed under the
+  Apache License 2.0. This policy explains what the plugin does and does not do
+  with your data.</p>
+
+  <h2>The short version</h2>
+  <p>XV does not collect, store, or transmit personal information to its
+  developers. It has no analytics, no advertising, and no crash-reporting
+  services. The only content that leaves your device is live voice audio, and
+  that goes only to the server <strong>you</strong> configure.</p>
+
+  <h2>What the plugin accesses, and why</h2>
+  <ul>
+    <li><strong>Microphone / audio.</strong> When you press to talk (or a call is
+    active), XV captures audio and transmits it in real time to the voice server
+    you have configured in ATAK. This audio is not recorded to storage by the
+    plugin and is not sent to the plugin&rsquo;s developers.</li>
+    <li><strong>Bluetooth.</strong> Used only to connect to and read button presses
+    from the Bluetooth push-to-talk hardware you pair. No Bluetooth data leaves
+    your device.</li>
+    <li><strong>Phone / call state.</strong> Used only to detect whether a cellular
+    call is in progress (so push-to-talk behaves correctly) and to register
+    XV&rsquo;s voice session with Android&rsquo;s self-managed calling framework,
+    which lets the plugin manage its own audio routing while you transmit. The
+    plugin does not read your phone number, call log, or contacts, and does not
+    place telephone calls.</li>
+    <li><strong>Network state.</strong> Read only to react to Wi-Fi / cellular /
+    offline transitions. The plugin does not change your network settings.</li>
+    <li><strong>Notifications, full-screen intent, wake lock, battery-optimization
+    exemption.</strong> Used to show call and status notifications and to keep a
+    voice session alive while the screen is off. No data is collected.</li>
+  </ul>
+
+  <h2>Location</h2>
+  <p>XV does <strong>not</strong> request or use location. Bluetooth scanning is
+  declared with the &ldquo;never for location&rdquo; flag.</p>
+
+  <h2>Data sharing</h2>
+  <p>The plugin shares no data with its developers or any third party. Your voice
+  audio is transmitted only to the voice server you configure, which is operated
+  by you or your organization and is outside the control of the plugin&rsquo;s
+  developers. Their handling of that audio is governed by their own policies.</p>
+
+  <h2>Data retention and deletion</h2>
+  <p>The plugin stores only your local settings (such as device pairings and
+  preferences) on your own device. Uninstalling the plugin removes them. There is
+  no developer-side account or storage, so there is nothing for the developers to
+  retain or delete.</p>
+
+  <h2>Security</h2>
+  <p>Voice traffic to a Mumble server is encrypted in transit with TLS. The
+  optional mesh-voice feature additionally encrypts each audio frame with
+  authenticated encryption (ChaCha20-Poly1305).</p>
+
+  <h2>Children</h2>
+  <p>XV is a tool for adult communications volunteers and is not directed at
+  children.</p>
+
+  <h2>Changes</h2>
+  <p>This policy may be updated as the plugin evolves. Material changes will be
+  reflected here with a new &ldquo;last updated&rdquo; date.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy: <a href="mailto:support@texas-tak.com">support@texas-tak.com</a><br>
+  Source and issue tracker: <a href="https://github.com/TX-RX/TAK-XVoice">github.com/TX-RX/TAK-XVoice</a></p>
+
+  <hr>
+  <footer>TAK-XVoice is provided for non-mission-critical use only, with no warranty
+  of any kind. Apache-2.0 licensed.</footer>
+</main>
+</body>
+</html>
