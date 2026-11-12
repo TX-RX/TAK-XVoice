@@ -40,8 +40,8 @@ actually use their phones in the field:
   expects.
 - **A place to add functionality without forking the world.** XV is a
   clean surface to iterate on features like configurable talk-permit
-  tones, an LMR-style emergency button, direct calling, and the mesh /
-  multicast work described below.
+  tones, an LMR-style emergency button, and the mesh / multicast work
+  described below.
 
 The near-term focus is **mobile-connectivity reliability** — Wi-Fi ↔
 cell handoff, fast reconnect, Bluetooth stability across audio-plant
@@ -149,8 +149,6 @@ XV also adds:
   the same group and port with zero coordination. An operator can pin
   a specific group/port per channel instead — required for
   OpenMANET-compatible interop groups.
-- **Direct calling** — Notification.CallStyle ring + full-screen call
-  surface, VX-compatible private-call signaling.
 - **Mission auto-channels (opt-in)** — behind a toggle that defaults
   off. When enabled, the operator's active ATAK mission drives the
   primary voice channel: XV derives a deterministic channel name from

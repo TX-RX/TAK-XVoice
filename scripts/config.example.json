@@ -14,12 +14,14 @@
 
   "_atak_apks_comment_": "Per-baseline paths used by install-dev.ps1's -InstallAtakDev / -InstallAtakRelease switches. Keyed by baseline (e.g. '5.6.0', '5.7.0') and selected by the -Baseline value at install time. atakDevApks should point at the atak.apk INSIDE the corresponding ATAK-CIV SDK bundle (Developer edition, DEBUGGABLE-flagged, accepts dev-signed plugins). atakReleaseApks should point at production/TPP-signed ATAK-CIV APKs (Play Store or civ-release from tak.gov). Leave an entry (or the whole hash) null / missing if you don't have that baseline on disk. Paths use POSIX slashes; %USERPROFILE% is a fine substitute for a hardcoded C:/Users/<user>.",
   "atakDevApks": {
-    "5.6.0": "%USERPROFILE%/repos/ATAK-CIV-5.6.0.21-SDK/atak.apk",
-    "5.7.0": "%USERPROFILE%/repos/ATAK-CIV-5.7.0.10-SDK/atak.apk"
+    "5.6.0": "%USERPROFILE%/repos/ATAK-CIV-5.6.0.26-SDK/atak.apk",
+    "5.7.0": "%USERPROFILE%/repos/ATAK-CIV-5.7.0.17-SDK/atak.apk",
+    "5.8.0": "%USERPROFILE%/repos/ATAK-CIV-5.8.0.10-SDK/atak.apk"
   },
   "atakReleaseApks": {
     "5.6.0": null,
-    "5.7.0": null
+    "5.7.0": null,
+    "5.8.0": null
   },
 
   "_atakPackage_comment_": "Android package name of ATAK itself. The CIV variant is com.atakmap.app.civ; other variants use different suffixes.",
