@@ -5,6 +5,13 @@ options don't cover well: correct Bluetooth audio routing, predictable
 auto-reconnect, a curated model for external PTT hardware, and a
 foundation for bridging server-mediated voice to mesh radios.
 
+Published under the **Texas-TAK** banner — the project's public brand.
+The plugin carries Texas-TAK visual identity: the honeycomb-and-waveform
+mark (a hex grid for TAK, an audio waveform for the voice layer, and a
+bee tying them together) and a gold-on-near-black palette, applied
+across the PTT page, Settings, the in-ATAK toolbar icon, and the
+app/launcher icon. The in-app name is **Texas TAK XV**.
+
 ## Status and intended use
 
 **TAK-XVoice is provided for non-mission-critical use only.** It is
