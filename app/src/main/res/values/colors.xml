@@ -20,6 +20,10 @@
     <color name="xv_ok">#79D99B</color>
     <color name="xv_warn">#F2B33D</color>
     <color name="xv_err">#FF5252</color>
+    <!-- Texas-flag blue, used only for the cloud/server glyph so ☁️ reads
+         as "the server leg" at a glance and sits apart from the gold
+         brand/mesh icons. Crisp azure on near-black; not a surface token. -->
+    <color name="xv_cloud">#4C8DF5</color>
     <color name="xv_ptt_idle">#F2B33D</color>
     <color name="xv_ptt_active">#FF5252</color>
 </resources>

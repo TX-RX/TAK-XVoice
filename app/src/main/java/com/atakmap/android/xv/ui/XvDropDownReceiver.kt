@@ -881,17 +881,20 @@ class XvDropDownReceiver(
             }
 
         // Audio route indicator (right side of the connection line).
-        // Glyph + label so it reads at a glance: 🎙️ for external
-        // mic-bearing devices (BT/wired/USB headsets), 🔊 for built-in
-        // speaker, 📞 for earpiece.
+        // Themed leading icon + label so it reads at a glance: mic for
+        // external mic-bearing devices (BT/wired/USB headsets), speaker
+        // for built-in speaker, handset for earpiece.
         val routeLabel = controller.currentAudioRouteLabel()
-        val routeGlyph =
+        val routeIcon =
             when (routeLabel) {
-                "Speaker", "Auto" -> "🔊"
-                "Earpiece" -> "📞"
-                else -> "🎙️"
+                "Speaker", "Auto" -> R.drawable.ic_xv_audio_speaker
+                "Earpiece" -> R.drawable.ic_xv_audio_earpiece
+                else -> R.drawable.ic_xv_audio_mic
             }
-        v.findViewById<TextView>(R.id.xv_audio_route).text = "$routeGlyph $routeLabel"
+        v.findViewById<TextView>(R.id.xv_audio_route).let {
+            it.text = routeLabel
+            XvGlyphs.setLeadingIcon(it, routeIcon, dpSize = 14)
+        }
 
         // Mesh-voice status line. Hidden entirely in the common
         // (mesh-off / no leg) case so it adds no clutter; when a leg is
@@ -906,12 +909,16 @@ class XvDropDownReceiver(
             meshStatusView.visibility = View.GONE
         } else {
             meshStatusView.visibility = View.VISIBLE
-            meshStatusView.text = "🕸 ${mesh.label}"
+            val meshColor = if (mesh.cleartext) R.color.xv_err else R.color.xv_accent
+            meshStatusView.text = mesh.label
+            XvGlyphs.setLeadingIcon(
+                meshStatusView,
+                R.drawable.ic_xv_mesh,
+                dpSize = 14,
+                tintColorRes = meshColor,
+            )
             meshStatusView.setTextColor(
-                pluginContext.resources.getColor(
-                    if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
-                    null,
-                ),
+                pluginContext.resources.getColor(meshColor, null),
             )
             // Long-press the failover status to copy the live group:port —
             // the quick path to hand an OpenManet / legacy-VX peer the
@@ -1045,7 +1052,8 @@ class XvDropDownReceiver(
             it.connectionSource == ConnectionSource.LOCAL_MESH ||
                 it.connectionSource == ConnectionSource.BOTH
         }
-        v.findViewById<Button>(R.id.xv_btn_members_1).text = "👥\n☁️ $vs1Server\n📻 $vs1Local"
+        v.findViewById<Button>(R.id.xv_btn_members_1).text =
+            XvGlyphs.membersBadge(pluginContext, vs1Server, vs1Local)
 
         val vs2MembersList = controller.channelMembersForSlot(1)?.members ?: emptyList()
         val vs2Server = vs2MembersList.count {
@@ -1056,7 +1064,8 @@ class XvDropDownReceiver(
             it.connectionSource == ConnectionSource.LOCAL_MESH ||
                 it.connectionSource == ConnectionSource.BOTH
         }
-        v.findViewById<Button>(R.id.xv_btn_members_2).text = "👥\n☁️ $vs2Server\n📻 $vs2Local"
+        v.findViewById<Button>(R.id.xv_btn_members_2).text =
+            XvGlyphs.membersBadge(pluginContext, vs2Server, vs2Local)
     }
 
     private fun showSettings() {
@@ -1590,7 +1599,10 @@ class XvDropDownReceiver(
             it.connectionSource == ConnectionSource.LOCAL_MESH ||
                 it.connectionSource == ConnectionSource.BOTH
         }
-        headerView.text = "$slotLabel · ${MumbleTransport.lobbyLabel(data.channelName)} (☁️$serverCount 📻$localCount)"
+        headerView.text =
+            android.text.SpannableStringBuilder(
+                "$slotLabel · ${MumbleTransport.lobbyLabel(data.channelName)} ",
+            ).append(XvGlyphs.countSuffix(pluginContext, serverCount, localCount))
         listView.removeAllViews()
         if (data.members.isEmpty()) {
             val tv =
@@ -1617,12 +1629,11 @@ class XvDropDownReceiver(
         val btn = Button(pluginContext)
         val talkingDot = if (member.talkingNow) "$RX_DOT " else "    "
         val tag = if (member.isXvPeer) "" else "   (non-XV)"
-        val sourceIcon = when (member.connectionSource) {
-            ConnectionSource.SERVER -> "☁️ "
-            ConnectionSource.LOCAL_MESH -> "📻 "
-            ConnectionSource.BOTH -> "☁️📻 "
-        }
-        btn.text = "$talkingDot$sourceIcon${member.callsign}$tag"
+        val onServer = member.connectionSource == ConnectionSource.SERVER ||
+            member.connectionSource == ConnectionSource.BOTH
+        val onMesh = member.connectionSource == ConnectionSource.LOCAL_MESH ||
+            member.connectionSource == ConnectionSource.BOTH
+        btn.text = XvGlyphs.memberRow(pluginContext, talkingDot, onServer, onMesh, "${member.callsign}$tag")
         btn.textSize = 14f
         btn.isAllCaps = false
         btn.gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
@@ -2827,14 +2838,14 @@ class XvDropDownReceiver(
         val mesh = controller.meshStatus()
         if (mesh == null) {
             statusView.text = if (controller.meshVoiceEnabled()) "Standing by - no channel joined yet" else "Mesh voice is off"
+            statusView.setCompoundDrawablesRelative(null, null, null, null)
             statusView.setTextColor(pluginContext.resources.getColor(R.color.xv_text_dim, null))
         } else {
-            statusView.text = "🟢 ${mesh.label}"
+            val meshColor = if (mesh.cleartext) R.color.xv_err else R.color.xv_accent
+            statusView.text = mesh.label
+            XvGlyphs.setLeadingIcon(statusView, R.drawable.ic_xv_mesh, dpSize = 14, tintColorRes = meshColor)
             statusView.setTextColor(
-                pluginContext.resources.getColor(
-                    if (mesh.cleartext) R.color.xv_err else R.color.xv_accent,
-                    null,
-                ),
+                pluginContext.resources.getColor(meshColor, null),
             )
         }
 

@@ -96,12 +96,14 @@
             android:id="@+id/xv_btn_call"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:text="🕒 Recent"
+            android:text="Recent"
+            android:drawableStart="@drawable/ic_xv_recent"
+            android:drawablePadding="6dp"
             android:textColor="@color/xv_text"
             android:textSize="14sp"
             android:textAllCaps="false"
             android:background="@drawable/xv_button_bg"
-            android:paddingStart="16dp"
+            android:paddingStart="14dp"
             android:paddingEnd="16dp"
             android:layout_marginEnd="6dp"/>
 
@@ -109,13 +111,15 @@
             android:id="@+id/xv_btn_settings"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:text="⚙ Settings"
+            android:text="Settings"
+            android:drawableStart="@drawable/ic_xv_settings"
+            android:drawablePadding="6dp"
             android:textColor="@color/xv_text"
             android:textSize="14sp"
             android:textAllCaps="false"
             android:background="@drawable/xv_button_bg"
-            android:paddingStart="20dp"
-            android:paddingEnd="20dp"/>
+            android:paddingStart="16dp"
+            android:paddingEnd="18dp"/>
     </LinearLayout>
 
     <!-- Compact connection line: status dot + TAK server. Single row. -->
@@ -151,7 +155,8 @@
             android:id="@+id/xv_audio_route"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🔊 Auto"
+            android:text="Auto"
+            android:drawablePadding="4dp"
             android:textColor="@color/xv_text_dim"
             android:textSize="12sp"
             android:singleLine="true"
@@ -168,7 +173,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:visibility="gone"
-        android:text="🕸 MESH READY"
+        android:text="MESH READY"
+        android:drawablePadding="6dp"
         android:textColor="@color/xv_accent"
         android:textSize="12sp"
         android:fontFamily="monospace"
