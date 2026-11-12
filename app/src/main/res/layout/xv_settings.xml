@@ -18,6 +18,7 @@
             android:layout_width="wrap_content"
             android:layout_height="36dp"
             android:text="◀"
+            android:contentDescription="@string/xv_cd_back"
             android:textColor="@color/xv_text"
             android:textSize="14sp"
             android:background="@android:color/transparent"

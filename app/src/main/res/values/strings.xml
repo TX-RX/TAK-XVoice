@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">XV</string>
+    <string name="app_name">Texas TAK-XVoice</string>
     <string name="app_desc">ATAK voice plugin</string>
     <!-- Shown in the system Accessibility settings next to the XV service
          entry.  Deliberately states what the service does AND does not
@@ -9,4 +9,11 @@
          does not reflect the typeWindowStateChanged / no-window-content configuration;
          this string is the accurate per-app description alongside it. -->
     <string name="xv_accessibility_service_description">Intercepts the Samsung Active Key hardware Push-to-Talk key (keyCode 1015 on Samsung ruggedized devices) to enable PTT while ATAK is in the background or the screen is off. Only this specific keycode is acted on; every other key passes through. Does not read screen content, typed text, viewed windows, or any other app data.</string>
+
+    <!-- TalkBack labels for icon-only controls. The on-screen glyphs
+         (◀, 👥, honeycomb mark) carry no text a screen reader can
+         announce, so each gets an explicit contentDescription. -->
+    <string name="xv_cd_back">Back</string>
+    <string name="xv_cd_members">Channel members</string>
+    <string name="xv_cd_brand_mark">Texas TAK mark</string>
 </resources>

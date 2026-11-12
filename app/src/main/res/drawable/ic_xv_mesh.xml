@@ -1,0 +1,19 @@
+<!-- Mesh voice (was 🕸 / 🟢). Node-link mesh. Single-color so it can be
+     tinted gold (nominal) or red (cleartext) to track the status text. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="@color/xv_accent">
+    <!-- links -->
+    <path
+        android:strokeColor="@color/xv_accent"
+        android:strokeWidth="1.4"
+        android:fillColor="#00000000"
+        android:pathData="M12,4L5,13 M12,4L19,13 M5,13L19,13 M5,13L12,20 M19,13L12,20" />
+    <!-- nodes -->
+    <path
+        android:fillColor="@color/xv_accent"
+        android:pathData="M12,4m-2.2,0a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0M5,13m-2.2,0a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0M19,13m-2.2,0a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0M12,20m-2.2,0a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0" />
+</vector>

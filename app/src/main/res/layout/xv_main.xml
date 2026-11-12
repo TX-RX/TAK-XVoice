@@ -69,11 +69,24 @@
         android:orientation="horizontal"
         android:gravity="center_vertical">
 
+        <!-- Texas-TAK brand mark (honeycomb + waveform + bee), tinted to
+             the accent gold so it reads as the brand on the near-black
+             title bar. Decorative — the "XV" wordmark beside it conveys
+             identity to a screen reader. -->
+        <ImageView
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/xv_tool_icon"
+            android:tint="@color/xv_accent"
+            android:contentDescription="@string/xv_cd_brand_mark"
+            android:importantForAccessibility="no"/>
+
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="XV"
+            android:text="XVoice"
             android:textColor="@color/xv_text"
             android:textSize="22sp"
             android:textStyle="bold"
@@ -83,12 +96,14 @@
             android:id="@+id/xv_btn_call"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:text="🕒 Recent"
+            android:text="Recent"
+            android:drawableStart="@drawable/ic_xv_recent"
+            android:drawablePadding="6dp"
             android:textColor="@color/xv_text"
             android:textSize="14sp"
             android:textAllCaps="false"
             android:background="@drawable/xv_button_bg"
-            android:paddingStart="16dp"
+            android:paddingStart="14dp"
             android:paddingEnd="16dp"
             android:layout_marginEnd="6dp"/>
 
@@ -96,13 +111,15 @@
             android:id="@+id/xv_btn_settings"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:text="⚙ Settings"
+            android:text="Settings"
+            android:drawableStart="@drawable/ic_xv_settings"
+            android:drawablePadding="6dp"
             android:textColor="@color/xv_text"
             android:textSize="14sp"
             android:textAllCaps="false"
             android:background="@drawable/xv_button_bg"
-            android:paddingStart="20dp"
-            android:paddingEnd="20dp"/>
+            android:paddingStart="16dp"
+            android:paddingEnd="18dp"/>
     </LinearLayout>
 
     <!-- Compact connection line: status dot + TAK server. Single row. -->
@@ -138,7 +155,8 @@
             android:id="@+id/xv_audio_route"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🔊 Auto"
+            android:text="Auto"
+            android:drawablePadding="4dp"
             android:textColor="@color/xv_text_dim"
             android:textSize="12sp"
             android:singleLine="true"
@@ -155,7 +173,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:visibility="gone"
-        android:text="🕸 MESH READY"
+        android:text="MESH READY"
+        android:drawablePadding="6dp"
         android:textColor="@color/xv_accent"
         android:textSize="12sp"
         android:fontFamily="monospace"
@@ -218,6 +237,7 @@
                 android:text="▾"
                 android:textColor="@color/xv_text_dim"
                 android:textSize="18sp"
+                android:importantForAccessibility="no"
                 android:layout_marginStart="6dp"/>
         </LinearLayout>
 
@@ -230,6 +250,7 @@
 
             <Button
                 android:id="@+id/xv_btn_members_1"
+                android:contentDescription="@string/xv_cd_members"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="0.18"
@@ -311,6 +332,7 @@
                 android:text="▾"
                 android:textColor="@color/xv_text_dim"
                 android:textSize="18sp"
+                android:importantForAccessibility="no"
                 android:layout_marginStart="6dp"/>
         </LinearLayout>
 
@@ -323,6 +345,7 @@
 
             <Button
                 android:id="@+id/xv_btn_members_2"
+                android:contentDescription="@string/xv_cd_members"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="0.18"
