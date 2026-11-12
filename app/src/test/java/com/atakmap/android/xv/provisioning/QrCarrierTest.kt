@@ -2,10 +2,12 @@ package com.atakmap.android.xv.provisioning
 
 import com.atakmap.android.xv.transport.multicast.AeadCodec
 import com.atakmap.android.xv.transport.multicast.ChannelMulticastConfig
+import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
-import com.google.zxing.MultiFormatReader
+import com.google.zxing.DecodeHintType
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeReader
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,6 +24,22 @@ class QrCarrierTest {
     // Android unit-test compilation puts android.jar on the boot
     // classpath, which has no java.awt, so an AWT-based round-trip
     // does not even compile in this source set.
+    //
+    // The source is a synthetic, axis-aligned render of a single QR, so
+    // we decode it as exactly that: PURE_BARCODE skips the probabilistic
+    // finder-pattern grid search (whose fast path intermittently missed
+    // valid-but-dense codes — the payload length is fixed, but the random
+    // PBKDF2 salt + AEAD nonce vary the module pattern run to run, and
+    // some patterns tripped the heuristic). TRY_HARDER keeps it exhaustive
+    // and a QR-only reader avoids multi-format ambiguity. Together these
+    // make the clean round-trip deterministic regardless of payload bytes.
+    private val qrHints =
+        mapOf(
+            DecodeHintType.PURE_BARCODE to true,
+            DecodeHintType.TRY_HARDER to true,
+            DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+        )
+
     private fun decode(text: String): String {
         val matrix = QrCarrier.encode(text, sizePx = 900)
         val w = matrix.width
@@ -34,7 +52,9 @@ class QrCarrierTest {
         }
         val source = RGBLuminanceSource(w, h, pixels)
         val bitmap = BinaryBitmap(HybridBinarizer(source))
-        return MultiFormatReader().decode(bitmap).text
+        // A fresh reader per call: QRCodeReader keeps no state we want to
+        // carry between decodes.
+        return QRCodeReader().decode(bitmap, qrHints).text
     }
 
     @Test
@@ -77,6 +97,41 @@ class QrCarrierTest {
         assertEquals(carrier, scannedBack)
         // And the plan itself survives the whole trip.
         assertEquals(plan, CommsPlanCarrier.decode(scannedBack, "correct horse battery".toCharArray()))
+    }
+
+    @Test
+    fun `locked carrier round-trips deterministically across many random nonces`() {
+        // Regression guard for the decode flake: encodeLocked draws a fresh
+        // random salt + AEAD nonce every call, so each iteration renders a
+        // different module pattern at the same QR geometry. Every one must
+        // decode. Before the PURE_BARCODE / TRY_HARDER fix this failed on a
+        // sizeable fraction of iterations with NotFoundException; 64 rounds
+        // makes a lingering heuristic miss statistically certain to surface.
+        val channels =
+            (1..4).map { i ->
+                CommsPlan.Channel(
+                    displayName = "Falcon-$i",
+                    config = ChannelMulticastConfig.defaultFor("falcon-$i"),
+                    preSharedKey = ByteArray(AeadCodec.KEY_BYTES) { (i * 7).toByte() },
+                )
+            }
+        val plan =
+            CommsPlan(
+                planId = "plan-9999",
+                name = "adhoc",
+                createdAtMs = 1_750_000_000_000L,
+                channels = channels,
+            )
+        val passphrase = "correct horse battery"
+        repeat(64) { iteration ->
+            val carrier = CommsPlanCarrier.encodeLocked(plan, passphrase.toCharArray())
+            assertFalse(
+                "payload should stay within comfortable QR capacity",
+                QrCarrier.wouldLikelyExceedQrCapacity(carrier),
+            )
+            assertEquals("QR round-trip failed on iteration $iteration", carrier, decode(carrier))
+            assertEquals(plan, CommsPlanCarrier.decode(decode(carrier), passphrase.toCharArray()))
+        }
     }
 
     @Test
