@@ -3,11 +3,13 @@ name: Play deploy
 # Deploys a TPP-produced AAB to a Google Play track.
 #
 # The TAK signing step (tak.gov TPP portal) is manual and has no API, so
-# this runs on demand rather than on push: after you download the TPP
-# result, attach its UNSIGNED `app-civ-release.aab` to a GitHub Release,
-# then dispatch this workflow against that release tag. CI signs the AAB
-# with the upload key (from secrets) and uploads via the Play Developer
-# API. See docs/play-store/pipeline.md.
+# this runs on demand rather than on push:
+#   1. Download the TPP result and attach its UNSIGNED `app-civ-release.aab`
+#      to a GitHub Release.
+#   2. Dispatch this workflow against that release tag.
+# CI then signs the AAB with the upload key (from secrets) and uploads it
+# via the Play Developer API. (The operator-local publishing runbook lives
+# outside version control under docs/play-store/, which is gitignored.)
 #
 # Required secrets:
 #   UPLOAD_KEYSTORE_B64       base64 of the upload keystore (.jks)
@@ -49,9 +51,13 @@ jobs:
       - name: Download AAB from the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pass the dispatch input through the environment, never
+          # interpolated into the shell, so a crafted tag name can't inject.
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release download "${{ inputs.release_tag }}" \
-            --repo "${{ github.repository }}" \
+          gh release download "$RELEASE_TAG" \
+            --repo "$GH_REPO" \
             --pattern "app-civ-release.aab" \
             --output unsigned.aab
           test -s unsigned.aab
@@ -79,8 +85,10 @@ jobs:
           jarsigner -verify signed.aab
 
       - name: Upload to Google Play
-        # TODO: pin to a commit SHA once verified.
-        uses: r0adkll/upload-google-play@v1
+        # Pinned to the v1.1.5 commit SHA — a mutable tag on a third-party
+        # action that gets the service-account JSON is a supply-chain risk.
+        # Bump deliberately after reviewing the diff of a newer tag.
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.atakmap.android.xv.plugin
