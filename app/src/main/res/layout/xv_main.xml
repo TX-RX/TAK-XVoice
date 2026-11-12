@@ -69,6 +69,19 @@
         android:orientation="horizontal"
         android:gravity="center_vertical">
 
+        <!-- Texas-TAK brand mark (honeycomb + waveform + bee), tinted to
+             the accent gold so it reads as the brand on the near-black
+             title bar. Decorative — the "XV" wordmark beside it conveys
+             identity to a screen reader. -->
+        <ImageView
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/xv_tool_icon"
+            android:tint="@color/xv_accent"
+            android:contentDescription="@string/xv_cd_brand_mark"
+            android:importantForAccessibility="no"/>
+
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -218,6 +231,7 @@
                 android:text="▾"
                 android:textColor="@color/xv_text_dim"
                 android:textSize="18sp"
+                android:importantForAccessibility="no"
                 android:layout_marginStart="6dp"/>
         </LinearLayout>
 
@@ -230,6 +244,7 @@
 
             <Button
                 android:id="@+id/xv_btn_members_1"
+                android:contentDescription="@string/xv_cd_members"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="0.18"
@@ -311,6 +326,7 @@
                 android:text="▾"
                 android:textColor="@color/xv_text_dim"
                 android:textSize="18sp"
+                android:importantForAccessibility="no"
                 android:layout_marginStart="6dp"/>
         </LinearLayout>
 
@@ -323,6 +339,7 @@
 
             <Button
                 android:id="@+id/xv_btn_members_2"
+                android:contentDescription="@string/xv_cd_members"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="0.18"
