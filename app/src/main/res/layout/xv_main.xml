@@ -86,7 +86,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="XV"
+            android:text="XVoice"
             android:textColor="@color/xv_text"
             android:textSize="22sp"
             android:textStyle="bold"

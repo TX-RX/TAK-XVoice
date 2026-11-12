@@ -10,7 +10,7 @@ The plugin carries Texas-TAK visual identity: the honeycomb-and-waveform
 mark (a hex grid for TAK, an audio waveform for the voice layer, and a
 bee tying them together) and a gold-on-near-black palette, applied
 across the PTT page, Settings, the in-ATAK toolbar icon, and the
-app/launcher icon. The in-app name is **Texas TAK XV**.
+app/launcher icon. The in-app name is **XVoice by Texas TAK**.
 
 ## Status and intended use
 
