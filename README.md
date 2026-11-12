@@ -5,6 +5,20 @@ options don't cover well: correct Bluetooth audio routing, predictable
 auto-reconnect, a curated model for external PTT hardware, and a
 foundation for bridging server-mediated voice to mesh radios.
 
+Published under the **Texas-TAK** banner — the project's public brand.
+The plugin carries Texas-TAK visual identity: the honeycomb-and-waveform
+mark (a hex grid for TAK, an audio waveform for the voice layer, and a
+bee tying them together) and a gold-on-near-black palette, applied
+across the PTT page, Settings, the in-ATAK toolbar icon, and the
+app/launcher icon.
+
+The public app name — the Google Play listing title and the label ATAK
+shows when it discovers the plugin — is **Texas TAK-XVoice**. The
+in-plugin title bar shows the **XVoice** wordmark beside the brand mark.
+The repository, Gradle project, and Android package names are unchanged
+(`TAK-XVoice` / `com.atakmap.android.xv.plugin`); only the
+user-facing display name carries the full brand.
+
 ## Status and intended use
 
 **TAK-XVoice is provided for non-mission-critical use only.** It is

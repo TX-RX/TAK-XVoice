@@ -1,17 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ATAK is dark by default; surfaces are nearly black with high-contrast
-         accents. Status colors borrowed from FlexRadio / SDR conventions:
-         green = nominal, amber = transitioning, red = error / no link. -->
-    <color name="xv_bg">#0E1216</color>
-    <color name="xv_surface">#1A2028</color>
-    <color name="xv_surface_alt">#252D38</color>
-    <color name="xv_text">#E8ECF1</color>
-    <color name="xv_text_dim">#9AA5B3</color>
-    <color name="xv_accent">#36C5FF</color>
-    <color name="xv_ok">#3DDC84</color>
-    <color name="xv_warn">#FFB300</color>
+    <!-- Texas-TAK palette. ATAK is dark by default; surfaces are near-black
+         with a single warm brand accent (Texas-TAK gold, the bee/honeycomb
+         mark). Hex values are the canonical Texas-TAK platform design
+         tokens (texastak_platform ui.py): bg #070707, card #121212,
+         card-2 #181818, text #F4F4F4, muted #A9A9A9, accent #F2B33D,
+         accent-hover #C98A12, ok #79D99B. Status colors keep the
+         green=nominal / amber=transitioning / red=error convention; the
+         transitioning amber is the brand gold, and red (no brand token) is
+         retained for error / transmit since red carries that meaning
+         universally. -->
+    <color name="xv_bg">#070707</color>
+    <color name="xv_surface">#121212</color>
+    <color name="xv_surface_alt">#181818</color>
+    <color name="xv_text">#F4F4F4</color>
+    <color name="xv_text_dim">#A9A9A9</color>
+    <color name="xv_accent">#F2B33D</color>
+    <color name="xv_accent_hover">#C98A12</color>
+    <color name="xv_ok">#79D99B</color>
+    <color name="xv_warn">#F2B33D</color>
     <color name="xv_err">#FF5252</color>
-    <color name="xv_ptt_idle">#36C5FF</color>
+    <!-- Texas-flag blue, used only for the cloud/server glyph so ☁️ reads
+         as "the server leg" at a glance and sits apart from the gold
+         brand/mesh icons. Crisp azure on near-black; not a surface token. -->
+    <color name="xv_cloud">#4C8DF5</color>
+    <color name="xv_ptt_idle">#F2B33D</color>
     <color name="xv_ptt_active">#FF5252</color>
 </resources>

@@ -56,6 +56,23 @@ and apologize later. Operator deployments depend on this; the public
 history of an ATAK plugin is one of the first things an adversary
 will read.
 
+### The project's own brand is **not** sensitive
+
+**Texas-TAK** is the project's own public publisher brand (the
+Play-listing publisher, the launcher mark, and the in-plugin palette).
+It is intentionally public and is **exempt** from the "customer,
+agency, or unit names" rule above: the Texas-TAK name, the honeycomb /
+waveform / bee mark, and the brand palette (gold `#F2B33D` on
+near-black) may appear freely in committed code, resources, README,
+commit messages, and PR descriptions. Do **not** add `texas-tak` /
+`texastak` to any `forbiddenPatterns` list.
+
+This exemption covers the brand itself and nothing else. Everything
+that identifies a *deployment* stays forbidden exactly as above — real
+TAK server hostnames / FQDNs / IPs, Bluetooth MACs, operator callsigns,
+customer / agency / unit names, operator GPS, internal subnets. The
+publisher brand being public does not relax any of those.
+
 ## Commit-message style
 
 - Subject line: terse, conventional-commit-style prefix
