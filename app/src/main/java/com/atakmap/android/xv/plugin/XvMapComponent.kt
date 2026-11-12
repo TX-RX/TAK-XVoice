@@ -25,6 +25,7 @@ import com.atakmap.android.xv.debug.DebugReceiver
 import com.atakmap.android.xv.emergency.AtakEmergencyDispatcher
 import com.atakmap.android.xv.emergency.EmergencyController
 import com.atakmap.android.xv.mission.MissionChannelProvisioner
+import com.atakmap.android.xv.presence.ChannelMemberSourcing
 import com.atakmap.android.xv.presence.XvChannel
 import com.atakmap.android.xv.presence.XvCotListener
 import com.atakmap.android.xv.presence.XvCotPublisher
@@ -1784,6 +1785,12 @@ class XvMapComponent : AbstractMapComponent() {
         transport: MumbleTransport,
     ): XvDropDownReceiver.SlotMembers? {
         val joinedCh = joinedChannelsBySlot[slot] ?: return null
+        // Mesh-vs-cloud member split must follow the mesh-voice toggle:
+        // XV presence (CoT) arrives over the TAK network regardless of
+        // whether this operator runs a mesh leg, so a disabled-mesh
+        // session must not count presence-only peers as 📻 members or
+        // upgrade a server member to BOTH. See [ChannelMemberSourcing].
+        val meshEnabled = settings.persistedMeshVoiceEnabled()
         val members = transport.channelMembers(slot)
         // sessionId → XvPresence: VS1 and VS2 of the same operator
         // publish DIFFERENT mumbleSessions so this map naturally has
@@ -1841,16 +1848,19 @@ class XvMapComponent : AbstractMapComponent() {
                             XvDropDownReceiver.JumpChannel(it.id, it.name, desc)
                         }
 
-                val source = if (deviceUid != null) {
-                    val p = presenceRegistry?.get(deviceUid)
-                    if (p != null && p.channels.any { it.name == joinedCh.name }) {
-                        XvDropDownReceiver.ConnectionSource.BOTH
-                    } else {
-                        XvDropDownReceiver.ConnectionSource.SERVER
+                val alsoOnMesh =
+                    deviceUid != null &&
+                        presenceRegistry
+                            ?.get(deviceUid)
+                            ?.channels
+                            ?.any { it.name == joinedCh.name } == true
+                val source =
+                    when (ChannelMemberSourcing.serverSource(alsoOnMesh, meshEnabled)) {
+                        ChannelMemberSourcing.ServerSource.BOTH ->
+                            XvDropDownReceiver.ConnectionSource.BOTH
+                        ChannelMemberSourcing.ServerSource.SERVER ->
+                            XvDropDownReceiver.ConnectionSource.SERVER
                     }
-                } else {
-                    XvDropDownReceiver.ConnectionSource.SERVER
-                }
 
                 XvDropDownReceiver.ChannelMember(
                     mumbleSessionId = m.sessionId,
@@ -1887,7 +1897,10 @@ class XvMapComponent : AbstractMapComponent() {
             )
         }
 
-        val allRows = serverRows + localRows
+        // Gate: 📻 local-mesh rows only count when mesh voice is on.
+        val meshRows =
+            if (ChannelMemberSourcing.includeLocalMeshRows(meshEnabled)) localRows else emptyList()
+        val allRows = serverRows + meshRows
 
         return XvDropDownReceiver.SlotMembers(
             slot = slot,
@@ -1912,6 +1925,11 @@ class XvMapComponent : AbstractMapComponent() {
      */
     private fun buildMeshOnlySlotMembersSnapshot(slot: Int): XvDropDownReceiver.SlotMembers? {
         if (slot != 0) return null
+        // With mesh voice off there is no mesh roster to surface, even if
+        // presence survives a server drop — 📻 must read 0, not a phantom
+        // count. (activeLegs is normally empty when disabled; this is the
+        // explicit guard.)
+        if (!settings.persistedMeshVoiceEnabled()) return null
         // legs is keyed by canonical channel name and excludes the
         // separate rendezvous discovery leg, so firstOrNull is the
         // operator's primary channel.
