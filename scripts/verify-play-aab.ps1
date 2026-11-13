@@ -59,6 +59,9 @@ $jwtEntryName = "BUNDLE-METADATA/com.android.tools.build.bundletool/code_transpa
 # release ProGuard mapping; release ATAK ships the class obfuscated, so
 # such a plugin fails to load (ClassNotFound) even when correctly signed.
 $unmappedSdkSymbol = "Lgov/tak/api/plugin/IServiceController;"
+$dexEntryPattern = '^[^/]+/dex/[^/]+\.dex$'
+$nativeLibEntryPattern = '^[^/]+/lib/.+\.so$'
+$unmappedSdkSymbolBytes = [Text.Encoding]::ASCII.GetBytes($unmappedSdkSymbol)
 
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -91,11 +94,34 @@ function Get-EntrySha256([System.IO.Compression.ZipArchiveEntry] $entry) {
     }
 }
 
-function Read-EntryBytes([System.IO.Compression.ZipArchiveEntry] $entry) {
-    $ms = [System.IO.MemoryStream]::new()
-    $st = $entry.Open()
-    try { $st.CopyTo($ms) } finally { $st.Dispose() }
-    return $ms.ToArray()
+function Test-EntryContainsBytes(
+    [System.IO.Compression.ZipArchiveEntry] $entry,
+    [byte[]] $needle
+) {
+    $stream = $entry.Open()
+    $buffer = [byte[]]::new(8192 + $needle.Length)
+    $carry = 0
+    try {
+        while (($read = $stream.Read($buffer, $carry, $buffer.Length - $carry)) -gt 0) {
+            $length = $carry + $read
+            for ($start = 0; $start -le $length - $needle.Length; $start++) {
+                $matched = $true
+                for ($i = 0; $i -lt $needle.Length; $i++) {
+                    if ($buffer[$start + $i] -ne $needle[$i]) {
+                        $matched = $false
+                        break
+                    }
+                }
+                if ($matched) { return $true }
+            }
+
+            $carry = [Math]::Min($needle.Length - 1, $length)
+            [Array]::Copy($buffer, $length - $carry, $buffer, 0, $carry)
+        }
+        return $false
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "AAB not found: $Path" }
@@ -116,9 +142,8 @@ function Test-Bundle([System.IO.Compression.ZipArchive] $zip) {
 
     # Run first, without an early return, so a local build reports both
     # this and the missing JWT below.
-    $unmappedDex = @(foreach ($e in $zip.Entries | Where-Object { $_.FullName -match '^[^/]+/dex/[^/]+\.dex$' }) {
-        $text = [Text.Encoding]::Latin1.GetString((Read-EntryBytes $e))
-        if ($text.Contains($unmappedSdkSymbol)) { $e.FullName }
+    $unmappedDex = @(foreach ($e in $zip.Entries | Where-Object { $_.FullName -match $dexEntryPattern }) {
+        if (Test-EntryContainsBytes $e $unmappedSdkSymbolBytes) { $e.FullName }
     })
     Write-Check "dex uses ATAK's release ProGuard mapping" ($unmappedDex.Count -eq 0) `
         $(if ($unmappedDex.Count) { ($unmappedDex -join ", ") + " reference unobfuscated $unmappedSdkSymbol; release ATAK cannot load it." } else { "" })
@@ -188,7 +213,7 @@ function Test-Bundle([System.IO.Compression.ZipArchive] $zip) {
         if ($actual -ne $f.sha256) { $bad.Add("hash mismatch: $($f.path)") }
     }
     foreach ($e in $zip.Entries) {
-        $isCode = $e.FullName -match '^[^/]+/dex/[^/]+\.dex$' -or $e.FullName -match '^[^/]+/lib/.+\.so$'
+        $isCode = $e.FullName -match $dexEntryPattern -or $e.FullName -match $nativeLibEntryPattern
         if ($isCode -and -not $listed.ContainsKey($e.FullName)) { $bad.Add("not covered by JWT: $($e.FullName)") }
     }
     $detail = if ($bad.Count) { $bad -join "; " } else { "$($listed.Count) code file(s) match" }
@@ -202,13 +227,14 @@ function Test-Bundle([System.IO.Compression.ZipArchive] $zip) {
     }
 }
 
-$zip = [System.IO.Compression.ZipFile]::OpenRead($aabPath)
+$zip = $null
 try {
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($aabPath)
     Test-Bundle $zip
 } catch {
     Write-Check "bundle could be parsed" $false $_.Exception.Message
 } finally {
-    $zip.Dispose()
+    if ($null -ne $zip) { $zip.Dispose() }
 }
 
 if ($failures.Count) {
