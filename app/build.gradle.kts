@@ -142,8 +142,8 @@ android {
         // TPP / portal listings can't tell the new APK from the
         // previous one, and devices may keep the cached old APK on
         // plugin sync.
-        versionCode = 27
-        versionName = "1.0.1"
+        versionCode = 28
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
