@@ -151,8 +151,6 @@ def draw_mark():
     _draw_walkie(d, SS, WHITE)
     return img
 
-    return img
-
 
 def main():
     launcher = draw_launcher()
