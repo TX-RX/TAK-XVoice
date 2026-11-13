@@ -11,7 +11,7 @@
     <string name="xv_accessibility_service_description">Intercepts the Samsung Active Key hardware Push-to-Talk key (keyCode 1015 on Samsung ruggedized devices) to enable PTT while ATAK is in the background or the screen is off. Only this specific keycode is acted on; every other key passes through. Does not read screen content, typed text, viewed windows, or any other app data.</string>
 
     <!-- TalkBack labels for icon-only controls. The on-screen glyphs
-         (◀, 👥, honeycomb mark) carry no text a screen reader can
+         (◀, 👥, walkie-talkie mark) carry no text a screen reader can
          announce, so each gets an explicit contentDescription. -->
     <string name="xv_cd_back">Back</string>
     <string name="xv_cd_members">Channel members</string>

@@ -6,11 +6,12 @@ auto-reconnect, a curated model for external PTT hardware, and a
 foundation for bridging server-mediated voice to mesh radios.
 
 Published under the **Texas-TAK** banner — the project's public brand.
-The plugin carries Texas-TAK visual identity: the honeycomb-and-waveform
-mark (a hex grid for TAK, an audio waveform for the voice layer, and a
-bee tying them together) and a gold-on-near-black palette, applied
-across the PTT page, Settings, the in-ATAK toolbar icon, and the
-app/launcher icon.
+The plugin carries Texas-TAK visual identity: the geometric
+walkie-talkie mark (an octagonal radio body with antenna, signal
+chevrons, a PTT bump, and a speaker waveform) and a gold-on-near-black
+palette, applied across the PTT page, Settings, the in-ATAK toolbar
+icon, and the app/launcher icon. The toolbar icon renders the same
+walkie-talkie as a silhouette so ATAK tints it with the brand gold.
 
 The public app name — the Google Play listing title and the label ATAK
 shows when it discovers the plugin — is **Texas TAK-XVoice**. The

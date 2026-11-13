@@ -69,7 +69,7 @@
         android:orientation="horizontal"
         android:gravity="center_vertical">
 
-        <!-- Texas-TAK brand mark (honeycomb + waveform + bee), tinted to
+        <!-- Texas-TAK brand mark (geometric walkie-talkie), tinted to
              the accent gold so it reads as the brand on the near-black
              title bar. Decorative — the "XV" wordmark beside it conveys
              identity to a screen reader. -->
