@@ -7,9 +7,12 @@ import org.junit.Test
 
 class ReconnectPolicyTest {
     @Test
-    fun `default schedule walks the documented backoff curve`() {
+    fun `default schedule walks the documented backoff curve with dormant tail`() {
         val p = ReconnectPolicy()
-        val expected = longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L)
+        // Fast front (blip / handoff recovery) then a dormant tail
+        // (2m, 5m) that slows the drain for an off-grid device.
+        val expected =
+            longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
         for ((i, want) in expected.withIndex()) {
             val got = p.nextDelayMs()
             assertEquals("attempt #${i + 1}", want, got)
@@ -19,13 +22,33 @@ class ReconnectPolicyTest {
     @Test
     fun `last entry repeats forever after schedule exhaustion`() {
         val p = ReconnectPolicy()
-        repeat(7) { p.nextDelayMs() }
-        // Past the end of the curve — the cap should hold steady at 60s
-        // so the wrapper keeps probing once-a-minute rather than
-        // refusing to retry.
+        repeat(9) { p.nextDelayMs() }
+        // Past the end of the curve — the cap should hold steady at the
+        // 5-minute dormant heartbeat rather than refusing to retry.
         repeat(20) {
-            assertEquals(60_000L, p.nextDelayMs())
+            assertEquals(300_000L, p.nextDelayMs())
         }
+    }
+
+    @Test
+    fun `ladder never gives up — no attempt count ever stops the retries`() {
+        // Operator policy, not an implementation detail: a real LMR radio
+        // never stops reaching for the repeater, so neither does XV. An
+        // earlier revision auto-paused after ~10 attempts; it was removed
+        // outright. This pins the contract at a deliberately absurd
+        // attempt count so that reintroducing any "give up after N" gate
+        // fails here with a name that explains why.
+        val p = ReconnectPolicy()
+        repeat(10_000) { p.nextDelayMs() }
+        assertEquals(
+            "the 10,000th consecutive failure must still schedule another try",
+            300_000L,
+            p.nextDelayMs(),
+        )
+        assertTrue(
+            "a transient outcome stays retryable no matter how long it has been failing",
+            p.shouldRetry(ReconnectPolicy.Outcome.Transient),
+        )
     }
 
     @Test
