@@ -115,7 +115,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Validate Gradle wrapper JAR
-        uses: gradle/actions/wrapper-validation@v6.3.0
+        uses: gradle/actions/wrapper-validation@v6.4.1
 
   target-sdk:
     # Google Play rejects uploads whose targetSdk is below the current
