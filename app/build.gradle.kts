@@ -117,7 +117,7 @@ repositories {
 
 android {
     namespace = "com.atakmap.android.xv"
-    compileSdk = 34
+    compileSdk = 36
 
     // Pin to an NDK version pre-installed on the TPP build hosts. TPP
     // refuses to install NDK versions at build time, so the AGP default
@@ -135,12 +135,14 @@ android {
         // com.atakmap.android.* namespace.
         applicationId = "com.atakmap.android.xv.plugin"
         minSdk = 26
-        targetSdk = 34
+        // Floor of 36 is enforced by Google Play (and the target-sdk-floor
+        // CI guard). targetSdk must be <= compileSdk.
+        targetSdk = 36
         // BUMP BOTH on every TPP submission. Skipping the bump means
         // TPP / portal listings can't tell the new APK from the
         // previous one, and devices may keep the cached old APK on
         // plugin sync.
-        versionCode = 26
+        versionCode = 27
         versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

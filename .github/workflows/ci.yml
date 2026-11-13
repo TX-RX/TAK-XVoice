@@ -116,3 +116,35 @@ jobs:
 
       - name: Validate Gradle wrapper JAR
         uses: gradle/actions/wrapper-validation@v6.3.0
+
+  target-sdk:
+    # Google Play rejects uploads whose targetSdk is below the current
+    # platform minimum (API 36 as of 2026-11). Public CI can't compile
+    # (no ATAK SDK), so this is a static guard: parse the targetSdk
+    # literal out of app/build.gradle.kts and fail the PR if it drops
+    # below the floor. Raise MIN_TARGET_SDK when Google raises the bar.
+    name: Target SDK floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      MIN_TARGET_SDK: "36"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Enforce targetSdk floor
+        run: |
+          set -euo pipefail
+          target="$(grep -oE 'targetSdk[[:space:]]*=[[:space:]]*[0-9]+' app/build.gradle.kts \
+            | grep -oE '[0-9]+' | head -1 || true)"
+          if [ -z "${target:-}" ]; then
+            echo "::error file=app/build.gradle.kts::Could not find a numeric targetSdk literal"
+            exit 1
+          fi
+          echo "targetSdk=$target  floor=$MIN_TARGET_SDK"
+          if [ "$target" -lt "$MIN_TARGET_SDK" ]; then
+            echo "::error file=app/build.gradle.kts::targetSdk $target is below the Google Play minimum $MIN_TARGET_SDK — bump compileSdk and targetSdk together."
+            exit 1
+          fi
+          echo "OK: targetSdk $target >= $MIN_TARGET_SDK"
