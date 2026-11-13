@@ -251,6 +251,13 @@ to load on Play Store ATAK. The `tppArchive` task produces a source
 zip for each ATAK baseline (5.6 + 5.7) ready to upload to the TPP
 portal.
 
+For Google Play, publish the `app-civ-release.aab` TPP returns,
+unmodified. Play re-signs the APKs with its own key, so ATAK validates
+a Play-installed plugin through the TPP code-transparency signature
+inside that bundle; a locally built AAB lacks it and ATAK reports the
+plugin signature as INVALID. Check a bundle with
+`scripts/verify-play-aab.ps1` (the Play deploy workflow enforces it).
+
 ## Hardware tested
 
 Test devices:

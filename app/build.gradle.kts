@@ -58,6 +58,9 @@ apply(plugin = "atak-takdev-plugin")
 // mapping. In offline mode we point it at an empty no-op file so
 // assembleCivRelease can succeed locally for sanity-checking; the
 // resulting APK won't be loadable into ATAK (submit through TPP for that).
+// The same goes for a local bundleCivRelease AAB: it has neither the
+// mapped SDK symbols nor TPP's code-transparency signature, so it must
+// never be attached to a Play release (scripts/verify-play-aab.ps1).
 if (!devKitMode) {
     val emptyMapping =
         layout.buildDirectory
@@ -142,8 +145,8 @@ android {
         // TPP / portal listings can't tell the new APK from the
         // previous one, and devices may keep the cached old APK on
         // plugin sync.
-        versionCode = 28
-        versionName = "1.0.2"
+        versionCode = 29
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
