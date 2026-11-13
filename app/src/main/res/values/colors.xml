@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Texas-TAK palette. ATAK is dark by default; surfaces are near-black
-         with a single warm brand accent (Texas-TAK gold, the bee/honeycomb
+         with a single warm brand accent (Texas-TAK gold, the walkie-talkie
          mark). Hex values are the canonical Texas-TAK platform design
          tokens (texastak_platform ui.py): bg #070707, card #121212,
          card-2 #181818, text #F4F4F4, muted #A9A9A9, accent #F2B33D,
