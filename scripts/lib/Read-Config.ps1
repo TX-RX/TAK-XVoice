@@ -38,7 +38,7 @@ function Read-ScriptConfig {
         pluginShortName    = "example"
         productFlavor      = "civ"
         defaultBaseline    = "5.7.0"
-        tppBaselines       = @("5.6.0", "5.7.0")
+        tppBaselines       = @("5.6.0", "5.7.0", "5.8.0")
         sourceZipPrefix    = "plugin"
         sourceZipBaseName  = "plugin-tpp-source"
         sanityApkBaseName  = "ATAK-Plugin-example"
