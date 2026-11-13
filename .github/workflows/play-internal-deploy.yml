@@ -2,14 +2,26 @@ name: Play deploy
 
 # Deploys a TPP-produced AAB to a Google Play track.
 #
+# A Play-delivered plugin carries two signatures and ATAK only trusts one:
+#   - TPP signs the bundle: code_transparency_signed.jwt inside the AAB,
+#     signed by a TAK Product Center key on ATAK's plugin allowlist.
+#   - Play re-signs the APKs with the app-signing key, which ATAK does
+#     not recognize, so it validates the plugin via the TPP JWT instead.
+# The AAB attached to the release MUST therefore be TPP output, byte for
+# byte. A local bundle<Flavor>Release build has no JWT: Play accepts and
+# installs it, and ATAK then reports "The signature for the plugin is
+# INVALID". The verify step below refuses to sign or upload such a bundle.
+#
 # The TAK signing step (tak.gov TPP portal) is manual and has no API, so
 # this runs on demand rather than on push:
 #   1. Download the TPP result and attach its UNSIGNED `app-civ-release.aab`
-#      to a GitHub Release.
+#      — unmodified — to a GitHub Release. Check it first with
+#      `scripts/verify-play-aab.ps1 -RequireUnsigned`.
 #   2. Dispatch this workflow against that release tag.
-# CI then signs the AAB with the upload key (from secrets) and uploads it
-# via the Play Developer API. (The operator-local publishing runbook lives
-# outside version control under docs/play-store/, which is gitignored.)
+# CI then verifies the TPP signature, signs the AAB with the upload key
+# (from secrets) and uploads it via the Play Developer API. (The
+# operator-local publishing runbook lives outside version control under
+# docs/play-store/, which is gitignored.)
 #
 # Required secrets:
 #   UPLOAD_KEYSTORE_B64       base64 of the upload keystore (.jks)
@@ -56,6 +68,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the AAB verifier
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
       - name: Download AAB from the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,6 +87,14 @@ jobs:
             --pattern "app-civ-release.aab" \
             --output unsigned.aab
           test -s unsigned.aab
+
+      - name: Verify the AAB carries a valid TPP code-transparency signature
+        # Hard gate: fails unless the bundle is unmodified, unsigned TPP
+        # output whose JWT verifies against a TAK Product Center key and
+        # whose dex / native-lib hashes all match. Runs before any signing
+        # material touches the runner.
+        shell: pwsh
+        run: ./scripts/verify-play-aab.ps1 -Path unsigned.aab -RequireUnsigned
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

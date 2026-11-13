@@ -84,6 +84,31 @@ Config can add patterns, never remove them. Put anything operator-specific — y
 
 Output goes to `build/tpp/`. `build/` is gitignored, so nothing accidentally lands in a commit — but it also gets wiped by `./gradlew clean`. If a submission spans days, copy the zips somewhere outside `build/` before running anything that could clean.
 
+## `verify-play-aab.ps1` — check an AAB before it goes to Google Play
+
+```powershell
+.\scripts\verify-play-aab.ps1 <app-civ-release.aab> -RequireUnsigned   # raw TPP output, before attaching it to a release
+.\scripts\verify-play-aab.ps1 <upload-signed.aab>                       # after the upload key has been applied
+```
+
+A plugin installed from Google Play is signed twice, and ATAK trusts only one of the two:
+
+1. **TPP signs the bundle.** The TAK third-party plugin pipeline embeds `BUNDLE-METADATA/com.android.tools.build.bundletool/code_transparency_signed.jwt` in the AAB: an RS256 JWT, signed by a TAK Product Center *Bundle Release* key, listing the SHA-256 of every dex / native lib.
+2. **Play signs the APKs.** Play App Signing replaces the APK signer with the app-signing key and copies the JWT into `base.apk`.
+
+ATAK can't match (2) against its plugin allowlist, so it falls back to (1) — `PluginValidator.checkAppTransparencySignature` verifies the JWT against `AtakPluginRegistry.ACCEPTABLE_KEY_LIST` and re-hashes the code. A locally built bundle (`bundleCivRelease`) has no JWT. Play accepts and installs it without complaint; ATAK then shows **"The signature for the plugin is INVALID"**. That is how 1.0.1 and 1.0.2 reached the internal track unloadable. The upload-key signature is stripped by Play and is irrelevant to ATAK.
+
+The script mirrors ATAK's check and exits 1 unless all of these hold:
+
+- the JWT is present, `alg` is RS256, and its signing cert is an ATAK-allowlisted TAK Product Center bundle key (pinned by SHA-256; `config.trustedTransparencyCerts` can add to the list, never remove);
+- the signature over `header.payload` verifies;
+- every listed dex / `.so` is present with a matching hash, and no code file in the bundle is unlisted (i.e. nothing changed after TPP signed it);
+- with `-RequireUnsigned`, the AAB carries no JAR signature — raw TPP output is unsigned.
+
+It also warns when the dex still references `gov.tak.api.plugin.IServiceController` unobfuscated, the fingerprint of a build made without ATAK's release ProGuard mapping (release ATAK can't load it even when signed correctly).
+
+Where it runs: `review-tpp-result.ps1` checks every AAB in a TPP result bundle (and exits 1 on failure), and the **Play deploy** workflow runs it as a hard gate before the upload key touches the bundle. Keep Play Console's **automatic protection** off for the plugin — Google documents it as incompatible with code transparency, and it rewrites the dex the JWT hashes.
+
 ## `pull-field-logs.ps1` — pull on-device diagnostic logs and scrub them
 
 Pulls the plugin's on-device logs (`DiagnosticLogger` writes them to the

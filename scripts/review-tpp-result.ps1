@@ -15,10 +15,13 @@
 # What the script does per bundle:
 #   1. Extract into diagnostics/tpp-review-<ts>/<bundleName>/
 #   2. Verify each APK's signing cert + baseline (plugin-api meta-data)
-#   3. Parse scan_results.fpr (a ZIP containing audit.fvdl XML) and
+#   3. Verify each AAB's TPP code-transparency signature via
+#      verify-play-aab.ps1 — the signature ATAK checks on a plugin
+#      installed from Google Play. Any failure makes the script exit 1.
+#   4. Parse scan_results.fpr (a ZIP containing audit.fvdl XML) and
 #      report findings grouped by Kingdom, Category, and severity
-#   4. Skim dependency-check-report.html for any CVE identifiers
-#   5. Print a single-page summary; extraction stays on disk under
+#   5. Skim dependency-check-report.html for any CVE identifiers
+#   6. Print a single-page summary; extraction stays on disk under
 #      diagnostics/ (gitignored) for follow-up drilldown.
 #
 # Rename to include baseline:
@@ -50,14 +53,16 @@ $cfg = Read-ScriptConfig -RepoRoot $repoRoot
 
 # Locate the Android SDK build-tools. Honor the standard env vars first
 # (ANDROID_SDK_ROOT / ANDROID_HOME), then fall back to the usual install
-# locations. Pick the highest build-tools version present.
+# locations. Pick the highest build-tools version present. Each fallback
+# is guarded: Join-Path throws on a null root, and no OS sets all of
+# LOCALAPPDATA / USERPROFILE / HOME (Windows usually lacks HOME).
 $sdkRoots = @(
     $env:ANDROID_SDK_ROOT,
     $env:ANDROID_HOME,
-    (Join-Path $env:LOCALAPPDATA "Android/Sdk"),
-    (Join-Path $env:USERPROFILE  "Android/Sdk"),
-    (Join-Path $env:HOME         "Android/Sdk"),
-    (Join-Path $env:HOME         "Library/Android/sdk")
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android/Sdk" }),
+    $(if ($env:USERPROFILE)  { Join-Path $env:USERPROFILE  "Android/Sdk" }),
+    $(if ($env:HOME)         { Join-Path $env:HOME         "Android/Sdk" }),
+    $(if ($env:HOME)         { Join-Path $env:HOME         "Library/Android/sdk" })
 ) | Where-Object { $_ } | Select-Object -Unique
 
 $sdkBuildTools = $null
@@ -189,6 +194,8 @@ function Get-CvesFromDepCheck([string]$htmlPath) {
 # -- Report per bundle --------------------------------------------------
 
 $rowsForRename = @()
+$failedAabs    = @()
+$verifyPlayAab = Join-Path $repoRoot "scripts/verify-play-aab.ps1"
 
 foreach ($r in $reviewDirs) {
     Write-Host "`n============================================================" -ForegroundColor Cyan
@@ -216,6 +223,16 @@ foreach ($r in $reviewDirs) {
             SrcPath  = $apk.FullName
             Baseline = $baseline
         }
+    }
+
+    # The AAB is what goes to Google Play. Play re-signs the APKs, so on
+    # Play ATAK can only validate the plugin through the TPP
+    # code-transparency JWT inside this bundle — check it here, before
+    # the AAB is attached to a release.
+    foreach ($aab in @(Get-ChildItem $r.Path -Filter "*.aab" -File)) {
+        Write-Host "`n-- AAB: $($aab.Name) (Google Play / ATAK code transparency)" -ForegroundColor Yellow
+        & $verifyPlayAab -Path $aab.FullName -RequireUnsigned
+        if ($LASTEXITCODE -ne 0) { $failedAabs += $aab.FullName }
     }
 
     $fpr = Get-ChildItem $r.Path -Filter "*.fpr" -File | Select-Object -First 1
@@ -294,3 +311,9 @@ if ($RenameApks) {
 }
 
 Write-Host "`nReview complete. Full extraction is under diagnostics/ (gitignored) for drilldown." -ForegroundColor Cyan
+
+if ($failedAabs.Count -gt 0) {
+    Write-Host "`n$($failedAabs.Count) AAB(s) failed the code-transparency check — do NOT attach them to a Play release:" -ForegroundColor Red
+    $failedAabs | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    exit 1
+}

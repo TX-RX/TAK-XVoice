@@ -52,6 +52,9 @@ function Read-ScriptConfig {
         # test<F>DebugUnitTest). Set only to override for a plugin whose
         # gates don't follow that shape.
         verifyGateTasks    = $null
+        # Extra SHA-256 fingerprints accepted by verify-play-aab.ps1 as
+        # code-transparency signers, on top of the built-in list below.
+        trustedTransparencyCerts = @()
     }
 
     # Universal patterns — always applied on top of whatever config
@@ -105,6 +108,25 @@ function Read-ScriptConfig {
     }
     $merged.forbiddenPatterns        = @($universalForbidden + $userForbidden | Select-Object -Unique)
     $merged.contentForbiddenPatterns = @($userForbidden | Select-Object -Unique)
+
+    # trustedTransparencyCerts: built-in ∪ operator, same shape as
+    # forbiddenPatterns so local config can widen the list but never drop
+    # the TAK Product Center keys. These are the RSA "Bundle Release"
+    # certs from ATAK's AtakPluginRegistry.ACCEPTABLE_KEY_LIST that sign
+    # the code_transparency_signed.jwt in TPP-produced AABs — the only
+    # signature ATAK can check on a Play-delivered (Google re-signed)
+    # plugin. Fingerprint = SHA-256 of the certificate DER.
+    $builtinTransparencyCerts = @(
+        '5dd5d27ff568f5c81e9377c275f0a76b8b863bfa12f39cf229ea53dd73bfdeb8', # ATAK Untrusted Bundle Release
+        '5aac1fbdf20f26f7c28b62ad3a3ee6d3209fe9eac9bf4d8f06e5170f6aa6dc4b'  # ATAK Trusted Bundle Release
+    )
+    $userCerts = @()
+    if ($userCfg.ContainsKey("trustedTransparencyCerts")) {
+        $userCerts = @($userCfg["trustedTransparencyCerts"] |
+            Where-Object { $_ -is [string] -and $_.Trim() -ne "" } |
+            ForEach-Object { ($_ -replace '[\s:]', '').ToLowerInvariant() })
+    }
+    $merged.trustedTransparencyCerts = @($builtinTransparencyCerts + $userCerts | Select-Object -Unique)
 
     # atakDevApks / atakReleaseApks: normalize from PSCustomObject to
     # hashtable + expand env vars like %USERPROFILE% in each value so
