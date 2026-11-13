@@ -61,7 +61,6 @@ $jwtEntryName = "BUNDLE-METADATA/com.android.tools.build.bundletool/code_transpa
 $unmappedSdkSymbol = "Lgov/tak/api/plugin/IServiceController;"
 
 $failures = [System.Collections.Generic.List[string]]::new()
-$warnings = [System.Collections.Generic.List[string]]::new()
 
 function Write-Check([string] $label, [bool] $ok, [string] $detail) {
     $mark  = if ($ok) { "PASS" } else { "FAIL" }
@@ -115,14 +114,14 @@ function Test-Bundle([System.IO.Compression.ZipArchive] $zip) {
         return
     }
 
-    # Advisory, run first so it also explains a bundle that fails below:
-    # symbols that only survive when ATAK's release mapping was skipped.
-    foreach ($e in $zip.Entries | Where-Object { $_.FullName -match '^[^/]+/dex/[^/]+\.dex$' }) {
+    # Run first, without an early return, so a local build reports both
+    # this and the missing JWT below.
+    $unmappedDex = @(foreach ($e in $zip.Entries | Where-Object { $_.FullName -match '^[^/]+/dex/[^/]+\.dex$' }) {
         $text = [Text.Encoding]::Latin1.GetString((Read-EntryBytes $e))
-        if ($text.Contains($unmappedSdkSymbol)) {
-            $script:warnings.Add("$($e.FullName) references unobfuscated $unmappedSdkSymbol — built without ATAK's release ProGuard mapping; release ATAK cannot load it.")
-        }
-    }
+        if ($text.Contains($unmappedSdkSymbol)) { $e.FullName }
+    })
+    Write-Check "dex uses ATAK's release ProGuard mapping" ($unmappedDex.Count -eq 0) `
+        $(if ($unmappedDex.Count) { ($unmappedDex -join ", ") + " reference unobfuscated $unmappedSdkSymbol; release ATAK cannot load it." } else { "" })
 
     # 1. The transparency JWT must exist.
     $jwtEntry = $zip.GetEntry($jwtEntryName)
@@ -212,7 +211,6 @@ try {
     $zip.Dispose()
 }
 
-foreach ($w in $warnings) { Write-Host "  [WARN] $w" -ForegroundColor Yellow }
 if ($failures.Count) {
     Write-Host "NOT DEPLOYABLE ($($failures.Count) check(s) failed). Attach the AAB exactly as TPP returned it — never a local build." -ForegroundColor Red
     exit 1

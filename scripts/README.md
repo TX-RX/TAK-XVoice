@@ -100,12 +100,11 @@ ATAK can't match (2) against its plugin allowlist, so it falls back to (1) — `
 
 The script mirrors ATAK's check and exits 1 unless all of these hold:
 
+- the dex does not reference `gov.tak.api.plugin.IServiceController` unobfuscated — the fingerprint of a build made without ATAK's release ProGuard mapping, which release ATAK can't load even when signed correctly;
 - the JWT is present, `alg` is RS256, and its signing cert is an ATAK-allowlisted TAK Product Center bundle key (pinned by SHA-256; `config.trustedTransparencyCerts` can add to the list, never remove);
 - the signature over `header.payload` verifies;
 - every listed dex / `.so` is present with a matching hash, and no code file in the bundle is unlisted (i.e. nothing changed after TPP signed it);
 - with `-RequireUnsigned`, the AAB carries no JAR signature — raw TPP output is unsigned.
-
-It also warns when the dex still references `gov.tak.api.plugin.IServiceController` unobfuscated, the fingerprint of a build made without ATAK's release ProGuard mapping (release ATAK can't load it even when signed correctly).
 
 Where it runs: `review-tpp-result.ps1` checks every AAB in a TPP result bundle (and exits 1 on failure), and the **Play deploy** workflow runs it as a hard gate before the upload key touches the bundle. Keep Play Console's **automatic protection** off for the plugin — Google documents it as incompatible with code transparency, and it rewrites the dex the JWT hashes.
 
