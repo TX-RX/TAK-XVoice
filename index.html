@@ -53,7 +53,7 @@
 <body>
 <main>
   <h1>Privacy Policy — TAK-XVoice</h1>
-  <p class="updated">Last updated: 12 November 2026</p>
+  <p class="updated">Last updated: 13 November 2026</p>
 
   <p class="lede">TAK-XVoice (&ldquo;XV&rdquo;, &ldquo;the plugin&rdquo;) is an open-source
   voice plugin for the Android Team Awareness Kit (ATAK), distributed under the
@@ -63,8 +63,11 @@
   <h2>The short version</h2>
   <p>XV does not collect, store, or transmit personal information to its
   developers. It has no analytics, no advertising, and no crash-reporting
-  services. The only content that leaves your device is live voice audio, and
-  that goes only to the server <strong>you</strong> configure.</p>
+  services. To carry your voice, XV connects to the voice server
+  <strong>you</strong> configure and sends that server &mdash; and the other
+  people on your channel &mdash; your live voice audio and the identity you
+  connect under (your ATAK callsign plus a device-derived identifier). Nothing
+  is ever sent to the plugin&rsquo;s developers.</p>
 
   <h2>What the plugin accesses, and why</h2>
   <ul>
@@ -93,10 +96,27 @@
   declared with the &ldquo;never for location&rdquo; flag.</p>
 
   <h2>Data sharing</h2>
-  <p>The plugin shares no data with its developers or any third party. Your voice
-  audio is transmitted only to the voice server you configure, which is operated
-  by you or your organization and is outside the control of the plugin&rsquo;s
-  developers. Their handling of that audio is governed by their own policies.</p>
+  <p>The plugin shares <strong>no data with its developers.</strong> It has no
+  developer-side servers and receives nothing from you.</p>
+  <p>To use XV you connect to a voice (Mumble/TAK) server that <strong>you</strong>
+  configure, operated by you or your organization. So that server and the other
+  participants on your channel can carry your voice and show who is speaking, XV
+  sends them:</p>
+  <ul>
+    <li>your <strong>voice audio</strong>, in real time &mdash; never recorded or
+    stored by XV;</li>
+    <li>your <strong>connection identity</strong> &mdash; your ATAK callsign
+    combined with a device-derived identifier (a one-way hash of your device&rsquo;s
+    ATAK ID, which gives you two voice &ldquo;slots&rdquo; and lets other XV users
+    match your voice to your map presence). If you turn on the optional
+    legacy-compatibility mode, your raw ATAK device ID is also sent for the same
+    mapping.</li>
+  </ul>
+  <p>This information goes <strong>only</strong> to the server you configure and
+  the peers on it &mdash; never to the plugin&rsquo;s developers. How that server
+  and those peers handle it is governed by their own policies; a server operator
+  or another participant could record what they receive, which is outside
+  XV&rsquo;s control.</p>
 
   <h2>Data retention and deletion</h2>
   <p>The plugin stores only your local settings (such as device pairings and
